@@ -12,10 +12,17 @@
 #include "state_base.h"
 #include "policy_runner_base.hpp"
 #include "m20_policy_runner.hpp"
+#include "m20_piper_policy_runner.hpp"
 #include "robot_interface.h"
+#include "piper_arm_interface.hpp"
 #include "user_command_interface.h"
 #include "json.hpp"
 #include "basic_function.hpp"
+
+#include <std_msgs/msg/float32_multi_array.hpp>
+
+#include <array>
+#include <mutex>
 
 namespace qw {
     class RLControlState : public StateBase {
@@ -28,11 +35,21 @@ namespace qw {
 
         std::shared_ptr<PolicyRunnerBase> policy_ptr_;
         std::shared_ptr<M20PolicyRunner> m20_policy_;
+        std::shared_ptr<M20PiperPolicyRunner> piper_policy_;
+        std::shared_ptr<PiperArmInterface> arm_ri_ptr_;
 
         std::thread run_policy_thread_;
         bool start_flag_ = true;
 
         float policy_cost_time_ = 1;
+
+        // arm teleop: rl_deploy relays keyboard increments to arm_controller and
+        // receives back the absolute EE goal (used in the policy obs)
+        rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr arm_teleop_pub_;
+        rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr arm_state_sub_;
+        std::mutex ee_mutex_;
+        std::array<float, 7> ee_goal_{0.1092f, 0.0f, 0.3439f,   // pos
+                                      0.7373f, 0.0f, 0.6756f, 0.0f};  // quat wxyz
 
         Eigen::MatrixXf acc_rot = Eigen::MatrixXf::Zero(20, 3);
         int acc_rot_count = 0;
@@ -45,9 +62,14 @@ namespace qw {
             buffer.base_rot_mat = RpyToRm(buffer.base_rpy);
             buffer.base_omega = ri_ptr_->GetImuOmega();
             buffer.base_acc = ri_ptr_->GetImuAcc();
-            buffer.joint_pos = ri_ptr_->GetJointPosition();
-            buffer.joint_vel = ri_ptr_->GetJointVelocity();
-            buffer.joint_tau = ri_ptr_->GetJointTorque();
+
+            // legs (16) from the M20 interface, arm/gripper (8) from the Piper interface
+            buffer.joint_pos.head(16) = ri_ptr_->GetJointPosition();
+            buffer.joint_vel.head(16) = ri_ptr_->GetJointVelocity();
+            buffer.joint_tau.head(16) = ri_ptr_->GetJointTorque();
+            buffer.joint_pos.tail(8) = arm_ri_ptr_->GetJointPosition();
+            buffer.joint_vel.tail(8) = arm_ri_ptr_->GetJointVelocity();
+            buffer.joint_tau.tail(8) = arm_ri_ptr_->GetJointTorque();
 
             // 储存
             buffer.flt_base_acc_mat.row(acc_rot_count) = buffer.base_acc.transpose();
@@ -63,7 +85,33 @@ namespace qw {
                 if (state_run_cnt_ % policy_ptr_->decimation_ == 0 && state_run_cnt_ != run_cnt_record) {
                     timespec start_timestamp, end_timestamp;
                     clock_gettime(CLOCK_MONOTONIC, &start_timestamp);
+
+                    // refresh the absolute EE goal from arm_controller feedback (obs)
+                    {
+                        std::lock_guard<std::mutex> lock(ee_mutex_);
+                        UserCommand* uc = uc_ptr_->GetUserCommand();
+                        uc->ee_goal_pos[0] = ee_goal_[0];
+                        uc->ee_goal_pos[1] = ee_goal_[1];
+                        uc->ee_goal_pos[2] = ee_goal_[2];
+                        uc->ee_goal_quat[0] = ee_goal_[3];
+                        uc->ee_goal_quat[1] = ee_goal_[4];
+                        uc->ee_goal_quat[2] = ee_goal_[5];
+                        uc->ee_goal_quat[3] = ee_goal_[6];
+                    }
+
                     auto ra = policy_ptr_->getRobotAction(rbs_[getrbsReadIndex()], *(uc_ptr_->GetUserCommand()));
+
+                    // relay the keyboard arm teleop to arm_controller:
+                    // [dx, dy, dz, droll, dpitch, dyaw, gripper, ee_reset]
+                    {
+                        UserCommand* uc = uc_ptr_->GetUserCommand();
+                        std_msgs::msg::Float32MultiArray msg;
+                        msg.data = {uc->ee_inc[0], uc->ee_inc[1], uc->ee_inc[2],
+                                    uc->ee_inc[3], uc->ee_inc[4], uc->ee_inc[5],
+                                    uc->gripper_cmd, static_cast<float>(uc->ee_reset)};
+                        arm_teleop_pub_->publish(msg);
+                        uc->ee_reset = 0;
+                    }
                     
                     MatXf res = ra.ConvertToMat();
 
@@ -84,11 +132,31 @@ namespace qw {
             if (robot_name_ == RobotName::M20) {
                 namespace fs = std::filesystem;
                 fs::path base = fs::path(__FILE__).parent_path();
-                auto model_path = fs::canonical(base / ".." / ".." / "policy" / "policy.onnx");
-                m20_policy_ = std::make_shared<M20PolicyRunner>("m20_policy", model_path.string());
+                auto model_path = base / ".." / ".." / "policy" / "m20_piper_policy.onnx";
+                if (!fs::exists(model_path)) {
+                    std::cerr << "[RLControlState] policy not found: " << model_path
+                              << "\nExport your Isaac Lab policy to ONNX "
+                                 "(input name \"obs\", output name \"actions\") "
+                                 "and place it at policy/m20_piper_policy.onnx" << std::endl;
+                    exit(0);
+                }
+                auto model_path_abs = fs::canonical(model_path);
+                piper_policy_ = std::make_shared<M20PiperPolicyRunner>("m20_piper_policy", model_path_abs.string());
+
+                auto node = ri_ptr_->get_node();
+                arm_ri_ptr_ = std::make_shared<PiperArmInterface>("M20PiperArm", node);
+                arm_teleop_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("/ARM_TELEOP", 10);
+                arm_state_sub_ = node->create_subscription<std_msgs::msg::Float32MultiArray>(
+                    "/ARM_TELEOP_STATE", 10,
+                    [this](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
+                        if (msg->data.size() >= 7) {
+                            std::lock_guard<std::mutex> lock(ee_mutex_);
+                            for (int i = 0; i < 7; ++i) ee_goal_[i] = msg->data[i];
+                        }
+                    });
             }
 
-            policy_ptr_ = m20_policy_;
+            policy_ptr_ = piper_policy_;
             if (!policy_ptr_) {
                 std::cerr << "error policy" << std::endl;
                 exit(0);
@@ -101,6 +169,7 @@ namespace qw {
         virtual void OnEnter() {
             state_run_cnt_ = -1;
             start_flag_ = true;
+            arm_ri_ptr_->Start();
             run_policy_thread_ = std::thread(std::bind(&RLControlState::PolicyRunner, this));
             policy_ptr_->OnEnter();
             StateBase::msfb_.UpdateCurrentState(RobotMotionState::RLControlMode);
@@ -109,6 +178,7 @@ namespace qw {
         virtual void OnExit() {
             start_flag_ = false;
             run_policy_thread_.join();
+            arm_ri_ptr_->Stop();
             state_run_cnt_ = -1;
         }
 

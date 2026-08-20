@@ -30,10 +30,30 @@ private:
     float max_side_    = 0.5f;
     float max_yaw_     = 0.7f;
 
+    // Body pose targets (absolute; accumulated while the keys are held).
+    // NOTE: 'c' is already used to enter RL control mode, so body height uses
+    // h/j instead of the Isaac Lab C/V mapping.
+    float body_height_ = 0.513f;   // m, matches the Isaac Lab default base height
+    float body_pitch_  = 0.0f;     // rad
+    float body_roll_   = 0.0f;     // rad
+    const float height_step_ = 0.002f;   // m per repeat
+    const float body_pose_step_ = 0.01f; // rad per repeat
+    const float body_height_min_ = 0.33f, body_height_max_ = 0.60f;
+    const float body_pitch_max_ = 0.35f, body_roll_max_ = 0.25f;
+
+    // Arm EE increments (non-zero while the numpad key is held, NumLock ON)
+    float ee_inc_[6] = {0, 0, 0, 0, 0, 0};  // dx, dy, dz, droll, dpitch, dyaw
+    const float ee_pos_step_ = 0.005f;  // m
+    const float ee_orn_step_ = 0.02f;   // rad
+    bool gripper_closed_ = false;
+
     std::unordered_set<char> held_keys_;
     std::unordered_map<char, double> last_seen_time_;
     
     const std::unordered_set<char> velocity_keys_ = {'w', 's', 'a', 'd', 'q', 'e'};
+    const std::unordered_set<char> body_keys_ = {'h', 'j', 'b', 'n', '[', ']'};
+    const std::unordered_set<char> ee_keys_ = {'8', '2', '4', '6', '7', '9',
+                                               '1', '3', '0', '.', '+', '-'};
     const double key_timeout_ms_ = 500.0;
 
     void ClipNumber(float& num, float low, float high)
@@ -113,6 +133,44 @@ private:
         }
     }
 
+    void clip_body_pose()
+    {
+        if (body_height_ < body_height_min_) body_height_ = body_height_min_;
+        if (body_height_ > body_height_max_) body_height_ = body_height_max_;
+        if (body_pitch_ < -body_pitch_max_) body_pitch_ = -body_pitch_max_;
+        if (body_pitch_ > body_pitch_max_)  body_pitch_ =  body_pitch_max_;
+        if (body_roll_ < -body_roll_max_) body_roll_ = -body_roll_max_;
+        if (body_roll_ > body_roll_max_)  body_roll_ =  body_roll_max_;
+    }
+
+    void handle_body_key(char k)
+    {
+        if (k == 'h')      body_height_ += height_step_;
+        else if (k == 'j') body_height_ -= height_step_;
+        else if (k == 'b') body_pitch_  += body_pose_step_;
+        else if (k == 'n') body_pitch_  -= body_pose_step_;
+        else if (k == '[') body_roll_   += body_pose_step_;
+        else if (k == ']') body_roll_   -= body_pose_step_;
+        clip_body_pose();
+    }
+
+    void handle_action_key(char k)
+    {
+        if (k == 'g') {
+            gripper_closed_ = !gripper_closed_;
+            usr_cmd_->gripper_cmd = gripper_closed_ ? 1.0f : 0.0f;
+            std::cout << "[GRIPPER] " << (gripper_closed_ ? "CLOSE" : "OPEN") << "\n";
+        } else if (k == 'l') {
+            body_height_ = 0.513f;
+            body_pitch_  = 0.0f;
+            body_roll_   = 0.0f;
+            gripper_closed_ = false;
+            usr_cmd_->gripper_cmd = 0.0f;
+            usr_cmd_->ee_reset = 1;
+            std::cout << "[RESET] body pose + arm teleop reset\n";
+        }
+    }
+
     void keyboard_loop()
     {
         setup_raw_mode();
@@ -123,6 +181,10 @@ private:
                   << "  Movement:  W/S (forward/back)  A/D (left/right)\n"
                   << "  Rotation:  Q (CCW)  E (CW)\n"
                   << "  Mode:      R (damping)  Z (stand)  C (control)\n"
+                  << "  Body pose: H/J (height)  B/N (pitch)  [/] (roll)\n"
+                  << "  Arm EE (numpad, NumLock ON):\n"
+                  << "    8/2 x, 4/6 y, 7/9 z, 1/3 roll, 0/. pitch, +/- yaw\n"
+                  << "  G (gripper toggle)  L (reset body+arm)\n"
                   << "\n";
 
         char ch;
@@ -141,8 +203,20 @@ private:
                     continue;
                 }
 
-                // Track velocity keys
-                if (velocity_keys_.count(k)) {
+                // Body pose keys (increment while held / repeated)
+                if (body_keys_.count(k)) {
+                    handle_body_key(k);
+                    continue;
+                }
+
+                // Action keys
+                if (k == 'g' || k == 'l') {
+                    handle_action_key(k);
+                    continue;
+                }
+
+                // Track velocity + EE keys (held-set based, timeout on release)
+                if (velocity_keys_.count(k) || ee_keys_.count(k)) {
                     std::lock_guard<std::mutex> lock(keys_mutex_);
                     held_keys_.insert(k);
                     last_seen_time_[k] = now;
@@ -172,10 +246,32 @@ private:
             if (msfb_->GetCurrentState() == RobotMotionState::RLControlMode) {
                 compute_velocity_from_held_keys(fwd, side, yaw);
             }
+
+            // Arm EE increments from the held numpad keys
+            for (int i = 0; i < 6; ++i) ee_inc_[i] = 0;
+            {
+                std::lock_guard<std::mutex> lock(keys_mutex_);
+                if (held_keys_.count('8')) ee_inc_[0] += ee_pos_step_;
+                if (held_keys_.count('2')) ee_inc_[0] -= ee_pos_step_;
+                if (held_keys_.count('4')) ee_inc_[1] += ee_pos_step_;
+                if (held_keys_.count('6')) ee_inc_[1] -= ee_pos_step_;
+                if (held_keys_.count('7')) ee_inc_[2] += ee_pos_step_;
+                if (held_keys_.count('9')) ee_inc_[2] -= ee_pos_step_;
+                if (held_keys_.count('1')) ee_inc_[3] += ee_orn_step_;
+                if (held_keys_.count('3')) ee_inc_[3] -= ee_orn_step_;
+                if (held_keys_.count('0')) ee_inc_[4] += ee_orn_step_;
+                if (held_keys_.count('.')) ee_inc_[4] -= ee_orn_step_;
+                if (held_keys_.count('+')) ee_inc_[5] += ee_orn_step_;
+                if (held_keys_.count('-')) ee_inc_[5] -= ee_orn_step_;
+            }
             
             usr_cmd_->forward_vel_scale  = fwd;
             usr_cmd_->side_vel_scale     = side;
             usr_cmd_->turnning_vel_scale = yaw;
+            usr_cmd_->body_height = body_height_;
+            usr_cmd_->body_pitch  = body_pitch_;
+            usr_cmd_->body_roll   = body_roll_;
+            for (int i = 0; i < 6; ++i) usr_cmd_->ee_inc[i] = ee_inc_[i];
 
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }
@@ -189,6 +285,8 @@ public:
     {
         std::cout << "[KeyboardInterface] Initialized with multi-key support\n";
         std::memset(usr_cmd_, 0, sizeof(UserCommand));
+        usr_cmd_->body_height = body_height_;
+        usr_cmd_->gripper_cmd = 0.0f;
     }
 
     ~KeyboardInterface() 

@@ -33,6 +33,11 @@ public:
         node_ = std::make_shared<rclcpp::Node>("rl_deploy");
 
     }
+    RobotInterface(const std::string& robot_name, int dof_num, rclcpp::Node::SharedPtr node):robot_name_(robot_name), dof_num_(dof_num){
+        start_flag_ = true;
+        joint_cmd_ = Eigen::Matrix<float, Eigen::Dynamic, 5>::Zero(dof_num_, 5);
+        node_ = node;
+    }
     virtual ~RobotInterface(){};
 
     std::string robot_name_;

@@ -54,7 +54,7 @@ struct RobotBasicState {
     VecXf joint_vel;
     VecXf joint_tau;
 
-    RobotBasicState(int dof = 16) {
+    RobotBasicState(int dof = 24) {
         base_rpy.setZero();
         base_quat.setZero();
         base_rot_mat.setIdentity();
@@ -94,6 +94,24 @@ struct UserCommand {
     float side_vel_scale = 0;
     float turnning_vel_scale = 0;
     float reserved_scale;
+
+    // ---- body pose targets (absolute, accumulated by the keyboard) ----
+    // NOTE: this struct is memset() to zero by the command interfaces, so the
+    // keyboard/gamepad must re-initialise these after the memset.
+    float body_height = 0.513f;   // base height target (m)
+    float body_pitch  = 0.0f;     // base pitch target (rad)
+    float body_roll   = 0.0f;     // base roll target (rad)
+
+    // ---- arm teleop (raw increments; arm_controller accumulates them) ----
+    float ee_inc[6] = {0, 0, 0, 0, 0, 0};   // dx, dy, dz, droll, dpitch, dyaw
+    float gripper_cmd = -1.0f;              // 0 open, 1 close, -1 no change
+    uint8_t ee_reset = 0;                   // 1 = reset EE target to current pose
+
+    // ---- filled by RLControlState from arm_controller feedback (obs) ----
+    // Default is the Piper EE pose at the default arm joints
+    // (arm = [0, 0.5, -0.5, 0, 0, 0]) in the arm-base frame.
+    float ee_goal_pos[3]  = {0.1092f, 0.0f, 0.3439f};  // x, y, z
+    float ee_goal_quat[4] = {0.7373f, 0.0f, 0.6756f, 0.0f};  // w, x, y, z
 };
 
 enum FromType {

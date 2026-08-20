@@ -3,3 +3,5 @@ cmake-build-debug/
 data/*
 !data/.gitkeep
 .idea/
+__pycache__/
+*.pyc
