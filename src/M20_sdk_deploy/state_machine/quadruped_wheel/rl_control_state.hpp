@@ -132,12 +132,11 @@ namespace qw {
             if (robot_name_ == RobotName::M20) {
                 namespace fs = std::filesystem;
                 fs::path base = fs::path(__FILE__).parent_path();
-                auto model_path = base / ".." / ".." / "policy" / "m20_piper_policy.onnx";
+                auto model_path = base / ".." / ".." / "policy" / "history_adaptation_full.onnx";
                 if (!fs::exists(model_path)) {
                     std::cerr << "[RLControlState] policy not found: " << model_path
-                              << "\nExport your Isaac Lab policy to ONNX "
-                                 "(input name \"obs\", output name \"actions\") "
-                                 "and place it at policy/m20_piper_policy.onnx" << std::endl;
+                              << "\nGenerate it with scripts/export_history_policy_onnx.py "
+                                 "and place it at policy/history_adaptation_full.onnx" << std::endl;
                     exit(0);
                 }
                 auto model_path_abs = fs::canonical(model_path);

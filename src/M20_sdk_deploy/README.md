@@ -125,14 +125,26 @@ so the same build stays compatible with the real M20 SDK path.
 
 ### Prerequisites
 
-Place your exported policy at `policy/m20_piper_policy.onnx`:
+The policy is the `history_adaptation` run (rsl_rl `ActorCriticHistory`, an
+RMA-style history encoder + actor). The deployment ONNX at
+`policy/history_adaptation_full.onnx` contains encoder + actor:
 
-- input name: `obs`, output name: `actions` (see `scripts/pt_to_onnx.py`)
-- expected observation layout (79 dims): base angular velocity (3),
-  projected gravity (3), velocity command (3), joint positions rel. default
-  (22: 12 legs + 4 wheels zeroed + 6 arm), joint velocities (22), last action
-  (16, processed), ee goal (7: pos + quat wxyz), body pose (3: height/pitch/roll)
-- action dim: 16 (12 leg position targets + 4 wheel velocity targets)
+- inputs: `obs` (86), `obs_history` (770 = 10 steps x 77)
+- outputs: `actions` (23 = 12 leg pos + 4 wheel vel + 7 ee_ik, only the first
+  16 are used for the M20 legs/wheels)
+
+Policy obs (86): base angular velocity (3, x0.25), projected gravity (3),
+velocity command (3), joint positions rel. default (22: 12 legs + 4 wheels
+zeroed + 6 arm), joint velocities (22, x0.05), last action (23, processed),
+ee goal (7: pos + quat wxyz), body pose (3: height/pitch/roll).
+
+History step (77): raw base angular velocity (3), projected gravity (3),
+joint positions rel. default (24, all joints in the USD order: arm first),
+joint velocities (24), last action (23).
+
+The original actor-only export (`policy/history_adaptation.onnx`) does not
+contain the history encoder, so it cannot be deployed directly; regenerate the
+full model with `scripts/export_history_policy_onnx.py` whenever you retrain.
 
 `arm_controller.py` uses the Piper MDH table from `pyAgxArm` when installed and
 falls back to an embedded copy otherwise.
