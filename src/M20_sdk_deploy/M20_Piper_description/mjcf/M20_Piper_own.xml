@@ -11,6 +11,18 @@
     <default class="floor">
       <geom type="plane" size="0 0 0.05" material="groundplane" />
     </default>
+    <default class="leg_motor">
+      <motor ctrllimited="true" ctrlrange="-76.4 76.4" />
+    </default>
+    <default class="wheel_motor">
+      <motor ctrllimited="true" ctrlrange="-21.6 21.6" />
+    </default>
+    <default class="arm_motor">
+      <motor ctrllimited="true" ctrlrange="-100 100" />
+    </default>
+    <default class="gripper_motor">
+      <motor ctrllimited="true" ctrlrange="-10 10" />
+    </default>
   </default>
 
   <compiler angle="radian" meshdir="." balanceinertia="true" />
@@ -25,6 +37,8 @@
       <geom name="base_link_collision_1" pos="0 0.045 0" quat="0.7071 0 0.7071 0" type="cylinder" size="0.07 0.375" class="collision" />
       <geom name="base_link_collision_2" pos="0 -0.045 0" quat="0.7071 0 0.7071 0" type="cylinder" size="0.07 0.375" class="collision" />
       <geom name="base_link_visual" type="mesh" mesh="base_link_base_link" material="default_material" class="visual" />
+      <site name="imu_site" pos="0.0632 -0.0268 0.0435" size="0.005" rgba="1 0 0 1"/>
+      <site name="base_site" pos="0 0 0" quat="1 0 0 0"/>
       <body name="fl_hipx" pos="0.3141 0.0685 0">
         <inertial pos="-0.0111893129496933 0.00891693461032669 0.000405665689861192" mass="0.261359958476582" diaginertia="0.000186 0.000371 0.000288" />
         <joint name="fl_hipx_joint" type="hinge" range="-0.436 0.611" axis="-1 0 0" />
@@ -238,33 +252,39 @@
   </asset>
 
   <actuator>
-    <motor name="fl_hipx_joint" joint="fl_hipx_joint" />
-    <motor name="fl_hipy_joint" joint="fl_hipy_joint" />
-    <motor name="fl_knee_joint" joint="fl_knee_joint" />
-    <motor name="fl_wheel_joint" joint="fl_wheel_joint" />
-    <motor name="fr_hipx_joint" joint="fr_hipx_joint" />
-    <motor name="fr_hipy_joint" joint="fr_hipy_joint" />
-    <motor name="fr_knee_joint" joint="fr_knee_joint" />
-    <motor name="fr_wheel_joint" joint="fr_wheel_joint" />
-    <motor name="hl_hipx_joint" joint="hl_hipx_joint" />
-    <motor name="hl_hipy_joint" joint="hl_hipy_joint" />
-    <motor name="hl_knee_joint" joint="hl_knee_joint" />
-    <motor name="hl_wheel_joint" joint="hl_wheel_joint" />
-    <motor name="hr_hipx_joint" joint="hr_hipx_joint" />
-    <motor name="hr_hipy_joint" joint="hr_hipy_joint" />
-    <motor name="hr_knee_joint" joint="hr_knee_joint" />
-    <motor name="hr_wheel_joint" joint="hr_wheel_joint" />
-    <motor name="arm_joint1" joint="arm_joint1" />
-    <motor name="arm_joint2" joint="arm_joint2" />
-    <motor name="arm_joint3" joint="arm_joint3" />
-    <motor name="arm_joint4" joint="arm_joint4" />
-    <motor name="arm_joint5" joint="arm_joint5" />
-    <motor name="arm_joint6" joint="arm_joint6" />
-    <motor name="gripper_joint1" joint="gripper_joint1" />
-    <motor name="gripper_joint2" joint="gripper_joint2" />
+    <motor name="fl_hipx_joint" joint="fl_hipx_joint" class="leg_motor" />
+    <motor name="fl_hipy_joint" joint="fl_hipy_joint" class="leg_motor" />
+    <motor name="fl_knee_joint" joint="fl_knee_joint" class="leg_motor" />
+    <motor name="fl_wheel_joint" joint="fl_wheel_joint" class="wheel_motor" />
+    <motor name="fr_hipx_joint" joint="fr_hipx_joint" class="leg_motor" />
+    <motor name="fr_hipy_joint" joint="fr_hipy_joint" class="leg_motor" />
+    <motor name="fr_knee_joint" joint="fr_knee_joint" class="leg_motor" />
+    <motor name="fr_wheel_joint" joint="fr_wheel_joint" class="wheel_motor" />
+    <motor name="hl_hipx_joint" joint="hl_hipx_joint" class="leg_motor" />
+    <motor name="hl_hipy_joint" joint="hl_hipy_joint" class="leg_motor" />
+    <motor name="hl_knee_joint" joint="hl_knee_joint" class="leg_motor" />
+    <motor name="hl_wheel_joint" joint="hl_wheel_joint" class="wheel_motor" />
+    <motor name="hr_hipx_joint" joint="hr_hipx_joint" class="leg_motor" />
+    <motor name="hr_hipy_joint" joint="hr_hipy_joint" class="leg_motor" />
+    <motor name="hr_knee_joint" joint="hr_knee_joint" class="leg_motor" />
+    <motor name="hr_wheel_joint" joint="hr_wheel_joint" class="wheel_motor" />
+    <motor name="arm_joint1" joint="arm_joint1" class="arm_motor" />
+    <motor name="arm_joint2" joint="arm_joint2" class="arm_motor" />
+    <motor name="arm_joint3" joint="arm_joint3" class="arm_motor" />
+    <motor name="arm_joint4" joint="arm_joint4" class="arm_motor" />
+    <motor name="arm_joint5" joint="arm_joint5" class="arm_motor" />
+    <motor name="arm_joint6" joint="arm_joint6" class="arm_motor" />
+    <motor name="gripper_joint1" joint="gripper_joint1" class="gripper_motor" />
+    <motor name="gripper_joint2" joint="gripper_joint2" class="gripper_motor" />
   </actuator>
 
   <visual>
     <rgba haze="0.15 0.25 0.35 1" />
   </visual>
+
+  <sensor>
+    <framequat name="base_quat" objtype="site" objname="base_site"/>
+    <accelerometer site="imu_site"/>
+    <gyro site="imu_site"/>
+  </sensor>
 </mujoco>

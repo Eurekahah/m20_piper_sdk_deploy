@@ -1,20 +1,22 @@
 """
- * @file mujoco_simulation.py
- * @brief simulation in mujoco
- * @author Bo (Percy) Peng
- * @version 1.0
- * @date 2025-11-05
+ * @file mujoco_simulation_ros2.py
+ * @brief simulation in mujoco for M20 + AgileX Piper arm (sim2sim deploy)
  *
- * @copyright Copyright (c) 2025  DeepRobotics
+ *  The M20 legs (16 DOF) are driven by the RL policy through the official
+ *  /JOINTS_CMD topic, the Piper arm (6 joints + 2 gripper) is driven by the
+ *  separate arm_controller node through /ARM_JOINTS_CMD.
+ *
+ *  Topics:
+ *    subscribe /JOINTS_CMD     drdds/msg/JointsDataCmd   (16 M20 leg joints)
+ *    subscribe /ARM_JOINTS_CMD drdds/msg/JointsDataCmd   (8 arm/gripper joints)
+ *    publish   /JOINTS_DATA    drdds/msg/JointsData      (16 M20 leg joints)
+ *    publish   /ARM_JOINTS_DATA drdds/msg/JointsData     (8 arm/gripper joints)
+ *    publish   /IMU_DATA       drdds/msg/ImuData
 """
 
 import os
 import time
-import socket
-import struct
-import threading
 from pathlib import Path
-from scipy.spatial.transform import Rotation
 import numpy as np
 import mujoco
 import mujoco.viewer
@@ -25,13 +27,12 @@ from builtin_interfaces.msg import Time
 from drdds.msg import ImuData, JointsData, JointsDataCmd, MetaType, ImuDataValue, JointsDataValue, JointData, JointDataCmd
 
 
-
-MODEL_NAME = "M20"
+MODEL_NAME = "M20_Piper"
 # Get the directory of the current Python file
 CURRENT_DIR = Path(__file__).resolve().parent
 
 # Define the XML path relative to the Python file
-XML_PATH = CURRENT_DIR / ".." / ".." / ".." / "M20_description" / "m20_mjcf" / "mjcf" / "M20_stair.xml"
+XML_PATH = CURRENT_DIR / ".." / ".." / ".." / "M20_Piper_description" / "mjcf" / "M20_Piper_own.xml"
 
 # Convert to absolute path as string
 XML_PATH = str(XML_PATH.resolve())
@@ -39,17 +40,47 @@ USE_VIEWER = True
 DT = 0.001
 RENDER_INTERVAL = 50
 
-# Calibaration parameters (for sim-to-real consistency)
+# ----------------------------------------------------------------------------
+# DOF layout
+# ----------------------------------------------------------------------------
+LEG_DOF = 16                 # M20 legs (12 hip/leg + 4 wheels)
+ARM_DOF = 8                  # Piper arm (arm_joint1..6) + gripper (2)
+TOTAL_DOF = LEG_DOF + ARM_DOF
+WHEEL_RADIUS = 0.09          # used to auto-place the robot on the ground
+
+LEG_CMD_TOPIC = "/JOINTS_CMD"
+LEG_DATA_TOPIC = "/JOINTS_DATA"
+ARM_CMD_TOPIC = "/ARM_JOINTS_CMD"
+ARM_DATA_TOPIC = "/ARM_JOINTS_DATA"
+IMU_TOPIC = "/IMU_DATA"
+
+# ----------------------------------------------------------------------------
+# Calibration parameters for the 16 M20 leg joints.
+# These round-trip with rl_deploy's M20Interface (dir/offset cancel in sim2sim,
+# and match the real robot conventions for later sim2real).
+# ----------------------------------------------------------------------------
 JOINT_DIR = np.array([1, 1, -1, 1, 1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1, -1], dtype=np.float32)
 POS_OFFSET_DEG = np.array([-25, 229, 160, 0, 25, -131, -200, 0, -25, -229, -160, 0, 25, 131, 200, 0], dtype=np.float32)
 POS_OFFSET_RAD = POS_OFFSET_DEG / 180.0 * np.pi
 
-JOINT_INIT = {
-    "M20": np.array([-0.438, -1.16, 2.76, 0,
+# The arm/gripper joints are raw rad (dir=1, offset=0) on both sides.
+ARM_DIR = np.ones(ARM_DOF, dtype=np.float32)
+ARM_OFFSET_RAD = np.zeros(ARM_DOF, dtype=np.float32)
+
+# Initial pose: M20 legs start in the official crouched pose, the Piper arm
+# starts in the Isaac Lab default pose (arm2=0.5, arm3=-0.5, gripper closed).
+LEG_INIT = np.array([-0.438, -1.16, 2.76, 0,
                      0.438, -1.16, 2.76, 0,
                      -0.438, 1.16, -2.76, 0,
-                     0.438, 1.16, -2.76, 0], dtype=np.float32),
-}
+                     0.438, 1.16, -2.76, 0], dtype=np.float32)
+ARM_INIT = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+JOINT_INIT = np.concatenate([LEG_INIT, ARM_INIT]).astype(np.float32)
+
+# Default arm hold (used until the first /ARM_JOINTS_CMD message arrives, so the
+# arm does not flop around during idle/standup). Gains match the Isaac Lab
+# DelayedPDActuatorCfg (arm: 300/20, gripper: 4000/200).
+ARM_DEFAULT_KP = np.array([300.0] * 6 + [4000.0, 4000.0], dtype=np.float32)
+ARM_DEFAULT_KD = np.array([20.0] * 6 + [200.0, 200.0], dtype=np.float32)
 
 
 class MuJoCoSimulationNode(Node):
@@ -68,20 +99,29 @@ class MuJoCoSimulationNode(Node):
         self.data = mujoco.MjData(self.model)
 
         # 机器人自由度列表
-        self.actuator_ids = [a for a in range(self.model.nu)]  # 0..15
+        self.actuator_ids = [a for a in range(self.model.nu)]  # 0..23
         self.dof_num = len(self.actuator_ids)
-        assert self.dof_num == 16, "Expected 16 DOF for M20"
+        assert self.dof_num == TOTAL_DOF, f"Expected {TOTAL_DOF} DOF for M20_Piper, got {self.dof_num}"
 
         # 初始化站立姿态
-        self._set_initial_pose(model_key)
+        self._set_initial_pose()
 
-        # 缓存
-        self.kp_cmd = np.zeros((self.dof_num, 1), np.float32)
+        # 缓存 (legs)
+        self.kp_cmd = np.zeros((LEG_DOF, 1), np.float32)
         self.kd_cmd = np.zeros_like(self.kp_cmd)
         self.pos_cmd = np.zeros_like(self.kp_cmd)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
-        self.input_tq = np.zeros_like(self.kp_cmd)
+
+        # 缓存 (arm/gripper)
+        self.arm_kp_cmd = np.zeros((ARM_DOF, 1), np.float32)
+        self.arm_kd_cmd = np.zeros_like(self.arm_kp_cmd)
+        self.arm_pos_cmd = np.zeros_like(self.arm_kp_cmd)
+        self.arm_vel_cmd = np.zeros_like(self.arm_kp_cmd)
+        self.arm_tau_ff = np.zeros_like(self.arm_kp_cmd)
+        self.arm_cmd_valid = False   # until first /ARM_JOINTS_CMD message
+
+        self.input_tq = np.zeros((TOTAL_DOF, 1), np.float32)
 
         # IMU
         self.last_base_linvel = np.zeros((3, 1), np.float64)
@@ -90,14 +130,21 @@ class MuJoCoSimulationNode(Node):
         self.get_logger().info(f"[INFO] MuJoCo model loaded, dof = {self.dof_num}")
 
         # ROS Publishers
-        self.imu_pub = self.create_publisher(ImuData, '/IMU_DATA', 200)
-        self.joints_pub = self.create_publisher(JointsData, '/JOINTS_DATA', 200)
+        self.imu_pub = self.create_publisher(ImuData, IMU_TOPIC, 200)
+        self.joints_pub = self.create_publisher(JointsData, LEG_DATA_TOPIC, 200)
+        self.arm_joints_pub = self.create_publisher(JointsData, ARM_DATA_TOPIC, 200)
 
-        # ROS Subscriber
+        # ROS Subscribers
         self.cmd_sub = self.create_subscription(
             JointsDataCmd,
-            '/JOINTS_CMD',
+            LEG_CMD_TOPIC,
             self._cmd_callback,
+            50
+        )
+        self.arm_cmd_sub = self.create_subscription(
+            JointsDataCmd,
+            ARM_CMD_TOPIC,
+            self._arm_cmd_callback,
             50
         )
 
@@ -106,24 +153,39 @@ class MuJoCoSimulationNode(Node):
         if USE_VIEWER:
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
-    def _set_initial_pose(self, key: str):
-        """关节位置设置为与 PyBullet 脚本一致的初始角度"""
+    # ------------------------------------------------------------------------
+    def _wheel_geom_ids(self):
+        ids = []
+        for i in range(self.model.ngeom):
+            if self.model.geom(i).name.endswith("_wheel_collision"):
+                ids.append(i)
+        return ids
+
+    def _set_initial_pose(self):
+        """Set the joint angles and place the robot so the wheels touch ground."""
         qpos0 = self.data.qpos.copy()
-        qpos0[7:7 + self.dof_num] = JOINT_INIT[key]  # ,3-6 basequat，0-2 basepos
-        qpos0[:3] = np.array([0, 0, 0.2])
+        qpos0[7:7 + TOTAL_DOF] = JOINT_INIT
+        qpos0[:3] = np.array([0, 0, 0.0])
         qpos0[3:7] = np.array([1, 0, 0, 0])
         self.data.qpos[:] = qpos0
         mujoco.mj_forward(self.model, self.data)
 
+        # shift the base so the lowest wheel center sits at WHEEL_RADIUS
+        wheel_ids = self._wheel_geom_ids()
+        lowest_z = float(np.min(self.data.geom_xpos[wheel_ids, 2]))
+        self.data.qpos[2] += WHEEL_RADIUS - lowest_z
+        mujoco.mj_forward(self.model, self.data)
+
+    # ------------------------------------------------------------------------
     def _cmd_callback(self, msg: JointsDataCmd):
-        """Convert received (published) positions/velocities to internal (raw)"""
-        if len(msg.data.joints_data) != 16:
-            self.get_logger().warn("Received JointsDataCmd with incorrect number of joints")
+        """Leg joint commands from rl_deploy (published in robot frame)."""
+        if len(msg.data.joints_data) != LEG_DOF:
+            self.get_logger().warn("Received JointsDataCmd with incorrect number of leg joints")
             return
 
-        pub_pos = np.zeros(self.dof_num, dtype=np.float32)
-        pub_vel = np.zeros(self.dof_num, dtype=np.float32)
-        for i in range(self.dof_num):
+        pub_pos = np.zeros(LEG_DOF, dtype=np.float32)
+        pub_vel = np.zeros(LEG_DOF, dtype=np.float32)
+        for i in range(LEG_DOF):
             joint_cmd = msg.data.joints_data[i]
             self.kp_cmd[i] = joint_cmd.kp
             self.kd_cmd[i] = joint_cmd.kd
@@ -134,6 +196,26 @@ class MuJoCoSimulationNode(Node):
         # Convert: raw = published * dir + offset_rad
         self.pos_cmd.flat = pub_pos * JOINT_DIR + POS_OFFSET_RAD
         self.vel_cmd.flat = pub_vel * JOINT_DIR
+
+    def _arm_cmd_callback(self, msg: JointsDataCmd):
+        """Arm/gripper joint commands from arm_controller (raw rad)."""
+        if len(msg.data.joints_data) < ARM_DOF:
+            self.get_logger().warn("Received JointsDataCmd with fewer than 8 arm joints")
+            return
+
+        pub_pos = np.zeros(ARM_DOF, dtype=np.float32)
+        pub_vel = np.zeros(ARM_DOF, dtype=np.float32)
+        for i in range(ARM_DOF):
+            joint_cmd = msg.data.joints_data[i]
+            self.arm_kp_cmd[i] = joint_cmd.kp
+            self.arm_kd_cmd[i] = joint_cmd.kd
+            pub_pos[i] = joint_cmd.position
+            pub_vel[i] = joint_cmd.velocity
+            self.arm_tau_ff[i] = joint_cmd.torque
+
+        self.arm_pos_cmd.flat = pub_pos * ARM_DIR + ARM_OFFSET_RAD
+        self.arm_vel_cmd.flat = pub_vel * ARM_DIR
+        self.arm_cmd_valid = True
 
     def start(self):
         # 主模拟循环
@@ -163,13 +245,32 @@ class MuJoCoSimulationNode(Node):
 
     def _apply_joint_torque(self):
         # 当前关节状态
-        q = self.data.qpos[7:7 + self.dof_num].reshape(-1, 1)
-        dq = self.data.qvel[6:6 + self.dof_num].reshape(-1, 1)
-        self.input_tq = (
-                self.kp_cmd * (self.pos_cmd - q) +
-                self.kd_cmd * (self.vel_cmd - dq) +
+        q = self.data.qpos[7:7 + TOTAL_DOF].reshape(-1, 1)
+        dq = self.data.qvel[6:6 + TOTAL_DOF].reshape(-1, 1)
+
+        # legs
+        self.input_tq[:LEG_DOF] = (
+                self.kp_cmd * (self.pos_cmd - q[:LEG_DOF]) +
+                self.kd_cmd * (self.vel_cmd - dq[:LEG_DOF]) +
                 self.tau_ff
         )
+
+        # arm/gripper: use the default hold until the first command arrives
+        arm_q = q[LEG_DOF:]
+        arm_dq = dq[LEG_DOF:]
+        if self.arm_cmd_valid:
+            kp = self.arm_kp_cmd
+            kd = self.arm_kd_cmd
+            pos = self.arm_pos_cmd
+            vel = self.arm_vel_cmd
+            tau = self.arm_tau_ff
+        else:
+            kp = ARM_DEFAULT_KP.reshape(-1, 1)
+            kd = ARM_DEFAULT_KD.reshape(-1, 1)
+            pos = ARM_INIT.reshape(-1, 1)
+            vel = np.zeros_like(arm_q)
+            tau = np.zeros_like(arm_q)
+        self.input_tq[LEG_DOF:] = kp * (pos - arm_q) + kd * (vel - arm_dq) + tau
 
         # 写入 control 缓冲区
         self.data.ctrl[:] = self.input_tq.flatten()
@@ -199,7 +300,6 @@ class MuJoCoSimulationNode(Node):
         return np.array([roll, pitch, yaw], dtype=np.float32)
 
     # --------------------------------------------------------
-
     def _publish_robot_state(self, step: int):
         # ----- IMU -----
         q_world = self.data.sensordata[:4]  # quaternion (w, x, y, z) in MuJoCo convention
@@ -232,29 +332,29 @@ class MuJoCoSimulationNode(Node):
         imu_msg.data.acc_z = float(body_acc[2])
         self.imu_pub.publish(imu_msg)
 
-        # ----- 关节 -----
-        q = self.data.qpos[7:7 + self.dof_num]
-        dq = self.data.qvel[6:6 + self.dof_num]
-        tau = self.input_tq.flatten()
+        # ----- legs -----
+        q = self.data.qpos[7:7 + LEG_DOF]
+        dq = self.data.qvel[6:6 + LEG_DOF]
+        tau = self.input_tq[:LEG_DOF].flatten()
 
         # Convert raw to published: published = (raw - offset_rad) * dir
         pub_pos = (q - POS_OFFSET_RAD) * JOINT_DIR
         pub_vel = dq * JOINT_DIR
         pub_tau = tau * JOINT_DIR  # Torque also needs direction flip
-        
-        joints_msg = JointsData()
-        joints_msg.header = MetaType()
-        joints_msg.header.frame_id = 0
+
+        legs_msg = JointsData()
+        legs_msg.header = MetaType()
+        legs_msg.header.frame_id = 0
         stamp = Time()
         sec = int(self.timestamp)
         nanosec = int((self.timestamp - sec) * 1e9)
         stamp.sec = sec
         stamp.nanosec = nanosec
-        joints_msg.header.stamp = stamp
-        joints_msg.data = JointsDataValue()
-        joints_msg.data.joints_data = [JointData() for _ in range(self.dof_num)]
-        for i in range(self.dof_num):
-            joint = joints_msg.data.joints_data[i]
+        legs_msg.header.stamp = stamp
+        legs_msg.data = JointsDataValue()
+        legs_msg.data.joints_data = [JointData() for _ in range(LEG_DOF)]
+        for i in range(LEG_DOF):
+            joint = legs_msg.data.joints_data[i]
             joint.name = [32, 32, 32, 32]  # Dummy name (four spaces)
             joint.data_id = 0  # Dummy
             joint.status_word = 1  # Normal
@@ -263,7 +363,39 @@ class MuJoCoSimulationNode(Node):
             joint.velocity = float(pub_vel[i])
             joint.motion_temp = 40.0  # Dummy normal temp
             joint.driver_temp = 45.0  # Dummy normal temp
-        self.joints_pub.publish(joints_msg)
+        self.joints_pub.publish(legs_msg)
+
+        # ----- arm / gripper (raw) -----
+        arm_q = self.data.qpos[7 + LEG_DOF:7 + TOTAL_DOF]
+        arm_dq = self.data.qvel[6 + LEG_DOF:6 + TOTAL_DOF]
+        arm_tau = self.input_tq[LEG_DOF:].flatten()
+
+        pub_arm_pos = (arm_q - ARM_OFFSET_RAD) * ARM_DIR
+        pub_arm_vel = arm_dq * ARM_DIR
+        pub_arm_tau = arm_tau * ARM_DIR
+
+        arm_msg = JointsData()
+        arm_msg.header = MetaType()
+        arm_msg.header.frame_id = 0
+        stamp = Time()
+        sec = int(self.timestamp)
+        nanosec = int((self.timestamp - sec) * 1e9)
+        stamp.sec = sec
+        stamp.nanosec = nanosec
+        arm_msg.header.stamp = stamp
+        arm_msg.data = JointsDataValue()
+        arm_msg.data.joints_data = [JointData() for _ in range(ARM_DOF)]
+        for i in range(ARM_DOF):
+            joint = arm_msg.data.joints_data[i]
+            joint.name = [32, 32, 32, 32]  # Dummy name (four spaces)
+            joint.data_id = 0  # Dummy
+            joint.status_word = 1  # Normal
+            joint.position = float(pub_arm_pos[i])
+            joint.torque = float(pub_arm_tau[i])
+            joint.velocity = float(pub_arm_vel[i])
+            joint.motion_temp = 40.0  # Dummy normal temp
+            joint.driver_temp = 45.0  # Dummy normal temp
+        self.arm_joints_pub.publish(arm_msg)
 
 
 if __name__ == "__main__":
