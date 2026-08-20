@@ -105,6 +105,67 @@ python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 > - wasd：forward/leftward/backward/rightward
 > - qe：clockwise/counter clockwise
 
+## Sim-to-sim with M20 + Piper arm (new RL policy)
+
+This variant deploys the new Isaac Lab policy that controls the M20 legs/wheels
+while a separate node drives the AgileX Piper arm through end-effector IK
+(pyAgxArm MDH + DLS, matching the training's `DifferentialIKController`).
+
+```
+graph LR
+    A["/rl_deploy"] -->|/JOINTS_CMD (16 legs)| B["/mujoco_simulation"]
+    A -->|/ARM_TELEOP| C["/arm_controller"]
+    C -->|/ARM_JOINTS_CMD (8 arm/gripper)| B
+    B -->|/IMU_DATA, /JOINTS_DATA, /ARM_JOINTS_DATA| A
+    C -->|/ARM_TELEOP_STATE (ee goal for obs)| A
+```
+
+The drdds messages are **unchanged** (16 joints); the arm uses separate topics,
+so the same build stays compatible with the real M20 SDK path.
+
+### Prerequisites
+
+Place your exported policy at `policy/m20_piper_policy.onnx`:
+
+- input name: `obs`, output name: `actions` (see `scripts/pt_to_onnx.py`)
+- expected observation layout (79 dims): base angular velocity (3),
+  projected gravity (3), velocity command (3), joint positions rel. default
+  (22: 12 legs + 4 wheels zeroed + 6 arm), joint velocities (22), last action
+  (16, processed), ee goal (7: pos + quat wxyz), body pose (3: height/pitch/roll)
+- action dim: 16 (12 leg position targets + 4 wheel velocity targets)
+
+`arm_controller.py` uses the Piper MDH table from `pyAgxArm` when installed and
+falls back to an embedded copy otherwise.
+
+### Run (3 terminals)
+
+```bash
+# Terminal 1
+export ROS_DOMAIN_ID=1
+source install/setup.bash
+ros2 run m20_sdk_deploy rl_deploy
+
+# Terminal 2
+export ROS_DOMAIN_ID=1
+source install/setup.bash
+python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
+
+# Terminal 3
+export ROS_DOMAIN_ID=1
+source install/setup.bash
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py
+```
+
+### Additional key mapping (stdin keyboard)
+
+- H / J: body height up / down (m)
+- B / N: body pitch + / − (rad)
+- `[` / `]`: body roll + / − (rad)
+- Numpad (NumLock ON): 8/2 EE x, 4/6 EE y, 7/9 EE z,
+  1/3 EE roll, 0/. EE pitch, +/− EE yaw
+- G: gripper open/close toggle
+- L: reset body pose + arm teleop target
+
 
 # Sim-to-Real
 This process is almost identical to simulation-simulation. You only need to add the step of connecting to Wi-Fi to transfer data, and then modify the compilation instructions.Real-robot control is divided into keyboard mode and gamepad control mode. You need to modify the RemoteCommandType parameter in the main function to select the desired mode.
@@ -165,4 +226,3 @@ ros2 run m20_sdk_deploy rl_deploy
 - R2： joint damping
 - Left joystick：forward/leftward/backward/rightward
 - Right joystick：clockwise/counter clockwise
-
