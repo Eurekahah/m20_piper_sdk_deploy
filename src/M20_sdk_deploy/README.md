@@ -242,6 +242,28 @@ the leg/arm command buffers inside the MuJoCo node.
 When VR is active after pressing B, the arm hub follows the VR controller and
 ignores keyboard arm keys, and rl_deploy follows VR for legs/body.
 
+### M20+Piper real arm (sim2real transport)
+
+On real hardware the same high-level nodes are used; only the arm transport
+changes. The AgileX Piper is driven by the external `agx_arm_ros` workspace
+(Jetson AGX Orin + CAN) instead of MuJoCo:
+
+```bash
+# 1. CAN + agx driver (external workspace, fast_mode for direct move_js servo)
+source ~/agx_arm_ws/install/setup.bash
+ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py \
+  can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true
+
+# 2. transport adapter (same ROS_DOMAIN_ID)
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py
+```
+
+`arm_real_adapter.py` maps `arm_joint1..6 + gripper_joint1/2` to the agx
+`/control/joint_states` protocol (`joint1..6` raw rad + `gripper` width, with
+width = q6 - q7) and maps `/feedback/joint_states` back into `/ARM_JOINTS_DATA`
+so arm_controller and rl_deploy need no code change. The rest of the teleop
+stack (arm_controller + arm_teleop + VR) is identical to the sim flow.
+
 
 # Sim-to-Real
 This process is almost identical to simulation-simulation. You only need to add the step of connecting to Wi-Fi to transfer data, and then modify the compilation instructions.Real-robot control is divided into keyboard mode and gamepad control mode. You need to modify the RemoteCommandType parameter in the main function to select the desired mode.
