@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Standalone arm teleop node (keyboard).
+Standalone arm teleop hub (keyboard + VR).
 
 Owns the /ARM_TELEOP publisher so arm/gripper commands are independent of the
 rl_deploy leg state machine. Run it in its own terminal whenever the arm is
@@ -8,7 +8,12 @@ driven by keyboard:
 
     python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py
 
-Key bindings intentionally match the existing deploy keyboard layout
+When /VR_TELEOP reports an active VR session (operator pressed B), the hub
+switches to mode 1 (absolute-offset VR commands) and the keyboard arm keys are
+ignored. This keeps a single publisher on /ARM_TELEOP while both input sources
+are wired.
+
+Keyboard bindings intentionally match the existing deploy keyboard layout
 (numpad EE + G/L); mode keys (R/Z/C/X) stay with rl_deploy.
 
   Numpad 8/2 : EE x +/-
@@ -33,9 +38,16 @@ from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 
 from arm_teleop_protocol import (
-    ARM_TELEOP_GRIPPER_IDX,
-    ARM_TELEOP_LEN,
     make_incremental,
+    make_absolute_offset,
+)
+from vr_teleop_protocol import (
+    VR_ACTIVE_IDX,
+    VR_CALIBRATE_IDX,
+    VR_EE_EULER_START,
+    VR_EE_POS_START,
+    VR_GRIPPER_IDX,
+    VR_RESET_IDX,
 )
 
 EE_POS_STEP = 0.005   # m per 5 ms repeat (same as deploy keyboard)
@@ -71,10 +83,20 @@ class ArmTeleopNode(Node):
         self.gripper_closed = False
         self.ee_reset_pending = 0.0
 
+        # latest VR arm snapshot (mode 1 absolute-offset)
+        self.vr_active = False
+        self.vr_ee_off = [0.0] * 6
+        self.vr_gripper = -1.0
+        self.vr_calibrate_pulse = False
+        self.vr_calib_prev = False
+        self.vr_reset_prev = False
+
         self._setup_stdin()
         self.print_help()
 
         self.create_timer(TICK_PERIOD_S, self._tick)
+        self.vr_teleop_sub = self.create_subscription(
+            Float32MultiArray, '/VR_TELEOP', self._vr_teleop_cb, 10)
 
     def _setup_stdin(self):
         self._old_attr = termios.tcgetattr(sys.stdin.fileno())
@@ -92,7 +114,31 @@ class ArmTeleopNode(Node):
         print("  G gripper toggle, L reset arm target + open gripper")
         print("  ESC to stop this node")
         print("  (NumLock ON; mode keys R/Z/C/X belong to rl_deploy)")
+        print("  (VR active after pressing B overrides the keyboard arm keys)")
         print("=" * 52 + "\n")
+
+    def _vr_teleop_cb(self, msg):
+        if len(msg.data) < 16:
+            return
+        self.vr_active = msg.data[VR_ACTIVE_IDX] > 0.5
+        for i in range(6):
+            if i < 3:
+                self.vr_ee_off[i] = msg.data[VR_EE_POS_START + i]
+            else:
+                self.vr_ee_off[i] = msg.data[VR_EE_EULER_START + (i - 3)]
+        self.vr_gripper = msg.data[VR_GRIPPER_IDX]
+
+        calib = msg.data[VR_CALIBRATE_IDX] > 0.5
+        if calib and not self.vr_calib_prev:
+            self.vr_calibrate_pulse = True
+        self.vr_calib_prev = calib
+
+        reset = msg.data[VR_RESET_IDX] > 0.5
+        if reset and not self.vr_reset_prev:
+            # sim reset will restore the arm; tell arm_controller to re-anchor
+            # to the fresh pose on the next absolute-offset command
+            self.vr_calibrate_pulse = True
+        self.vr_reset_prev = reset
 
     def _read_keys(self):
         while select.select([sys.stdin], [], [], 0.0)[0]:
@@ -141,16 +187,25 @@ class ArmTeleopNode(Node):
 
     def _tick(self):
         self._read_keys()
-        self._drop_stale_keys()
-        self._compute_ee_inc()
 
-        data = make_incremental(
-            self.ee_inc[0], self.ee_inc[1], self.ee_inc[2],
-            self.ee_inc[3], self.ee_inc[4], self.ee_inc[5],
-            self.gripper_cmd, self.ee_reset_pending,
-        )
-        if self.ee_reset_pending > 0.5:
-            self.ee_reset_pending = 0.0
+        if self.vr_active:
+            data = make_absolute_offset(
+                self.vr_ee_off[0], self.vr_ee_off[1], self.vr_ee_off[2],
+                self.vr_ee_off[3], self.vr_ee_off[4], self.vr_ee_off[5],
+                self.vr_gripper,
+                1.0 if self.vr_calibrate_pulse else 0.0,
+            )
+            self.vr_calibrate_pulse = False
+        else:
+            self._drop_stale_keys()
+            self._compute_ee_inc()
+            data = make_incremental(
+                self.ee_inc[0], self.ee_inc[1], self.ee_inc[2],
+                self.ee_inc[3], self.ee_inc[4], self.ee_inc[5],
+                self.gripper_cmd, self.ee_reset_pending,
+            )
+            if self.ee_reset_pending > 0.5:
+                self.ee_reset_pending = 0.0
 
         msg = Float32MultiArray()
         msg.data = [float(v) for v in data]
