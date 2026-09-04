@@ -173,6 +173,10 @@ class ArmTeleopNode(Node):
                 self.get_logger().info("ESC pressed, stopping")
                 self._restore_stdin()
                 raise SystemExit(0)
+            elif self.vr_active:
+                # VR owns the arm while active; keep the keyboard state clean
+                # so handing control back does not replay stale keys.
+                continue
             elif k == 'g':
                 self.gripper_closed = not self.gripper_closed
                 self.gripper_cmd = 1.0 if self.gripper_closed else 0.0

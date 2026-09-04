@@ -203,8 +203,10 @@ private:
                     continue;
                 }
 
-                // Body pose keys (increment while held / repeated)
-                if (body_keys_.count(k)) {
+                // Body pose keys (increment while held / repeated). While an
+                // external source (VR) is active it owns body pose, so keep the
+                // keyboard base untouched to avoid a jump on handover.
+                if (body_keys_.count(k) && !IsRemoteActive()) {
                     handle_body_key(k);
                     continue;
                 }
