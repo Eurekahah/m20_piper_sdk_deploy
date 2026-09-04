@@ -131,9 +131,13 @@ while a separate node drives the AgileX Piper arm through end-effector IK
 ```
 graph LR
     A["/rl_deploy"] -->|/JOINTS_CMD (16 legs)| B["/mujoco_simulation"]
-    A -->|/ARM_TELEOP| C["/arm_controller"]
+    D["/arm_teleop (keyboard/VR hub)"] -->|/ARM_TELEOP| C["/arm_controller"]
+    D -->|/reset_sim| B
+    E["/vr_teleop (XLeVR)"] -->|/VR_TELEOP| A
+    E -->|/VR_TELEOP| D
     C -->|/ARM_JOINTS_CMD (8 arm/gripper)| B
     B -->|/IMU_DATA, /JOINTS_DATA, /ARM_JOINTS_DATA| A
+    B -->|/ARM_JOINTS_DATA| C
     C -->|/ARM_TELEOP_STATE (ee goal for obs)| A
 ```
 
@@ -166,7 +170,7 @@ full model with `scripts/export_history_policy_onnx.py` whenever you retrain.
 `arm_controller.py` uses the Piper MDH table from `pyAgxArm` when installed and
 falls back to an embedded copy otherwise.
 
-### Run (3 terminals)
+### Run (teleop variant: 4 terminals, plus VR if needed)
 
 ```bash
 # Terminal 1
@@ -183,17 +187,60 @@ python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 export ROS_DOMAIN_ID=1
 source install/setup.bash
 python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py
+
+# Terminal 4 (arm keyboard; required to move the arm)
+export ROS_DOMAIN_ID=1
+source install/setup.bash
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py
 ```
 
-### Additional key mapping (stdin keyboard)
+The arm is driven by the standalone `arm_teleop` hub, not by rl_deploy, so it
+can be moved even before the legs enter RL mode. rl_deploy only reads the
+`/ARM_TELEOP_STATE` EE goal for the policy observation.
 
-- H / J: body height up / down (m)
-- B / N: body pitch + / − (rad)
-- `[` / `]`: body roll + / − (rad)
+### VR teleoperation (optional, Terminal 5)
+
+```bash
+# Terminal 5 (only when using the VR headset)
+export ROS_DOMAIN_ID=1
+source install/setup.bash
+python3 src/M20_sdk_deploy/interface/robot/simulation/vr_teleop_node.py
+```
+
+Install the Python deps first (container):
+
+```bash
+pip3 install -r src/M20_sdk_deploy/requirements_teleop.txt
+```
+
+Open the printed `https://<ip>:8443` page in the headset browser. Press right B
+to start and re-calibrate; left X/Y reset the simulation to its default pose
+via the `/reset_sim` service.
+
+### Simulation reset service
+
+```bash
+ros2 service call /reset_sim std_srvs/srv/Empty
+```
+
+Restores the robot to the default standing pose, zeroes velocities and clears
+the leg/arm command buffers inside the MuJoCo node.
+
+### Arm keyboard mapping (arm_teleop terminal)
+
 - Numpad (NumLock ON): 8/2 EE x, 4/6 EE y, 7/9 EE z,
   1/3 EE roll, 0/. EE pitch, +/− EE yaw
 - G: gripper open/close toggle
 - L: reset body pose + arm teleop target
+
+### Leg/body keyboard mapping (rl_deploy terminal)
+
+- R/Z/C/X: joint damping / stand up / RL control / lie down
+- WASD/QE: forward/back, left/right, turn left/right
+- H/J: body height up/down; B/N: body pitch ±; `[`/`]`: body roll ±
+
+When VR is active after pressing B, the arm hub follows the VR controller and
+ignores keyboard arm keys, and rl_deploy follows VR for legs/body.
 
 
 # Sim-to-Real
