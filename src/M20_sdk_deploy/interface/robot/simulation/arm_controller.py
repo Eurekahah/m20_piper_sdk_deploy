@@ -16,7 +16,9 @@
  *
  * Topics:
  *   subscribe /ARM_TELEOP      std_msgs/Float32MultiArray
- *                              [dx,dy,dz, droll,dpitch,dyaw, gripper, ee_reset]
+ *                              new 9-float protocol (arm_teleop_protocol.py)
+ *                              mode 0: incremental keyboard command
+ *                              mode 1: absolute-offset VR command
  *   subscribe /ARM_JOINTS_DATA drdds/msg/JointsData   (8 current joints)
  *   publish   /ARM_JOINTS_CMD  drdds/msg/JointsDataCmd (8 target joints)
  *   publish   /ARM_TELEOP_STATE std_msgs/Float32MultiArray
@@ -35,6 +37,16 @@ import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
 from drdds.msg import JointsData, JointsDataCmd
+
+from arm_teleop_protocol import (
+    ARM_TELEOP_LEN,
+    ARM_TELEOP_MODE_ABSOLUTE,
+    ARM_TELEOP_EULER_START,
+    ARM_TELEOP_FLAG_IDX,
+    ARM_TELEOP_GRIPPER_IDX,
+    ARM_TELEOP_MODE_IDX,
+    ARM_TELEOP_POS_START,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -248,6 +260,14 @@ class ArmController(Node):
             Float32MultiArray, '/ARM_TELEOP_STATE', 10)
 
         self.timer = self.create_timer(0.02, self._tick)  # 50 Hz
+
+        # Anchor state used by mode 1 (absolute-offset / VR):
+        # target = anchor + controller offset, with the anchor captured from
+        # the actual robot pose on ee_recalibrate.
+        self.anchor_pos, self.anchor_R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
+        self.anchor_quat = mat_to_quat(self.anchor_R)
+        self.abs_anchor_initialized = False
+
         self.get_logger().info(
             "[arm_controller] started (MDH FK + DLS IK, 50 Hz)")
 
@@ -258,30 +278,80 @@ class ArmController(Node):
             self.cur_gripper = q[6:]
 
     def _teleop_cb(self, msg):
-        if len(msg.data) < 8:
+        if len(msg.data) < ARM_TELEOP_LEN:
+            # backwards-compatible 8-float incremental message (no mode field)
+            if len(msg.data) < 8:
+                return
+            data = msg.data
+            self._apply_incremental(
+                data[0], data[1], data[2],
+                data[3], data[4], data[5],
+                data[6], data[7],
+            )
             return
-        dx, dy, dz = msg.data[0], msg.data[1], msg.data[2]
-        droll, dpitch, dyaw = msg.data[3], msg.data[4], msg.data[5]
-        gripper_cmd = msg.data[6]
-        ee_reset = msg.data[7]
 
+        mode = msg.data[ARM_TELEOP_MODE_IDX]
+        dx, dy, dz = msg.data[ARM_TELEOP_POS_START:ARM_TELEOP_POS_START + 3]
+        droll, dpitch, dyaw = msg.data[
+            ARM_TELEOP_EULER_START:ARM_TELEOP_EULER_START + 3]
+        gripper_cmd = msg.data[ARM_TELEOP_GRIPPER_IDX]
+        flag = msg.data[ARM_TELEOP_FLAG_IDX]
+
+        if mode > 0.5:
+            self._apply_absolute_offset(dx, dy, dz, droll, dpitch, dyaw,
+                                        gripper_cmd, flag)
+        else:
+            self._apply_incremental(dx, dy, dz, droll, dpitch, dyaw,
+                                    gripper_cmd, flag)
+
+    def _apply_incremental(self, dx, dy, dz, droll, dpitch, dyaw,
+                           gripper_cmd, ee_reset):
+        """Legacy keyboard semantics: integrate per-tick deltas."""
         if ee_reset > 0.5:
             pos, R = fk_pose(PIPER_MDH, self.cur_joints)
             self.target_pos = pos
             self.target_R = R
             self.target_quat = mat_to_quat(R)
+            self.abs_anchor_initialized = False
         else:
             self.target_pos += np.array([dx, dy, dz])
             dq = quat_from_euler(droll, dpitch, dyaw)
             self.target_quat = quat_multiply(dq, self.target_quat)
             self.target_R = quat_to_mat(self.target_quat)
 
+        self._clamp_and_gripper(gripper_cmd)
+
+    def _apply_absolute_offset(self, dx, dy, dz, droll, dpitch, dyaw,
+                               gripper_cmd, recalibrate):
+        """
+        VR semantics: target = anchor + controller offset.
+
+        The anchor is captured from the actual robot pose on the first absolute
+        message or whenever the operator presses recalibrate (B). Between
+        recalibrations a stationary controller therefore keeps the target
+        still, and hand drift is not integrated into the target.
+        """
+        if recalibrate > 0.5 or not self.abs_anchor_initialized:
+            pos, R = fk_pose(PIPER_MDH, self.cur_joints)
+            self.anchor_pos = pos
+            self.anchor_R = R
+            self.anchor_quat = mat_to_quat(R)
+            self.abs_anchor_initialized = True
+
+        self.target_pos = self.anchor_pos + np.array([dx, dy, dz])
+        dq = quat_from_euler(droll, dpitch, dyaw)
+        self.target_quat = quat_multiply(dq, self.anchor_quat)
+        self.target_R = quat_to_mat(self.target_quat)
+
+        self._clamp_and_gripper(gripper_cmd)
+
+    def _clamp_and_gripper(self, gripper_cmd):
         self.target_pos = np.clip(self.target_pos,
                                   [c[0] for c in EE_POS_CLAMP],
                                   [c[1] for c in EE_POS_CLAMP])
-
         if gripper_cmd >= 0.0:
-            self.gripper_target = GRIPPER_OPEN if gripper_cmd >= 0.5 else GRIPPER_CLOSED
+            self.gripper_target = (
+                GRIPPER_OPEN if gripper_cmd >= 0.5 else GRIPPER_CLOSED)
 
     def _tick(self):
         # solve IK from the current (feedback) joint angles
