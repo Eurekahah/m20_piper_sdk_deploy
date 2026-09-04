@@ -265,13 +265,18 @@ private:
                 if (held_keys_.count('-')) ee_inc_[5] -= ee_orn_step_;
             }
             
-            usr_cmd_->forward_vel_scale  = fwd;
-            usr_cmd_->side_vel_scale     = side;
-            usr_cmd_->turnning_vel_scale = yaw;
-            usr_cmd_->body_height = body_height_;
-            usr_cmd_->body_pitch  = body_pitch_;
-            usr_cmd_->body_roll   = body_roll_;
-            for (int i = 0; i < 6; ++i) usr_cmd_->ee_inc[i] = ee_inc_[i];
+            // While an external source (VR) is active it owns the velocity and
+            // body-pose fields; keep the keyboard's internal state but do not
+            // overwrite the remote command every 5 ms.
+            if (!IsRemoteActive()) {
+                usr_cmd_->forward_vel_scale  = fwd;
+                usr_cmd_->side_vel_scale     = side;
+                usr_cmd_->turnning_vel_scale = yaw;
+                usr_cmd_->body_height = body_height_;
+                usr_cmd_->body_pitch  = body_pitch_;
+                usr_cmd_->body_roll   = body_roll_;
+                for (int i = 0; i < 6; ++i) usr_cmd_->ee_inc[i] = ee_inc_[i];
+            }
 
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
         }

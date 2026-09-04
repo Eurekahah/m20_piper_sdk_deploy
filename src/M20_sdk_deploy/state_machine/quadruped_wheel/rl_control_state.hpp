@@ -50,6 +50,18 @@ namespace qw {
         std::array<float, 7> ee_goal_{0.1092f, 0.0f, 0.3439f,   // pos
                                       0.7373f, 0.0f, 0.6756f, 0.0f};  // quat wxyz
 
+        // VR leg/body teleop (published by vr_teleop_node at 50 Hz)
+        std::mutex vr_mutex_;
+        rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr vr_teleop_sub_;
+        std::atomic<bool> vr_active_{false};
+        bool vr_calibrate_ = false;
+        bool vr_calib_prev_ = false;
+        bool vr_anchor_valid_ = false;
+        bool vr_reset_prev_ = false;
+        float vr_vel_[3] = {0.f, 0.f, 0.f};
+        float vr_body_off_[3] = {0.f, 0.f, 0.f};
+        float vr_body_anchor_[3] = {0.513f, 0.f, 0.f};  // height/pitch/roll
+
         Eigen::MatrixXf acc_rot = Eigen::MatrixXf::Zero(20, 3);
         int acc_rot_count = 0;
 
@@ -78,6 +90,39 @@ namespace qw {
             rbs_write_index_.store(1 - write_idx,  std::memory_order_release);
         }
 
+        void ApplyVrCommand(UserCommand* uc) {
+            if (!vr_active_.load()) return;
+
+            std::lock_guard<std::mutex> lock(vr_mutex_);
+            if (vr_calibrate_ || !vr_anchor_valid_) {
+                // re-anchor body pose to the current commanded target so the
+                // VR controller offset does not cause a jump on B press
+                vr_body_anchor_[0] = uc->body_height;
+                vr_body_anchor_[1] = uc->body_pitch;
+                vr_body_anchor_[2] = uc->body_roll;
+                vr_anchor_valid_ = true;
+                vr_calibrate_ = false;
+                std::cout << "[VR] body anchor = "
+                          << vr_body_anchor_[0] << " / "
+                          << vr_body_anchor_[1] << " / "
+                          << vr_body_anchor_[2]
+                          << ", applying vr_vel = "
+                          << vr_vel_[0] << " / " << vr_vel_[1] << " / "
+                          << vr_vel_[2] << std::endl;
+            }
+
+            uc->forward_vel_scale = vr_vel_[0];
+            uc->side_vel_scale = vr_vel_[1];
+            uc->turnning_vel_scale = vr_vel_[2];
+
+            uc->body_height = std::clamp(vr_body_anchor_[0] + vr_body_off_[0],
+                                         0.33f, 0.60f);
+            uc->body_pitch = std::clamp(vr_body_anchor_[1] + vr_body_off_[1],
+                                        -0.35f, 0.35f);
+            uc->body_roll = std::clamp(vr_body_anchor_[2] + vr_body_off_[2],
+                                       -0.25f, 0.25f);
+        }
+
         void PolicyRunner() {
             int run_cnt_record = -1;
             while (start_flag_) {
@@ -85,10 +130,11 @@ namespace qw {
                     timespec start_timestamp, end_timestamp;
                     clock_gettime(CLOCK_MONOTONIC, &start_timestamp);
 
+                    UserCommand* uc = uc_ptr_->GetUserCommand();
+
                     // refresh the absolute EE goal from arm_controller feedback (obs)
                     {
                         std::lock_guard<std::mutex> lock(ee_mutex_);
-                        UserCommand* uc = uc_ptr_->GetUserCommand();
                         uc->ee_goal_pos[0] = ee_goal_[0];
                         uc->ee_goal_pos[1] = ee_goal_[1];
                         uc->ee_goal_pos[2] = ee_goal_[2];
@@ -98,7 +144,10 @@ namespace qw {
                         uc->ee_goal_quat[3] = ee_goal_[6];
                     }
 
-                    auto ra = policy_ptr_->getRobotAction(rbs_[getrbsReadIndex()], *(uc_ptr_->GetUserCommand()));
+                    // VR owns velocity/body fields while active
+                    ApplyVrCommand(uc);
+
+                    auto ra = policy_ptr_->getRobotAction(rbs_[getrbsReadIndex()], *uc);
 
                     MatXf res = ra.ConvertToMat();
 
@@ -137,6 +186,36 @@ namespace qw {
                         if (msg->data.size() >= 7) {
                             std::lock_guard<std::mutex> lock(ee_mutex_);
                             for (int i = 0; i < 7; ++i) ee_goal_[i] = msg->data[i];
+                        }
+                    });
+
+                vr_teleop_sub_ = node->create_subscription<std_msgs::msg::Float32MultiArray>(
+                    "/VR_TELEOP", 10,
+                    [this](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
+                        // layout in vr_teleop_protocol.py (16 floats)
+                        if (msg->data.size() < 16) return;
+                        bool active = msg->data[13] > 0.5f;
+                        {
+                            std::lock_guard<std::mutex> lock(vr_mutex_);
+                            vr_active_ = active;
+                            // calibrate/reset are edge-triggered pulses so a
+                            // repeated 1 in the stream cannot re-anchor every tick
+                            bool calib = msg->data[14] > 0.5f;
+                            if (calib && !vr_calib_prev_) vr_calibrate_ = true;
+                            vr_calib_prev_ = calib;
+                            bool reset = msg->data[15] > 0.5f;
+                            if (reset && !vr_reset_prev_) vr_anchor_valid_ = false;
+                            vr_reset_prev_ = reset;
+                            for (int i = 0; i < 3; ++i) {
+                                vr_vel_[i] = msg->data[i];
+                                vr_body_off_[i] = msg->data[9 + i];
+                            }
+                        }
+                        // while VR is active the keyboard must not overwrite
+                        // velocity/body fields
+                        uc_ptr_->SetRemoteActive(active);
+                        if (active) {
+                            ApplyVrCommand(uc_ptr_->GetUserCommand());
                         }
                     });
             }
