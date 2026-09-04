@@ -36,6 +36,7 @@ import tty
 import rclpy
 from rclpy.node import Node
 from std_msgs.msg import Float32MultiArray
+from std_srvs.srv import Empty
 
 from arm_teleop_protocol import (
     make_incremental,
@@ -90,6 +91,7 @@ class ArmTeleopNode(Node):
         self.vr_calibrate_pulse = False
         self.vr_calib_prev = False
         self.vr_reset_prev = False
+        self.reset_warned = False
 
         self._setup_stdin()
         self.print_help()
@@ -97,6 +99,7 @@ class ArmTeleopNode(Node):
         self.create_timer(TICK_PERIOD_S, self._tick)
         self.vr_teleop_sub = self.create_subscription(
             Float32MultiArray, '/VR_TELEOP', self._vr_teleop_cb, 10)
+        self.sim_reset_client = self.create_client(Empty, '/reset_sim')
 
     def _setup_stdin(self):
         self._old_attr = termios.tcgetattr(sys.stdin.fileno())
@@ -138,7 +141,22 @@ class ArmTeleopNode(Node):
             # sim reset will restore the arm; tell arm_controller to re-anchor
             # to the fresh pose on the next absolute-offset command
             self.vr_calibrate_pulse = True
+            self._request_sim_reset()
         self.vr_reset_prev = reset
+
+    def _request_sim_reset(self):
+        if not self.sim_reset_client.service_is_ready():
+            if not self.reset_warned:
+                self.get_logger().warn(
+                    "[reset] /reset_sim service not available; "
+                    "skipping simulation reset")
+                self.reset_warned = True
+            return
+
+        req = Empty.Request()
+        future = self.sim_reset_client.call_async(req)
+        future.add_done_callback(
+            lambda f: self.get_logger().info("[reset] /reset_sim completed"))
 
     def _read_keys(self):
         while select.select([sys.stdin], [], [], 0.0)[0]:
