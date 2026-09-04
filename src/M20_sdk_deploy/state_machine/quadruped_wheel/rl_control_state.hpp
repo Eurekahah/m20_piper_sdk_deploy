@@ -43,9 +43,8 @@ namespace qw {
 
         float policy_cost_time_ = 1;
 
-        // arm teleop: rl_deploy relays keyboard increments to arm_controller and
+        // arm teleop is owned by the standalone arm_teleop node; rl_deploy only
         // receives back the absolute EE goal (used in the policy obs)
-        rclcpp::Publisher<std_msgs::msg::Float32MultiArray>::SharedPtr arm_teleop_pub_;
         rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr arm_state_sub_;
         std::mutex ee_mutex_;
         std::array<float, 7> ee_goal_{0.1092f, 0.0f, 0.3439f,   // pos
@@ -101,18 +100,6 @@ namespace qw {
 
                     auto ra = policy_ptr_->getRobotAction(rbs_[getrbsReadIndex()], *(uc_ptr_->GetUserCommand()));
 
-                    // relay the keyboard arm teleop to arm_controller:
-                    // [dx, dy, dz, droll, dpitch, dyaw, gripper, ee_reset]
-                    {
-                        UserCommand* uc = uc_ptr_->GetUserCommand();
-                        std_msgs::msg::Float32MultiArray msg;
-                        msg.data = {uc->ee_inc[0], uc->ee_inc[1], uc->ee_inc[2],
-                                    uc->ee_inc[3], uc->ee_inc[4], uc->ee_inc[5],
-                                    uc->gripper_cmd, static_cast<float>(uc->ee_reset)};
-                        arm_teleop_pub_->publish(msg);
-                        uc->ee_reset = 0;
-                    }
-                    
                     MatXf res = ra.ConvertToMat();
 
                     ri_ptr_->SetJointCommand(res);
@@ -144,7 +131,6 @@ namespace qw {
 
                 auto node = ri_ptr_->get_node();
                 arm_ri_ptr_ = std::make_shared<PiperArmInterface>("M20PiperArm", node);
-                arm_teleop_pub_ = node->create_publisher<std_msgs::msg::Float32MultiArray>("/ARM_TELEOP", 10);
                 arm_state_sub_ = node->create_subscription<std_msgs::msg::Float32MultiArray>(
                     "/ARM_TELEOP_STATE", 10,
                     [this](const std_msgs::msg::Float32MultiArray::SharedPtr msg) {
