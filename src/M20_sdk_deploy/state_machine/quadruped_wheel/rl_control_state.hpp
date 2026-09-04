@@ -14,7 +14,7 @@
 #include "m20_policy_runner.hpp"
 #include "m20_piper_policy_runner.hpp"
 #include "robot_interface.h"
-#include "piper_arm_interface.hpp"
+#include "hardware/piper_arm_interface.hpp"
 #include "user_command_interface.h"
 #include "json.hpp"
 #include "basic_function.hpp"

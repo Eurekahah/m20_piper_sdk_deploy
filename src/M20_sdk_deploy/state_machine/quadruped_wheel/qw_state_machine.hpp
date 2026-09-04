@@ -19,6 +19,7 @@
 #include "quadruped_wheel/liedown_state.hpp"
 #include "keyboard_interface.hpp"
 #include "hardware/m20_interface.hpp"
+#include "hardware/m20_sim_interface.hpp"
 #include "udp_server.hpp"
 
 namespace qw{
@@ -57,8 +58,11 @@ public:
         uc_ptr_->SetMotionStateFeedback(&StateBase::msfb_);
 
         if(robot_name_ == RobotName::M20){
-   
+#ifdef SIM2SIM
+            ri_ptr_ = std::make_shared<M20SimInterface>("M20");
+#else
             ri_ptr_ = std::make_shared<M20Interface>("M20");
+#endif
             
             cp_ptr_ = std::make_shared<ControlParameters>(robot_name_);
         }

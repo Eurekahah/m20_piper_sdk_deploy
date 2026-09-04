@@ -36,9 +36,17 @@ XML_PATH = CURRENT_DIR / ".." / ".." / ".." / "M20_Piper_description" / "mjcf" /
 
 # Convert to absolute path as string
 XML_PATH = str(XML_PATH.resolve())
-USE_VIEWER = True
+USE_VIEWER = os.environ.get("M20_USE_VIEWER", "1") == "1"
 DT = 0.001
 RENDER_INTERVAL = 50
+# The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
+# that is marginally unstable at a 1 ms integrator step (the base gyro sees
+# +-2 rad/s alternating values that never appear in the pose). Integrate the
+# physics at 0.2 ms in batches that still advance 1 ms per control tick, so
+# topic rates and policy timing stay unchanged.
+PHYSICS_DT = 0.0002
+SUBSTEPS = int(round(DT / PHYSICS_DT))
+assert abs(PHYSICS_DT * SUBSTEPS - DT) < 1e-12
 
 # ----------------------------------------------------------------------------
 # DOF layout
@@ -55,32 +63,35 @@ ARM_DATA_TOPIC = "/ARM_JOINTS_DATA"
 IMU_TOPIC = "/IMU_DATA"
 
 # ----------------------------------------------------------------------------
-# Calibration parameters for the 16 M20 leg joints.
-# These round-trip with rl_deploy's M20Interface (dir/offset cancel in sim2sim,
-# and match the real robot conventions for later sim2real).
+# Calibration parameters for the 16 M20 leg joints in sim2sim.
+# The M20_Piper MJCF is generated from the same URDF Isaac Lab trains on, so
+# the raw MJCF frame IS the policy frame: use identity calibration (dir=1,
+# offset=0) together with the M20SimInterface in rl_deploy (SIM2SIM build).
 # ----------------------------------------------------------------------------
-JOINT_DIR = np.array([1, 1, -1, 1, 1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1, -1], dtype=np.float32)
-POS_OFFSET_DEG = np.array([-25, 229, 160, 0, 25, -131, -200, 0, -25, -229, -160, 0, 25, 131, 200, 0], dtype=np.float32)
+JOINT_DIR = np.ones(LEG_DOF, dtype=np.float32)
+POS_OFFSET_DEG = np.zeros(LEG_DOF, dtype=np.float32)
 POS_OFFSET_RAD = POS_OFFSET_DEG / 180.0 * np.pi
 
 # The arm/gripper joints are raw rad (dir=1, offset=0) on both sides.
 ARM_DIR = np.ones(ARM_DOF, dtype=np.float32)
 ARM_OFFSET_RAD = np.zeros(ARM_DOF, dtype=np.float32)
 
-# Initial pose: M20 legs start in the official crouched pose, the Piper arm
-# starts in the Isaac Lab default pose (arm2=0.5, arm3=-0.5, gripper closed).
-LEG_INIT = np.array([-0.438, -1.16, 2.76, 0,
-                     0.438, -1.16, 2.76, 0,
-                     -0.438, 1.16, -2.76, 0,
-                     0.438, 1.16, -2.76, 0], dtype=np.float32)
+# Initial pose: M20 legs start at the Isaac Lab default standing pose
+# (hipy +/-0.6, knee -/+1.0 -> base height ~0.53 with wheels on the ground),
+# the Piper arm starts at its default (arm2=0.5, arm3=-0.5, gripper closed).
+LEG_INIT = np.array([0.0, -0.6, 1.0, 0,
+                     0.0, -0.6, 1.0, 0,
+                     0.0, 0.6, -1.0, 0,
+                     0.0, 0.6, -1.0, 0], dtype=np.float32)
 ARM_INIT = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
 JOINT_INIT = np.concatenate([LEG_INIT, ARM_INIT]).astype(np.float32)
 
 # Default arm hold (used until the first /ARM_JOINTS_CMD message arrives, so the
 # arm does not flop around during idle/standup). Gains match the Isaac Lab
-# DelayedPDActuatorCfg (arm: 300/20, gripper: 4000/200).
-ARM_DEFAULT_KP = np.array([300.0] * 6 + [4000.0, 4000.0], dtype=np.float32)
-ARM_DEFAULT_KD = np.array([20.0] * 6 + [200.0, 200.0], dtype=np.float32)
+# actuator config (piper_arm: stiffness 40 / damping 8 / armature 0.01,
+# piper_gripper: stiffness 4000 / damping 200).
+ARM_DEFAULT_KP = np.array([40.0] * 6 + [4000.0, 4000.0], dtype=np.float32)
+ARM_DEFAULT_KD = np.array([8.0] * 6 + [200.0, 200.0], dtype=np.float32)
 
 
 class MuJoCoSimulationNode(Node):
@@ -95,7 +106,7 @@ class MuJoCoSimulationNode(Node):
             raise FileNotFoundError(f"Cannot find MJCF: {xml_path}")
 
         self.model = mujoco.MjModel.from_xml_path(xml_path)
-        self.model.opt.timestep = DT
+        self.model.opt.timestep = PHYSICS_DT
         self.data = mujoco.MjData(self.model)
 
         # 机器人自由度列表
@@ -105,11 +116,15 @@ class MuJoCoSimulationNode(Node):
 
         # 初始化站立姿态
         self._set_initial_pose()
-
         # 缓存 (legs)
-        self.kp_cmd = np.zeros((LEG_DOF, 1), np.float32)
-        self.kd_cmd = np.zeros_like(self.kp_cmd)
-        self.pos_cmd = np.zeros_like(self.kp_cmd)
+        # Hold the initial (policy-default) pose from the very first step, so the
+        # robot does not collapse while rl_deploy is still starting up (the real
+        # robot is also held before the SDK takes over).
+        LEG_HOLD_KP = np.tile(np.array([80., 80., 80., 10.], dtype=np.float32), 4)
+        LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
+        self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
+        self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
+        self.pos_cmd = LEG_INIT.reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 
@@ -120,6 +135,7 @@ class MuJoCoSimulationNode(Node):
         self.arm_vel_cmd = np.zeros_like(self.arm_kp_cmd)
         self.arm_tau_ff = np.zeros_like(self.arm_kp_cmd)
         self.arm_cmd_valid = False   # until first /ARM_JOINTS_CMD message
+        self.step_count_ = 0
 
         self.input_tq = np.zeros((TOTAL_DOF, 1), np.float32)
 
@@ -182,7 +198,6 @@ class MuJoCoSimulationNode(Node):
         if len(msg.data.joints_data) != LEG_DOF:
             self.get_logger().warn("Received JointsDataCmd with incorrect number of leg joints")
             return
-
         pub_pos = np.zeros(LEG_DOF, dtype=np.float32)
         pub_vel = np.zeros(LEG_DOF, dtype=np.float32)
         for i in range(LEG_DOF):
@@ -225,14 +240,15 @@ class MuJoCoSimulationNode(Node):
             if time.time() - last_time >= DT:
                 last_time = time.time()
                 step += 1
-                # 控制律
-                self._apply_joint_torque()
-                # 模拟一步
-                mujoco.mj_step(self.model, self.data)
+                self.step_count_ += 1
+                # 每个 1ms 控制 tick 内做 5 个 0.2ms 物理子步
+                for _ in range(SUBSTEPS):
+                    self._apply_joint_torque()
+                    mujoco.mj_step(self.model, self.data)
 
                 self.timestamp = step * DT
 
-                # 采样 & 发送观测 (every 5 steps for 200 Hz)
+                # 采样 & 发送观测 (every 5 control ticks for 200 Hz)
                 if step % 5 == 0:
                     self._publish_robot_state(step)
 
@@ -304,7 +320,6 @@ class MuJoCoSimulationNode(Node):
         # ----- IMU -----
         q_world = self.data.sensordata[:4]  # quaternion (w, x, y, z) in MuJoCo convention
         rpy_rad = self.quaternion_to_euler(q_world)  # returns [roll, pitch, yaw] in radians
-
         # Convert to degrees
         rpy_deg = [angle * (180.0 / 3.141592653589793) for angle in rpy_rad]
 
@@ -384,7 +399,8 @@ class MuJoCoSimulationNode(Node):
         stamp.nanosec = nanosec
         arm_msg.header.stamp = stamp
         arm_msg.data = JointsDataValue()
-        arm_msg.data.joints_data = [JointData() for _ in range(ARM_DOF)]
+        # JointsDataValue is a fixed 16-element array; fill the first ARM_DOF entries
+        arm_msg.data.joints_data = [JointData() for _ in range(16)]
         for i in range(ARM_DOF):
             joint = arm_msg.data.joints_data[i]
             joint.name = [32, 32, 32, 32]  # Dummy name (four spaces)

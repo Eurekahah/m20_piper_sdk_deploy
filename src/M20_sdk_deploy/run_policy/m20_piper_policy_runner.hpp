@@ -209,17 +209,20 @@ private:
         return v;
     }
 
-    // The USD articulation exposes joints in arm-first order (verified with
-    // usd-core on M20_Piper_own.usd): arm1..6, gripper1..2, then fl/fr/hl/hr.
-    // The history obs uses ALL joints in this USD order.
+    // history_adaptation_full.onnx was trained with the M20_adjusted model,
+    // whose articulation order is: 12 leg joints (per-leg), then the 4 wheels,
+    // then the 8 arm/gripper joints. The history obs uses ALL joints in that
+    // USD order (NOT the arm-first M20_Piper_own order, and NOT the per-leg
+    // wheel-interleaved MJCF order).
     static const std::vector<std::string>& HistoryJointOrder() {
         static const std::vector<std::string> v = {
+            "fl_hipx_joint", "fl_hipy_joint", "fl_knee_joint",
+            "fr_hipx_joint", "fr_hipy_joint", "fr_knee_joint",
+            "hl_hipx_joint", "hl_hipy_joint", "hl_knee_joint",
+            "hr_hipx_joint", "hr_hipy_joint", "hr_knee_joint",
+            "fl_wheel_joint", "fr_wheel_joint", "hl_wheel_joint", "hr_wheel_joint",
             "arm_joint1", "arm_joint2", "arm_joint3", "arm_joint4", "arm_joint5", "arm_joint6",
-            "gripper_joint1", "gripper_joint2",
-            "fl_hipx_joint", "fl_hipy_joint", "fl_knee_joint", "fl_wheel_joint",
-            "fr_hipx_joint", "fr_hipy_joint", "fr_knee_joint", "fr_wheel_joint",
-            "hl_hipx_joint", "hl_hipy_joint", "hl_knee_joint", "hl_wheel_joint",
-            "hr_hipx_joint", "hr_hipy_joint", "hr_knee_joint", "hr_wheel_joint"};
+            "gripper_joint1", "gripper_joint2"};
         return v;
     }
 
@@ -371,6 +374,15 @@ public:
         }
 
         current_action_ = OnnxInfer(current_observation_, history_obs_);
+
+        // Deployment safety: the ONNX can saturate/explode when the history
+        // encoder is pushed out of distribution. Clamp before the value is
+        // used for control and before it is fed back into the next obs.
+        // Legs/wheels: +-3 raw (e.g. wheel velocity +-15 rad/s).
+        // ee_ik actions are not used for control but are fed back as obs, so
+        // clamp them too.
+        constexpr float kActionClip = 3.0f;
+        current_action_ = current_action_.cwiseMin(kActionClip).cwiseMax(-kActionClip);
 
         // last_action obs uses the processed action, like Isaac Lab's
         // action_manager.action: legs default+scale*raw, wheels scale*raw,

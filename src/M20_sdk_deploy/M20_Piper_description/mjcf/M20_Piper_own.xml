@@ -15,17 +15,17 @@
       <motor ctrllimited="true" ctrlrange="-76.4 76.4" />
     </default>
     <default class="wheel_motor">
-      <motor ctrllimited="true" ctrlrange="-21.6 21.6" />
+      <motor ctrllimited="true" ctrlrange="-21.6 21.6" armature="0.00243216" />
     </default>
     <default class="arm_motor">
-      <motor ctrllimited="true" ctrlrange="-100 100" />
+      <motor ctrllimited="true" ctrlrange="-100 100" armature="0.01" />
     </default>
     <default class="gripper_motor">
-      <motor ctrllimited="true" ctrlrange="-10 10" />
+      <motor ctrllimited="true" ctrlrange="-10 10" armature="0.01" />
     </default>
   </default>
 
-  <compiler angle="radian" meshdir="." balanceinertia="true" />
+  <compiler angle="radian" meshdir=".." balanceinertia="true" autolimits="true" />
 
   <visual>
     <global offwidth="3840" offheight="2160" />
@@ -33,6 +33,7 @@
 
   <worldbody>
     <body name="base_link" childclass="robot" pos="0 0 0.5901">
+      <inertial pos="0.003551 0.001651 -0.003465" mass="15.882" diaginertia="0.0880787 0.533816 0.563915" />
       <geom name="base_link_collision_0" type="box" size="0.375 0.045 0.07" class="collision" />
       <geom name="base_link_collision_1" pos="0 0.045 0" quat="0.7071 0 0.7071 0" type="cylinder" size="0.07 0.375" class="collision" />
       <geom name="base_link_collision_2" pos="0 -0.045 0" quat="0.7071 0 0.7071 0" type="cylinder" size="0.07 0.375" class="collision" />

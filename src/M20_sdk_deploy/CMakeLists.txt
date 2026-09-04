@@ -16,6 +16,11 @@ add_compile_options(-fPIC)
 
 # 配置选项
 set(BUILD_PLATFORM "x86" CACHE STRING "Target platform (x86 or arm)")
+option(SIM2SIM "Build for sim-to-sim deployment (identity joint calibration)" OFF)
+
+if(SIM2SIM)
+  add_definitions(-DSIM2SIM)
+endif()
 
 if(BUILD_PLATFORM STREQUAL "arm")
   set(CMAKE_C_COMPILER "aarch64-linux-gnu-gcc")

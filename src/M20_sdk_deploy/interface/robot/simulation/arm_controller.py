@@ -69,7 +69,7 @@ ARM_JOINT_LIMITS = np.array([
 DEFAULT_ARM_JOINTS = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0])
 
 # gains from the Isaac Lab DelayedPDActuatorCfg
-ARM_KP, ARM_KD = 300.0, 20.0
+ARM_KP, ARM_KD = 40.0, 8.0   # matches Isaac Lab piper_arm actuator (stiffness 40 / damping 8)
 GRIPPER_KP, GRIPPER_KD = 4000.0, 200.0
 GRIPPER_OPEN = np.array([0.035, -0.035])
 GRIPPER_CLOSED = np.array([0.0, 0.0])

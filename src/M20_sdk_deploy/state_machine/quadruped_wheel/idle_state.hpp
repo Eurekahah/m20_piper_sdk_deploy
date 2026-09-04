@@ -20,6 +20,7 @@ namespace qw {
         int imu_normal_flag_ = -1;
         bool first_enter_flag_ = true;
         VecXf joint_pos_, joint_vel_, joint_tau_;
+        VecXf hold_joint_pos_;
         Vec3f rpy_, acc_, omg_;
         double enter_state_time_ = 10000.;
         double last_print_time = 0;
@@ -130,6 +131,11 @@ namespace qw {
         virtual void OnEnter() {
             StateBase::msfb_.UpdateCurrentState(RobotMotionState::WaitingForStand);
             enter_state_time_ = ri_ptr_->GetInterfaceTimeStamp();
+            // lock the initial pose so the robot does not collapse while idle
+            GetProprioceptiveData();
+            hold_joint_pos_ = joint_pos_;
+            // hold the wheels at zero so the robot does not roll while idle
+            for (int i = 3; i < 16; i += 4) hold_joint_pos_(i) = 0.f;
         };
 
         virtual void OnExit() {
@@ -145,7 +151,14 @@ namespace qw {
                 DisplayAxisValue();
                 last_print_time = ri_ptr_->GetInterfaceTimeStamp();
             }
+            // hold the current joints (instead of zero gains) so the robot does
+            // not collapse while waiting for the user command
             MatXf cmd = MatXf::Zero(16, 5);
+            VecXf hold_kp = Vec4f(80, 80, 80, 10.).replicate(4, 1);
+            VecXf hold_kd = Vec4f(2, 2, 2, 0.6).replicate(4, 1);
+            cmd.col(0) = hold_kp;
+            cmd.col(1) = hold_joint_pos_;
+            cmd.col(2) = hold_kd;
             ri_ptr_->SetJointCommand(cmd);
         }
 
@@ -171,4 +184,3 @@ namespace qw {
     };
 
 };
-

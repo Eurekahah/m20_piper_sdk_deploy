@@ -65,17 +65,18 @@ private:
 public:
     StandUpState(const RobotName& robot_name, const std::string& state_name, 
         std::shared_ptr<ControllerData> data_ptr):StateBase(robot_name, state_name, data_ptr){
-            goal_joint_pos_ = Vec4f(init_hipx_pos_, GetHipYPosByHeight(cp_ptr_->pre_height_), GetKneePosByHeight(cp_ptr_->pre_height_), 0).replicate(4, 1);
-            goal_joint_pos_(4) = -init_hipx_pos_; goal_joint_pos_(12) = -init_hipx_pos_;
-            // 后髋膝取反
-            goal_joint_pos_(9) = -goal_joint_pos_(9);
-            goal_joint_pos_(10) = -goal_joint_pos_(10);
-            goal_joint_pos_(13) = -goal_joint_pos_(13);
-            goal_joint_pos_(14) = -goal_joint_pos_(14);
+            // goal = the policy default standing pose (matches the Isaac Lab
+            // init_state / USD default: hipy +/-0.6, knee -/+1.0, wheels 0),
+            // so RL control starts from the exact state the policy was trained on.
+            goal_joint_pos_ = Vec4f(0.0, -0.6, 1.0, 0.0).replicate(4, 1);
+            goal_joint_pos_(4) = 0.0; goal_joint_pos_(12) = 0.0;
+            goal_joint_pos_(9) = 0.6; goal_joint_pos_(10) = -1.0;
+            goal_joint_pos_(13) = 0.6; goal_joint_pos_(14) = -1.0;
 
             Vec4f one_leg_kp, one_leg_kd;
-            one_leg_kp << cp_ptr_->swing_leg_kp_, 0;
-            one_leg_kd << cp_ptr_->swing_leg_kd_, 0;
+            // wheels: position-hold at 0 (kp 10) so the robot does not roll
+            one_leg_kp << cp_ptr_->swing_leg_kp_, 10;
+            one_leg_kd << cp_ptr_->swing_leg_kd_, 1;
             kp_ = one_leg_kp.replicate(4, 1);
             kd_ = one_leg_kd.replicate(4, 1);
             joint_cmd_ = MatXf::Zero(16, 5);
@@ -103,44 +104,17 @@ public:
                 planning_joint_vel(i) = GetCubicSplineVel(init_joint_pos_(i), init_joint_vel_(i), goal_joint_pos_(i), 0, 
                                                 run_time_ - time_stamp_record_, stand_duration_);
                 if(i%4==3){
-                    kd_(i) = 0;
+                    planning_joint_vel(i) = 0.0;
                 }
             }
-            
         }else{
-            double new_time = run_time_ - time_stamp_record_ - stand_duration_;
-            float dt = 0.001;
-            float plan_height = GetCubicSplinePos(cp_ptr_->pre_height_, 0, cp_ptr_->stand_height_, 0, 
-                                                new_time, stand_duration_);
-            float plan_height_next = GetCubicSplinePos(cp_ptr_->pre_height_, 0, cp_ptr_->stand_height_, 0, 
-                                                new_time+dt, stand_duration_);
-            float hipy_pos = GetHipYPosByHeight(plan_height);
-            float hipy_vel = (GetHipYPosByHeight(plan_height_next) - hipy_pos) / dt;
-            float knee_pos = GetKneePosByHeight(plan_height);
-            float knee_vel = (GetKneePosByHeight(plan_height_next) - knee_pos) / dt;
-            planning_joint_pos = Vec4f(init_hipx_pos_, hipy_pos, knee_pos, 0).replicate(4, 1);
-            planning_joint_pos(4) = -init_hipx_pos_; planning_joint_pos(12) = -init_hipx_pos_;
-
-            planning_joint_vel = Vec4f(0, hipy_vel, knee_vel, 0).replicate(4, 1);
-
-            // 后髋膝取反
-            planning_joint_pos(9) = -planning_joint_pos(9);
-            planning_joint_pos(10) = -planning_joint_pos(10);
-            planning_joint_pos(13) = -planning_joint_pos(13);
-            planning_joint_pos(14) = -planning_joint_pos(14);
-            planning_joint_vel(9) = -planning_joint_vel(9);
-            planning_joint_vel(10) = -planning_joint_vel(10);
-            planning_joint_vel(13) = -planning_joint_vel(13);
-            planning_joint_vel(14) = -planning_joint_vel(14);
-
-            for(int i=3;i<16;i+=4){
-                kd_(i) = set_wheel_kd_;
-            }
+            // hold the policy default standing pose
+            planning_joint_pos = goal_joint_pos_;
+            planning_joint_vel.setZero();
         }
 
         joint_cmd_.col(1) = planning_joint_pos;
         joint_cmd_.col(3) = planning_joint_vel;
-        joint_cmd_.col(2) = kd_;
         ri_ptr_->SetJointCommand(joint_cmd_);
     }
     virtual bool LoseControlJudge() {

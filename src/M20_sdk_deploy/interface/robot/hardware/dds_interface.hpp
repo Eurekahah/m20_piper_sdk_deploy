@@ -217,7 +217,6 @@ public:
             msg.data.joints_data[i].kd = input(i, 2);
             msg.data.joints_data[i].control_word = kIndexMotorControl;
         }
-        std::cout << "SetJointCommand publish!! \n" << std::endl;
         joint_cmd_pub_->publish(msg);
     }
 

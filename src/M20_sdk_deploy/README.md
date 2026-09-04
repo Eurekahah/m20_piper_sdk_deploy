@@ -79,8 +79,12 @@ git clone https://github.com/DeepRoboticsLab/sdk_deploy.git
 # Compile
 cd sdk_deploy
 source /opt/ros/<ros-distro>/setup.bash
-colcon build --packages-up-to m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86
+colcon build --packages-up-to m20_sdk_deploy \
+  --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON
 ```
+
+`-DSIM2SIM=ON` selects the identity-calibration `M20SimInterface`, which is
+required for this sim (the M20_Piper MJCF is already in the policy frame).
 
 ```bash
 # Run (Open 2 terminals)
@@ -94,6 +98,19 @@ export ROS_DOMAIN_ID=1
 source install/setup.bash
 python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 ```
+
+Notes for the M20_Piper sim:
+
+- `mujoco_simulation_ros2.py` integrates the physics at 0.2 ms (5 substeps per
+  1 ms control tick) because the USD-derived MJCF has a lightly damped ~500 Hz
+  rocking mode that is numerically unstable at a plain 1 ms step. The topic
+  rates and 200 Hz feedback are unchanged.
+- The MJCF arm/wheel actuators now carry the same armature values as the Isaac
+  Lab actuator configs (arm/gripper 0.01, wheel 0.00243216); without this the
+  arm/gripper PD loop is unstable in MuJoCo.
+- `M20PiperPolicyRunner` clamps raw ONNX actions to ±3 as a deployment safety
+  net. This keeps commands bounded if the history encoder is pushed out of
+  distribution, and prevents the previous wheel-position runaway/NaN.
 
 ### Control (Terminal 2)
 
