@@ -24,6 +24,7 @@ import mujoco.viewer
 import rclpy
 from rclpy.node import Node
 from builtin_interfaces.msg import Time
+from std_srvs.srv import Empty
 from drdds.msg import ImuData, JointsData, JointsDataCmd, MetaType, ImuDataValue, JointsDataValue, JointData, JointDataCmd
 
 
@@ -164,6 +165,10 @@ class MuJoCoSimulationNode(Node):
             50
         )
 
+        # 重置服务：把仿真恢复到初始位姿并清空所有命令缓冲。
+        # 调用示例: ros2 service call /reset_sim std_srvs/srv/Empty
+        self.reset_srv = self.create_service(Empty, 'reset_sim', self._reset_callback)
+
         # 可视化
         self.viewer = None
         if USE_VIEWER:
@@ -191,6 +196,35 @@ class MuJoCoSimulationNode(Node):
         lowest_z = float(np.min(self.data.geom_xpos[wheel_ids, 2]))
         self.data.qpos[2] += WHEEL_RADIUS - lowest_z
         mujoco.mj_forward(self.model, self.data)
+
+    def _reset_callback(self, request, response):
+        """Reset the simulation to the initial standing pose and clear commands."""
+        mujoco.mj_resetData(self.model, self.data)
+        self._set_initial_pose()
+        self.data.qvel[:] = 0.0
+
+        # legs: 回到默认站立保持命令
+        LEG_HOLD_KP = np.tile(np.array([80., 80., 80., 10.], dtype=np.float32), 4)
+        LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
+        self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
+        self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
+        self.pos_cmd = LEG_INIT.reshape(-1, 1)
+        self.vel_cmd = np.zeros_like(self.kp_cmd)
+        self.tau_ff = np.zeros_like(self.kp_cmd)
+
+        # arm/gripper: 回到默认位姿保持，等待新的 /ARM_JOINTS_CMD
+        self.arm_kp_cmd = np.zeros((ARM_DOF, 1), np.float32)
+        self.arm_kd_cmd = np.zeros_like(self.arm_kp_cmd)
+        self.arm_pos_cmd = np.zeros_like(self.arm_kp_cmd)
+        self.arm_vel_cmd = np.zeros_like(self.arm_kp_cmd)
+        self.arm_tau_ff = np.zeros_like(self.arm_kp_cmd)
+        self.arm_cmd_valid = False
+
+        if self.viewer is not None:
+            self.viewer.sync()
+
+        self.get_logger().info("[reset_sim] simulation reset to initial pose")
+        return response
 
     # ------------------------------------------------------------------------
     def _cmd_callback(self, msg: JointsDataCmd):
