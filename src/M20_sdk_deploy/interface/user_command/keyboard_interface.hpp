@@ -113,6 +113,18 @@ private:
 
     void process_mode_command(char k)
     {
+        const auto state_name = [](uint8_t s) {
+            switch (s) {
+                case RobotMotionState::WaitingForStand: return "idle(waiting-stand)";
+                case RobotMotionState::StandingUp:      return "standing-up";
+                case RobotMotionState::JointDamping:    return "joint-damping";
+                case RobotMotionState::LieDown:         return "lie-down";
+                case RobotMotionState::RLControlMode:   return "rl-control";
+                default:                                return "unknown";
+            }
+        };
+        uint8_t cur = msfb_->GetCurrentState();
+
         if (k == 'r') {
             usr_cmd_->target_mode = uint8_t(RobotMotionState::JointDamping);
             std::cout << "[MODE] Joint Damping\n";
@@ -122,14 +134,26 @@ private:
             usr_cmd_->target_mode = uint8_t(RobotMotionState::StandingUp);
             std::cout << "[MODE] Standing Up\n";
         }
+        else if (k == 'z') {
+            std::cout << "[MODE] Z ignored: need idle or lie-down, current="
+                      << state_name(cur) << "\n";
+        }
         else if (k == 'c' && msfb_->GetCurrentState() == RobotMotionState::StandingUp) {
             usr_cmd_->target_mode = uint8_t(RobotMotionState::RLControlMode);
             std::cout << "[MODE] RL Control\n";
+        }
+        else if (k == 'c') {
+            std::cout << "[MODE] C ignored: need standing-up first, current="
+                      << state_name(cur) << "\n";
         }
         else if (k == 'x' && (msfb_->GetCurrentState() == RobotMotionState::StandingUp 
             || msfb_->GetCurrentState() == RobotMotionState::RLControlMode)) {
             usr_cmd_->target_mode = uint8_t(RobotMotionState::LieDown);
             std::cout << "[MODE] Lie Down\n";
+        }
+        else if (k == 'x') {
+            std::cout << "[MODE] X ignored: need standing-up or rl-control, current="
+                      << state_name(cur) << "\n";
         }
     }
 
