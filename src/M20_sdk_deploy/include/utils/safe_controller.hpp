@@ -364,24 +364,41 @@ public:
             }
             run_cnt_++;
             current_time_ = GetTimestampMs() / 1000;
+
+            bool any_abnormal = false;
             if (!IsDriverStatusNormal()) {
-                usr_cmd_->safe_control_mode = 2; 
+                any_abnormal = true;
+                usr_cmd_->safe_control_mode = 2;
                 driver_error_ts_ = current_time_;
                 std::cout << "Driver status error!" << std::endl;
             }
             if (!IsJointDataNormal()) {
+                any_abnormal = true;
                 usr_cmd_->safe_control_mode = 3;
                 joint_data_error_ts_ = current_time_;
                 std::cout << "Joint data error!" << std::endl;
             }
-            if (run_cnt_ % 1000 == 0 && !IsMotorTempertureNormal()) {
+            if (!IsMotorTempertureNormal()) {
+                any_abnormal = true;
                 usr_cmd_->safe_control_mode = 2;
                 std::cout << "Motor temperture error!" << std::endl;
             }
             if (!IsImuDataNormal()) {
+                any_abnormal = true;
                 std::cout << "IMU error!" << std::endl;
                 usr_cmd_->safe_control_mode = 2;
             }
+            // Do not latch the safety mode forever: as soon as all monitored
+            // sources recover, allow the operator to stand/control again.
+            // This is essential in sim2sim, where starting rl_deploy before
+            // MuJoCo (or a transient startup gap) would otherwise lock the
+            // robot in safe_control_mode=2 with no way to clear it.
+            if (!any_abnormal && usr_cmd_->safe_control_mode != 0) {
+                usr_cmd_->safe_control_mode = 0;
+                std::cout << "Safe control recovered: safe_control_mode -> 0"
+                          << std::endl;
+            }
+
             if (last_error_code_ != robot_error_state_.error_code) {
                 if (robot_error_state_.error_code != 0) {
                     std::cout << "========== error_code ========>> " << 
@@ -401,4 +418,3 @@ public:
     }
 
 };
-
