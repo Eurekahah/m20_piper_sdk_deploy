@@ -167,18 +167,22 @@ namespace qw {
         }
 
         virtual StateName GetNextStateName() {
-            if ((joint_normal_flag_ != 0)) {
-                std::cout << "========== warning ========>> "
-                          << "joint status: " << joint_normal_flag_
-                          << std::endl;
-                return StateName::kIdle;
-            }
-            if (uc_ptr_->GetUserCommand()->safe_control_mode != 0) {
-                return StateName::kIdle;
-            }
-
-            if (uc_ptr_->GetUserCommand()->target_mode == uint8_t(RobotMotionState::StandingUp))
+            if (uc_ptr_->GetUserCommand()->target_mode == uint8_t(RobotMotionState::StandingUp)) {
+                if (joint_normal_flag_ != 0) {
+                    std::cout << "========== warning ========>> "
+                              << "stand rejected: joint status = "
+                              << joint_normal_flag_ << std::endl;
+                    return StateName::kIdle;
+                }
+                if (uc_ptr_->GetUserCommand()->safe_control_mode != 0) {
+                    std::cout << "========== warning ========>> "
+                              << "stand rejected: safe_control_mode = "
+                              << int(uc_ptr_->GetUserCommand()->safe_control_mode)
+                              << std::endl;
+                    return StateName::kIdle;
+                }
                 return StateName::kStandUp;
+            }
             return StateName::kIdle;
         }
     };
