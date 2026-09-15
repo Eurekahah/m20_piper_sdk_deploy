@@ -5,3 +5,6 @@ log/
 
 tmp/
 .codex
+.tmp_models/**
+*debug*
+*LOG*

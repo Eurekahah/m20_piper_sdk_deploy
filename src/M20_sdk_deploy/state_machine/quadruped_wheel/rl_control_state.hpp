@@ -22,6 +22,7 @@
 #include <std_msgs/msg/float32_multi_array.hpp>
 
 #include <array>
+#include <cstdlib>
 #include <mutex>
 
 namespace qw {
@@ -64,6 +65,51 @@ namespace qw {
 
         Eigen::MatrixXf acc_rot = Eigen::MatrixXf::Zero(20, 3);
         int acc_rot_count = 0;
+
+        // ---- wheeled-leg joint velocity monitor -------------------------------
+        // The 4 wheel joints are the only ones driven in velocity mode
+        // (kp = 0, kd = 0.6, target = action_scale * action = 5 * action), so a
+        // frame/sign/scale/limit mistake shows up there first: their feedback is
+        // what the policy sees as joint_vel[12:16] (policy order) / [3,7,11,15]
+        // (MJCF order). Print measured vs commanded wheel velocity, plus the
+        // wheel position (unbounded multi-turn value, only zeroed inside the
+        // policy joint_pos obs), at ~1 Hz.
+        //   M20_JVEL_DEBUG=0        -> silence
+        //   M20_JVEL_PERIOD=<ticks> -> print period in policy ticks (default 50)
+        bool jvel_debug_ = true;
+        int jvel_period_ = 50;   // 50 policy ticks = 1 s at the 50 Hz policy rate
+        int jvel_cnt_ = 0;
+
+        void PrintLegWheelVelocity(const RobotAction &ra, const RobotBasicState &rbs) {
+            static const char *leg_name[4] = {"fl", "fr", "hl", "hr"};
+            std::ostringstream out;
+            out << std::fixed << std::setprecision(3);
+            out << "[JVEL] meas rad/s (hipx hipy knee wheel):";
+            for (int leg = 0; leg < 4; ++leg) {
+                out << " " << leg_name[leg] << "[";
+                for (int j = 0; j < 4; ++j) {
+                    out << " " << rbs.joint_vel(leg * 4 + j);
+                }
+                out << " ]";
+            }
+            out << " | wheel q rad:";
+            for (int leg = 0; leg < 4; ++leg) {
+                out << " " << leg_name[leg] << " " << rbs.joint_pos(leg * 4 + 3);
+            }
+            out << "\n";
+
+            Vec3f rpy_deg = rbs.base_rpy * (180.0f / static_cast<float>(M_PI));
+            out << "[JVEL] rpy deg " << rpy_deg.transpose()
+                << " | wheel target rad/s:";
+            for (int leg = 0; leg < 4; ++leg) {
+                int r = leg * 4 + 3;
+                out << " " << leg_name[leg] << " " << ra.goal_joint_vel(r)
+                    << " (raw a " << ra.goal_joint_vel(r) / 5.0f << ")";
+            }
+            out << " | wheel kp " << ra.kp(3) << " kd " << ra.kd(3)
+                << " | leg kp " << ra.kp(0) << " kd " << ra.kd(0);
+            std::cout << out.str() << std::endl;
+        }
 
         void UpdateRobotObservation() {
             int write_idx = rbs_write_index_.load(std::memory_order_relaxed);
@@ -147,7 +193,12 @@ namespace qw {
                     // VR owns velocity/body fields while active
                     ApplyVrCommand(uc);
 
-                    auto ra = policy_ptr_->getRobotAction(rbs_[getrbsReadIndex()], *uc);
+                    const RobotBasicState &rbs = rbs_[getrbsReadIndex()];
+                    auto ra = policy_ptr_->getRobotAction(rbs, *uc);
+
+                    if (jvel_debug_ && (++jvel_cnt_ % jvel_period_ == 0)) {
+                        PrintLegWheelVelocity(ra, rbs);
+                    }
 
                     MatXf res = ra.ConvertToMat();
 
@@ -225,6 +276,17 @@ namespace qw {
                 std::cerr << "error policy" << std::endl;
                 exit(0);
             }
+            if (const char *e = std::getenv("M20_JVEL_DEBUG")) {
+                jvel_debug_ = (std::string(e) != "0");
+            }
+            if (const char *p = std::getenv("M20_JVEL_PERIOD")) {
+                int period = std::atoi(p);
+                if (period > 0) jvel_period_ = period;
+            }
+            std::cout << "[JVEL] wheeled-leg joint velocity print "
+                      << (jvel_debug_ ? "enabled" : "disabled")
+                      << ", period " << jvel_period_ << " policy ticks"
+                      << " (M20_JVEL_DEBUG=0 disables)" << std::endl;
             policy_ptr_->DisplayPolicyInfo();
         }
 

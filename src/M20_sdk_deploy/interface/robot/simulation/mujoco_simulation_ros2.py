@@ -38,6 +38,11 @@ XML_PATH = CURRENT_DIR / ".." / ".." / ".." / "M20_Piper_description" / "mjcf" /
 # Convert to absolute path as string
 XML_PATH = str(XML_PATH.resolve())
 USE_VIEWER = os.environ.get("M20_USE_VIEWER", "1") == "1"
+# 1 Hz dump of the 16 leg/wheel joint velocities (sim ground truth). The wheel
+# joints are velocity-controlled in RL (kp 0 / kd 0.6), so their qvel is the
+# first place a sign/scale/limit mismatch shows up. Set M20_JVEL_DEBUG=0 to mute.
+JVEL_DEBUG = os.environ.get("M20_JVEL_DEBUG", "1") != "0"
+JVEL_PERIOD = 1000           # control ticks (1 ms) -> 1 s
 DT = 0.001
 RENDER_INTERVAL = 50
 # The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
@@ -80,12 +85,18 @@ ARM_OFFSET_RAD = np.zeros(ARM_DOF, dtype=np.float32)
 # Initial pose: M20 legs start at the Isaac Lab default standing pose
 # (hipy +/-0.6, knee -/+1.0 -> base height ~0.53 with wheels on the ground),
 # the Piper arm starts at its default (arm2=0.5, arm3=-0.5, gripper closed).
-LEG_INIT = np.array([0.0, -0.6, 1.0, 0,
-                     0.0, -0.6, 1.0, 0,
-                     0.0, 0.6, -1.0, 0,
-                     0.0, 0.6, -1.0, 0], dtype=np.float32)
+LEG_INIT = {
+    "M20": np.array([-0.438, -1.16, 2.76, 0,
+                     0.438, -1.16, 2.76, 0,
+                     -0.438, 1.16, -2.76, 0,
+                     0.438, 1.16, -2.76, 0], dtype=np.float32),
+    "M20_Piper_own": np.array([0.0, -0.6, 1.0, 0,
+                                0.0, -0.6, 1.0, 0,
+                                0.0, 0.6, -1.0, 0,
+                                0.0, 0.6, -1.0, 0], dtype=np.float32)
+}
 ARM_INIT = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-JOINT_INIT = np.concatenate([LEG_INIT, ARM_INIT]).astype(np.float32)
+JOINT_INIT = np.concatenate([LEG_INIT["M20_Piper_own"], ARM_INIT]).astype(np.float32)
 
 # Default arm hold (used until the first /ARM_JOINTS_CMD message arrives, so the
 # arm does not flop around during idle/standup). Gains match the Isaac Lab
@@ -125,7 +136,7 @@ class MuJoCoSimulationNode(Node):
         LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
         self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
         self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
-        self.pos_cmd = LEG_INIT.reshape(-1, 1)
+        self.pos_cmd = LEG_INIT["M20"].reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 
@@ -208,7 +219,7 @@ class MuJoCoSimulationNode(Node):
         LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
         self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
         self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
-        self.pos_cmd = LEG_INIT.reshape(-1, 1)
+        self.pos_cmd = LEG_INIT["M20"].reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 
@@ -286,6 +297,10 @@ class MuJoCoSimulationNode(Node):
                 if step % 5 == 0:
                     self._publish_robot_state(step)
 
+                # 关节速度打印 (1 Hz)
+                if JVEL_DEBUG and step % JVEL_PERIOD == 0:
+                    self._print_leg_wheel_velocity()
+
                 # 可视化
                 if self.viewer and step % RENDER_INTERVAL == 0:
                     self.viewer.sync()
@@ -324,6 +339,37 @@ class MuJoCoSimulationNode(Node):
 
         # 写入 control 缓冲区
         self.data.ctrl[:] = self.input_tq.flatten()
+
+    # --------------------------------------------------------
+    def _print_leg_wheel_velocity(self):
+        """1 Hz dump of the 16 leg/wheel joint velocities (sim ground truth).
+
+        Wheel joints are the only ones in velocity mode (kp 0 / kd 0.6, target
+        from the policy), so their qvel is what feeds the policy as
+        joint_vel[12:16] and is the first place a frame/sign/limit error shows
+        up. The value published on /JOINTS_DATA is identical here because
+        JOINT_DIR is 1 in sim2sim.
+        """
+        q = self.data.qpos[7:7 + LEG_DOF]
+        dq = self.data.qvel[6:6 + LEG_DOF]
+        leg_names = ("fl", "fr", "hl", "hr")
+
+        meas = " ".join(
+            "%s[hx %+.2f hy %+.2f kn %+.2f wh %+.2f]"
+            % (leg_names[leg], dq[leg * 4], dq[leg * 4 + 1],
+               dq[leg * 4 + 2], dq[leg * 4 + 3])
+            for leg in range(4)
+        )
+        print("[JVEL-SIM] t=%6.3f s meas(rad/s) %s" % (self.timestamp, meas))
+
+        cmd = " ".join(
+            "%s %+.2f (kp %.1f kd %.2f)"
+            % (leg_names[leg], self.vel_cmd[leg * 4 + 3, 0],
+               self.kp_cmd[leg * 4 + 3, 0], self.kd_cmd[leg * 4 + 3, 0])
+            for leg in range(4)
+        )
+        wheel_q = " ".join("%s %+.1f" % (leg_names[leg], q[leg * 4 + 3]) for leg in range(4))
+        print("[JVEL-SIM] wheel cmd(rad/s) %s | wheel q(rad) %s" % (cmd, wheel_q))
 
     # --------------------------------------------------------
     def quaternion_to_euler(self, q):

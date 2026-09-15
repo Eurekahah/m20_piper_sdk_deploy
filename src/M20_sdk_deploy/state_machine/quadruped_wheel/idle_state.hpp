@@ -147,8 +147,8 @@ namespace qw {
             GetProprioceptiveData();
             joint_normal_flag_ = JointDataNormalCheck();
             if (((ri_ptr_->GetInterfaceTimeStamp() - last_print_time) > 1)) {
-                DisplayProprioceptiveInfo();
-                DisplayAxisValue();
+                // DisplayProprioceptiveInfo();
+                // DisplayAxisValue();
                 last_print_time = ri_ptr_->GetInterfaceTimeStamp();
             }
             // hold the current joints (instead of zero gains) so the robot does

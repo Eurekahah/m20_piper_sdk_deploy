@@ -46,6 +46,8 @@
 
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
 #include <iostream>
 #include <stdexcept>
 #include <string>
@@ -92,6 +94,22 @@ private:
     VecXf joint_pos_obs_, joint_vel_obs_, last_action_obs_, current_action_,
           current_observation_, history_obs_, history_step_, robot_goal_;
     bool history_initialized_ = false;
+
+    // Isaac Lab's `last_action` observation returns env.action_manager.action,
+    // i.e. the RAW actor output after the env-level clip (clip_actions=100 for
+    // this training run) - NOT the scaled/offset joint target. The deployment
+    // used to feed the processed action instead (legs default+scale*a, wheels
+    // scale*a), which multiplies the wheel entries by 5 and shifts the leg
+    // entries by the default pose. Set M20_LAST_ACTION_RAW=1 to feed the raw
+    // (clipped like training) action so the obs matches the training pipeline.
+    //   M20_LAST_ACTION_MODE = raw (default) | mixed | processed
+    //     raw      : whole vector = clip(raw, +-100), i.e. the training pipeline
+    //     mixed    : legs/wheels raw, ik control-clipped (isolates the ik clip)
+    //     processed: legs default+scale*a, wheels scale*a, ik control-clipped
+    //                (the previous deploy behaviour; rolls the robot over)
+    // Verified in sim2sim: raw stands still, processed rolls onto its side
+    // within ~3 s with the wheels pinned at +-15 rad/s.
+    std::string last_action_mode_ = "raw";
 
     RobotAction robot_action_;
 
@@ -147,6 +165,17 @@ public:
 
         InitTopology();
         InitDefaults();
+
+        if (const char *e = std::getenv("M20_LAST_ACTION_MODE")) {
+            last_action_mode_ = std::string(e);
+        }
+        if (const char *e = std::getenv("M20_LAST_ACTION_RAW")) {   // legacy flag
+            last_action_mode_ = (std::string(e) != "0") ? "raw" : "processed";
+        }
+        std::cout << "[M20PiperPolicyRunner] last_action obs = "
+                  << last_action_mode_
+                  << " (raw = like training: env.action_manager.action clipped by clip_actions)"
+                  << std::endl;
 
         robot_action_.kp = kp_;
         robot_action_.kd = kd_;
@@ -375,6 +404,26 @@ public:
 
         current_action_ = OnnxInfer(current_observation_, history_obs_);
 
+        // ---- TEMP DEBUG: dump the first policy ticks (remove after diagnosis) ----
+        if (std::getenv("M20_PIPER_DEBUG") && run_cnt_ < 300) {
+            std::ofstream dbg("policy_debug.txt", std::ios::app);
+            if (dbg.is_open()) {
+                dbg << "tick " << run_cnt_ << "\n";
+                dbg << "obs_raw\n";
+                for (int i = 0; i < kObsDim; ++i) dbg << current_observation_(i) << " ";
+                dbg << "\nraw_action\n";
+                for (int i = 0; i < kActionDim; ++i) dbg << current_action_(i) << " ";
+                dbg << "\n";
+            }
+        }
+        // ---- END TEMP DEBUG ----
+
+        // Action as Isaac Lab's obs pipeline sees it: the env-level clip
+        // (clip_actions = 100 for this training run) applied to the raw actor
+        // output, before any scale/offset is applied by the action terms.
+        const VecXf raw_clipped =
+                current_action_.cwiseMin(100.0f).cwiseMax(-100.0f);
+
         // Deployment safety: the ONNX can saturate/explode when the history
         // encoder is pushed out of distribution. Clamp before the value is
         // used for control and before it is fed back into the next obs.
@@ -384,17 +433,41 @@ public:
         constexpr float kActionClip = 3.0f;
         current_action_ = current_action_.cwiseMin(kActionClip).cwiseMax(-kActionClip);
 
-        // last_action obs uses the processed action, like Isaac Lab's
-        // action_manager.action: legs default+scale*raw, wheels scale*raw,
-        // ee_ik part stays raw (bypassed, not used for control).
-        for (int i = 0; i < kLegDof; ++i) {
-            last_action_obs_(i) = action_default_pos_(i) + action_scale_[i] * current_action_(i);
-        }
-        for (int i = kLegDof; i < kLegDof + kWheelDof; ++i) {
-            last_action_obs_(i) = action_scale_[i] * current_action_(i);
-        }
-        for (int i = kLegDof + kWheelDof; i < kActionDim; ++i) {
-            last_action_obs_(i) = current_action_(i);
+        // ---- TEMP DEBUG: zero the 4 wheel-velocity action entries so the
+        // wheels are never driven. Kept before last_action feedback so the
+        // policy obs stays consistent with what is actually commanded.
+        // Remove this block after the wheel-related diagnosis is done. ----
+        // static bool wheel_zero_warned = false;
+        // if (!wheel_zero_warned) {
+        //     std::cout << "[DEBUG] forcing wheel action commands (4) to zero" << std::endl;
+        //     wheel_zero_warned = true;
+        // }
+        // current_action_.segment(kLegDof, kWheelDof).setZero();
+        // ---- END TEMP DEBUG ----
+
+        if (last_action_mode_ == "raw") {
+            // training-faithful: env.action_manager.action = raw action,
+            // clipped by clip_actions (=100) but NOT scaled/offset per term
+            last_action_obs_ = raw_clipped;
+        } else if (last_action_mode_ == "mixed") {
+            // raw for the joints that are actually commanded, but keep the
+            // deploy's +-3 control clip for the (ignored) ee_ik entries
+            last_action_obs_ = raw_clipped;
+            last_action_obs_.tail(kIkActionDim) = current_action_.tail(kIkActionDim);
+        } else {
+            // deployment default: processed action
+            //   legs  : default + scale*raw
+            //   wheels: scale*raw
+            //   ee_ik : raw (bypassed, not used for control)
+            for (int i = 0; i < kLegDof; ++i) {
+                last_action_obs_(i) = action_default_pos_(i) + action_scale_[i] * current_action_(i);
+            }
+            for (int i = kLegDof; i < kLegDof + kWheelDof; ++i) {
+                last_action_obs_(i) = action_scale_[i] * current_action_(i);
+            }
+            for (int i = kLegDof + kWheelDof; i < kActionDim; ++i) {
+                last_action_obs_(i) = current_action_(i);
+            }
         }
 
         // build the robot command (MJCF order, 24 rows; arm rows keep default + zero gain)

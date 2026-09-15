@@ -163,10 +163,10 @@ private:
         last_joint_pos_ = joint_pos;
         last_joint_vel_ = joint_vel;
         last_joint_tau_ = joint_tau;
-        if (run_cnt_ % 5000 == 0) {
-            std::cout << "joint_pos: " << joint_pos.transpose() << std::endl;
-            std::cout << "joint_vel: " << joint_vel.transpose() << std::endl;
-        }
+        // if (run_cnt_ % 5000 == 0) {
+        //     std::cout << "joint_pos: " << joint_pos.transpose() << std::endl;
+        //     std::cout << "joint_vel: " << joint_vel.transpose() << std::endl;
+        // }
         return res;
     }
 
@@ -194,11 +194,11 @@ private:
         float min_temp = m_t.minCoeff(&min_idx);
         max_temp_ = max_temp;
         max_temp_idx_ = max_idx;
-        if (run_cnt_ % 5000 == 0) {
-            std::cout << "Motor Temperture: " << m_t.transpose() << std::endl;
-            std::cout << "Max&Min:          " << max_idx << " : " << max_temp << "  |  " << min_idx << " : " << min_temp
-                      << std::endl;
-        }
+        // if (run_cnt_ % 5000 == 0) {
+        //     std::cout << "Motor Temperture: " << m_t.transpose() << std::endl;
+        //     std::cout << "Max&Min:          " << max_idx << " : " << max_temp << "  |  " << min_idx << " : " << min_temp
+        //               << std::endl;
+        // }
         if (max_temp > 100) {
             robot_error_state_.motor_heat_warn = 1;
             return false;

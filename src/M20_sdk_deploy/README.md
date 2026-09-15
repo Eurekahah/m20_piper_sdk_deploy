@@ -170,22 +170,50 @@ full model with `scripts/export_history_policy_onnx.py` whenever you retrain.
 `arm_controller.py` uses the Piper MDH table from `pyAgxArm` when installed and
 falls back to an embedded copy otherwise.
 
+添加宿主机图像传递
+```
+xhost +local:docker
+```
+
+创建容器
+```
+docker run -it \
+    --name m20_piper_ros \
+    --network host \
+    --privileged \
+    --gpus all \
+    --env="DISPLAY=$DISPLAY" \
+    --env="QT_X11_NO_MITSHM=1" \
+    --env="MUJOCO_GL=glfw" \
+    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
+    --volume="/home/eureka/code/m20_piper_sdk_deploy:/root/m20_piper_ws" \
+    --workdir="/root/m20_piper_ws" \
+    m20-piper-deploy:latest
+```
+进入容器
+```
+docker exec -it m20_piper_ros bash
+```
+
 ### Run (teleop variant: 4 terminals, plus VR if needed)
 
 ```bash
 # Terminal 1
 export ROS_DOMAIN_ID=1
 source install/setup.bash
+source /opt/ros/humble/setup.bash
 ros2 run m20_sdk_deploy rl_deploy
 
 # Terminal 2
 export ROS_DOMAIN_ID=1
 source install/setup.bash
+source /opt/ros/humble/setup.bash
 python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 
 # Terminal 3
 export ROS_DOMAIN_ID=1
 source install/setup.bash
+source /opt/ros/humble/setup.bash
 python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py
 
 # Terminal 4 (arm keyboard; required to move the arm)
