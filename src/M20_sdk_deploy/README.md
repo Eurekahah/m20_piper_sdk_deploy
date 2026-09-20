@@ -194,7 +194,15 @@ python3 src/M20_sdk_deploy/scripts/check_mjcf_contract.py
 python3 tests/sim2sim_smoke.py --mode hold --duration 12   # 裸模型站立
 python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # 站立 → 进 RL
 python3 tests/sim2sim_smoke.py --mode walk --duration 25   # 按住 w 前进
+python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # 带 IK 节点
+python3 tests/sim2sim_smoke.py --mode arm_move --duration 25  # 按住 numpad 动臂
+python3 tests/sim2sim_smoke.py --mode push --duration 25   # 侧推 → 安全接管
+
+# 或者一键全跑（L0 编译 + L1 + L3' + 上面六档）：
+bash tests/run_all.sh
 ```
+
+真机上线流程见 [`docs/sim2real_checklist_zh.md`](../../docs/sim2real_checklist_zh.md)。
 
 判据与开发约定见 [`docs/review/WORKFLOW_zh.md`](../../docs/review/WORKFLOW_zh.md)；
 接口契约（含关节顺序、坐标系、每条说法的核对状态）见

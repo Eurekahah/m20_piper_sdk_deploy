@@ -21,6 +21,7 @@
 | 文件 | 管什么 |
 |---|---|
 | [`sim2sim_layout_contract_zh.md`](sim2sim_layout_contract_zh.md) | **接口契约**：观测/动作布局、关节顺序、坐标系、增益、命令语义、MuJoCo 参数，以及每条说法的核对状态（✅/⚠️/❓/❌） |
+| [`sim2real_checklist_zh.md`](sim2real_checklist_zh.md) | **真机上线检查单**：仿真↔真机接口差异表、分阶段步骤（只上腿 → 接臂 → 测量回填）、回滚顺序、"没做过"清单 |
 
 ## 3. 历史归档
 

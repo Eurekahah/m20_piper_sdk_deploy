@@ -109,13 +109,20 @@
 > 这些判据已有可执行入口（2026-09-20 起）：
 
 ```bash
+# 一键（L0 编译 + L1 + L3' + 六档 L3）：
+bash tests/run_all.sh                 # 完整
+SKIP_BUILD=1 MODES="hold rl" bash tests/run_all.sh   # 只跑子集
+
+# 手动逐档：
 # 容器内，仓库根目录
 source /opt/ros/humble/setup.bash && source install/setup.bash
 python3 tests/sim2sim_smoke.py --mode hold --duration 12   # ① 裸模型站立
 python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # ② 站立 → 进 RL（零命令）
 python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w 前进（判速度）
 python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # ④ 额外起 arm_controller（判臂位姿/力矩）
-python3 tests/sim2sim_smoke.py --mode push --duration 25   # ⑤ 800 N 侧推（判安全接管触发）
+python3 tests/sim2sim_smoke.py --mode arm_move --duration 25  # ⑤ 按住 numpad 动臂（判臂链路）
+python3 tests/sim2sim_smoke.py --mode push --duration 25   # ⑥ 800 N 侧推（判安全接管触发）
+python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失败率（判 <= 1/3）
 # PASS/FAIL + 高度/倾角数字；遥测 CSV 落在 /tmp/m20_sim2sim.telemetry.csv
 
 # ⚠️ 2026-09-20 起：**连续跑五档约有 1/3 概率在 `rl` 档偶发摔倒（DEF-018，未定位）**。
