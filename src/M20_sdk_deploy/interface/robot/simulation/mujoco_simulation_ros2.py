@@ -81,6 +81,15 @@ PUSH_DURATION = float(os.environ.get("M20_SIM_PUSH_DURATION", "0.3"))
 # ---------------------------------------------------------------------------
 ACTUATOR_DELAY_MAX = int(os.environ.get("M20_SIM_ACTUATOR_DELAY_TICKS", "0"))
 
+# ---------------------------------------------------------------------------
+# 轮子速度伺服阶跃（P1-2）：从 M20_SIM_WHEEL_STEP_AT 秒起，四个轮子收到固定的
+# 速度目标 M20_SIM_WHEEL_STEP_RAD_S（直接覆盖 /JOINTS_CMD 里的轮子通道），
+# 用来量测速度环的稳态误差/上升时间，验证 kp=0 / kd=0.6 + 轮子 armature 的链路。
+# 默认关闭（值为 0）。
+# ---------------------------------------------------------------------------
+WHEEL_STEP = float(os.environ.get("M20_SIM_WHEEL_STEP_RAD_S", "0"))
+WHEEL_STEP_AT = float(os.environ.get("M20_SIM_WHEEL_STEP_AT", "5"))
+
 DT = 0.001
 # 单次迭代最多补多少个 1 ms 控制 tick（防止落后时雪崩；正常应为 1~2）
 MAX_CATCHUP_TICKS = int(os.environ.get("M20_SIM_MAX_CATCHUP", "20"))
@@ -209,6 +218,8 @@ class MuJoCoSimulationNode(Node):
 
         self.base_body_id_ = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY,
                                                "base_link")
+        self.ee_body_id_ = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                                             "gripper_base")
 
         self.input_tq = np.zeros((TOTAL_DOF, 1), np.float32)
 
@@ -260,7 +271,11 @@ class MuJoCoSimulationNode(Node):
                     + [f"dq{i}" for i in range(TOTAL_DOF)]
                     + [f"tau{i}" for i in range(TOTAL_DOF)]
                     + ["wheel_z_fl", "wheel_z_fr", "wheel_z_hl", "wheel_z_hr"]
-                    + ["wheel_f_fl", "wheel_f_fr", "wheel_f_hl", "wheel_f_hr"])
+                    + ["wheel_f_fl", "wheel_f_fr", "wheel_f_hl", "wheel_f_hr"]
+                    # 末端位姿（gripper_base 相对 base_link，root 系）：
+                    # 用来验收 IK 的跟踪精度（策略观测 ee_goal 的口径）
+                    + ["ee_x", "ee_y", "ee_z", "ee_qw", "ee_qx", "ee_qy", "ee_qz"]
+                    + ["wcmd_fl", "wcmd_fr", "wcmd_hl", "wcmd_hr"])
             self.telemetry_file.write(",".join(cols) + "\n")
             self.get_logger().info(
                 f"[telemetry] -> {TELEMETRY_PATH} @ {1000 // max(TELEMETRY_PERIOD, 1)} Hz")
@@ -472,6 +487,15 @@ class MuJoCoSimulationNode(Node):
         q = self.data.qpos[7:7 + TOTAL_DOF].reshape(-1, 1)
         dq = self.data.qvel[6:6 + TOTAL_DOF].reshape(-1, 1)
 
+        # 轮子速度阶跃（P1-2，默认关）：直接覆盖四个轮子的执行器语义为
+        # kp=0 / kd=0.6 / 速度目标 = WHEEL_STEP，用来验收速度伺服链
+        if WHEEL_STEP != 0.0 and self.timestamp >= WHEEL_STEP_AT:
+            for leg in range(4):
+                idx = leg * 4 + 3
+                delayed[idx, 0] = 0.0          # kp
+                delayed[idx, 2] = 0.6          # kd
+                delayed[idx, 3] = WHEEL_STEP   # 速度目标
+                delayed[idx, 4] = 0.0          # tau_ff
         # legs
         self.input_tq[:LEG_DOF] = (
                 delayed[:LEG_DOF, 0:1] * (delayed[:LEG_DOF, 1:2] - q[:LEG_DOF]) +
@@ -556,6 +580,20 @@ class MuJoCoSimulationNode(Node):
         q = self.data.qpos[7:7 + TOTAL_DOF]
         dq = self.data.qvel[6:6 + TOTAL_DOF]
         tau = self.input_tq.flatten()
+        # 末端位姿（相对 base_link；root 系）
+        if self.ee_body_id_ >= 0 and self.base_body_id_ >= 0:
+            d_pos = self.data.xpos[self.ee_body_id_] - self.data.xpos[self.base_body_id_]
+            qb = self.data.xquat[self.base_body_id_]
+            qe = self.data.xquat[self.ee_body_id_]
+            qb_inv = np.array([qb[0], -qb[1], -qb[2], -qb[3]], dtype=np.float64)
+            q_rel = np.zeros(4, dtype=np.float64)
+            mujoco.mju_mulQuat(q_rel, qb_inv, qe)
+        else:
+            d_pos = np.zeros(3)
+            q_rel = np.array([1.0, 0, 0, 0])
+        # 轮子速度指令（rad/s）：RL 的 vel_cmd（kp=0 时就是速度目标）
+        wcmd = [float(self.vel_cmd[leg * 4 + 3, 0]) for leg in range(4)]
+
         row = ([self.timestamp, time.monotonic() - wall_t0,
                 self.data.qpos[0], self.data.qpos[1], self.data.qpos[2],
                 q_world[0], q_world[1], q_world[2], q_world[3],
@@ -563,7 +601,9 @@ class MuJoCoSimulationNode(Node):
                 omega_b[0], omega_b[1], omega_b[2]]
                + list(q) + list(dq) + list(tau)
                + list(self.data.xpos[self.wheel_body_id_list, 2])
-               + self._wheel_contact_forces())
+               + self._wheel_contact_forces()
+               + list(d_pos) + list(q_rel)
+               + wcmd)
         self.telemetry_file.write(",".join("%.6g" % v for v in row) + "\n")
 
     def quaternion_to_euler(self, q):

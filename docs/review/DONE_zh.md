@@ -15,7 +15,7 @@
 | 2026-09-20 | 新增第九节：策略接口切到 83/700/16（布局驱动）+ L1 验收 + 走起来了 | `feat/policy-layout-v2` |
 | 2026-09-20 | 新增第十节：臂增益/armature/高度区间三条对齐 + `--mode arm` 用例 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | 新增第十一节：安全接管（倾角+腿折叠）+ 扰动注入用例 + 进 RL 偶发摔倒修复 | `fix/safety-takeover` |
-| 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端 | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
+| 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端；第十四节：轮子速度伺服 + 末端跟踪验收 | `feat/actuator-accuracy-tests` |
 
 ---
 
@@ -178,3 +178,12 @@
 | 2026-09-20 | **DEF-021**：`arm_teleop_node` 在非终端 stdin 下崩（`termios.error: Inappropriate ioctl for device`）⇒ 非 TTY 时跳过 raw 模式 | 管道驱动可用（自动化测试与 launch 拉起都不再崩） | `fix/ee-goal-frame-arm-node` |
 | 2026-09-20 | **新增端到端用例 `--mode arm_move`**：起 sim + rl_deploy + arm_controller + arm_teleop，进 RL 后按住 numpad 8（EE +x） | 臂相对默认位姿动 **2.31 rad**、最大关节力矩 **11.4 N·m**（限幅 100）、底盘 height 0.491 m / tilt max **1.7°** —— 即"臂在动、底盘不摔" | `fix/ee-goal-frame-arm-node` |
 | 2026-09-20 | `tests/run_all.sh` 覆盖六个模式（`hold / rl / walk / arm / arm_move / push`） | 见 `DONE_zh.md` 第十一节表格 | `fix/ee-goal-frame-arm-node` |
+
+## 十四、执行器/末端精度验收（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **P1-2 轮子速度伺服阶跃**：仿真侧新增 `M20_SIM_WHEEL_STEP_RAD_S` / `_AT`（直接覆盖四个轮子的执行器语义为 kp=0/kd=0.6 + 速度目标），新增 `--mode wheel_step` | 阶跃 +5 rad/s：四轮稳态 **+5.00 +5.00 +5.00 +5.00 rad/s**（同向、误差 < 0.2%），上升时间 ~1 s（受 21.6 N·m 力矩限幅约束，要把整机加速） | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | **遥测增加末端位姿与轮速指令列**：`ee_x/y/z`、`ee_qw..qz`（gripper_base 相对 base_link，root 系）、`wcmd_fl/fr/hl/hr` | 默认姿态下 `ee = (0.3492, 0, 0.4326)`，与 `check_mjcf_contract.py` 的 FK 实测一致 | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | **`--mode arm_move` 增加末端位移判据**：按住 numpad 8（EE +x），参考点取默认姿态的 `ee_x = 0.3492`（不能用"中间某刻"——臂几秒内就走到工作空间边界） | 末端 x：**0.3492 → 0.8336 m（Δ = +0.48 m）**，臂关节最大偏差 2.31 rad、最大力矩 11.6 N·m，底盘 tilt ≤ 1.2° | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | `tests/run_all.sh` 扩到 **7 档**（`hold / wheel_step / rl / walk / arm / arm_move / push`） | 一键全绿 | `feat/actuator-accuracy-tests` |
