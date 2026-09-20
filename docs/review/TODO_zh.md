@@ -16,6 +16,7 @@
 | 2026-09-20 | **P0-1 / P0-2 / P0-3 完成**（接口切到 83/700/16；原生序由训练侧探针判定；`actions` 观测=实际下发）；新增 DEF-014/015；P1-1 再加一条（armature） | `feat/policy-layout-v2` |
 | 2026-09-20 | **P0-5 / P0-6 完成、DEF-011 完成**（高度区间收敛、臂增益 300/20、armature 真正生效）；L3 增加 `--mode arm`；P1-1 的 armature 一条清掉 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | **P0-7 完成**（安全接管 + `--mode push` 用例）；新增 DEF-016/017/018，其中 **DEF-018（连续跑偶发摔倒）未修 → 新 P0-9** | `fix/safety-takeover` |
+| 2026-09-20 | **P0-4 完成**（`ee_goal` 默认值 + `arm_controller` 发布的坐标系都修到 root 系）；DEF-018 定位为**策略侧**边缘稳定性并交接训练侧；新增 DEF-020/021 与 `--mode arm_move` | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
 P2 = sim2real 落地；P3 = 工具与文档。
@@ -44,7 +45,10 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 >   `M20PiperPolicyRunner::NativeOrder()` 一致；
 > * P0-3 验收 = 喂回 `actions` 的 16 维与实际下发逐元素相等（现在是同一个变量）。
 
-- [ ] **P0-4 复位/进入 RL 时**不要**喂零命令**
+- [x] **P0-4 复位/进入 RL 时不要喂零命令** → 已迁至 `DONE_zh.md` 第十二/十三节
+  （默认值改成 root 系的当前默认位姿；`arm_controller` 从第一拍起就发布状态且坐标系已对齐；
+  `--mode arm` 用 dump 验证第一拍 `obs[73:80] = (0.3492, 0, 0.4327)`）
+- [ ] ~~P0-4（原始条目，保留供对照）~~
   - 要做什么：进入 `RLControlState` 的那一帧就把 `ee_goal` 设成"当前 EE 位姿（root 系）"、
     `body_pose` 设成"当前实测 height/pitch/roll"，history 整窗用同一帧填满。
   - 依据（为什么）：训练侧 `TODO_zh.md` P1-3 ⑫（reset 后第一帧 `pose_command_b` 全 0）
@@ -91,7 +95,14 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     L3 的大命令注入测试里生效。
   - 预估：1 个工作日。
 
-- [ ] **P0-9（新，最高优先）定位 DEF-018：连续跑多档 L3 时 `rl` 模式偶发摔倒**
+- [~] **P0-9 定位 DEF-018：进 RL 的入口瞬态（约 25% 发散）**
+  - 现状：部署侧 4 组对照实验全部排除（软启动长度 / 轮子执行器语义 / 执行器延迟 /
+    站立腿增益），仿真实时因子 1.000；结论是**策略在该动力学下的边缘稳定性**，
+    已按训练侧 P1-2 的口径交接（见 `DEFECT_LOG_zh.md` DEF-018 的矩阵）。
+  - 剩余可做（不阻塞）：① 与训练侧一起看"reset 后前 0.2~0.5 s 的动作分布"；
+    ② 用 `--repeat 20` 建立统计基线，改训练后回归对比。
+  - 验收：`--mode rl --repeat 12` 失败率 < 10%。
+
   - 要做什么：按 `DEFECT_LOG_zh.md` DEF-018 的三条候选逐一排除；
     建议先做"给仿真加固定时延（0/1/2 ms）看退化"和"dump 进 RL 前 300 tick 的
     obs/action 与离线复算对照"。

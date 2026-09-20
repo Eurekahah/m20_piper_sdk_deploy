@@ -15,6 +15,7 @@
 | 2026-09-20 | 新增第九节：策略接口切到 83/700/16（布局驱动）+ L1 验收 + 走起来了 | `feat/policy-layout-v2` |
 | 2026-09-20 | 新增第十节：臂增益/armature/高度区间三条对齐 + `--mode arm` 用例 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | 新增第十一节：安全接管（倾角+腿折叠）+ 扰动注入用例 + 进 RL 偶发摔倒修复 | `fix/safety-takeover` |
+| 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端 | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
 
 ---
 
@@ -157,3 +158,23 @@
 | `walk`（按住 w，25 s） | 前进速度 ∈ [0.3, 1.2] m/s | **+0.576 m/s**（命令 +0.7）、height 0.515 m、tilt max 1.1° |
 | `arm`（带 IK 节点，25 s） | 臂偏差 ≤ 0.1 rad、力矩 < 100 N·m | 偏差 **0.0043~0.0245 rad**、最大力矩 **1.3~7.0 N·m** |
 | `push`（800 N 侧推） | 必须触发 `[TAKEOVER!]` 并切 `joint_damping` | leg fold 1.228 rad / tilt 0.818 rad（分别单独验证） |
+
+## 十二、进 RL 的入口瞬态：定位与交接（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **DEF-019 修 `ee_goal` 坐标系**：`RLControlState::ee_goal_` 与 `UserCommand` 的默认值原来是臂基座系的 `(0.1092, 0, 0.3439)`，改成 root 系的 `(0.3492, 0, 0.4327)` | `M20_PIPER_DEBUG` dump 的第一拍 `obs[73:80]` 从 `0.1092...` 变成 `0.3492...` | `fix/entry-transient` |
+| 2026-09-20 | **`run_cnt_` / `decimation_` 未初始化**（策略线程先于 `OnEnter()` 启动）→ 就地初始化 + 调整启动顺序；**软启动** `M20_SOFT_START_TICKS`（默认 10 tick = 200 ms） | 真 bug，修掉；软启动对失败率无影响，但契约要求保留 | `fix/entry-transient` |
+| 2026-09-20 | **遥测加 `wall` 列 + 控制循环追帧** → 可算实时因子 | 全程 RTF **1.000**（最差 1 s 窗口 0.97）⇒ 排除"仿真跑慢" | `fix/entry-transient` |
+| 2026-09-20 | **执行器延迟仿真**（训练 `DelayedPD` 每执行器 0~5 物理步 = 0~25 ms）做成开关 | `M20_SIM_ACTUATOR_DELAY_TICKS=25`：失败率 5/12（更差）⇒ 默认关，留作 P1-1 的对照工具 | `fix/entry-transient` |
+| 2026-09-20 | **入口瞬态的 4 组对照实验**（见 `DEFECT_LOG_zh.md` DEF-018 的矩阵） | 全部不是解：软启动长度 0/10/25/50 → 0/6、1/6、2/6、2/6；轮子执行器语义改动 7/12（更差）；执行器延迟 5/12；站立腿增益 4/12。基线 **3/12 ≈ 25%** | `fix/entry-transient` |
+| 2026-09-20 | **结论**：入口发散是**策略在该动力学下的边缘稳定性**（失败运行里轮速命令自己长到 ±3~5），与训练侧 s3 阶段 0.09~0.15/20 s 的终止率同源 → 已按训练仓库 `TODO_zh.md` P1-2 的口径交接 | `tests/sim2sim_smoke.py --repeat N` 现在报失败率（`rl` 档判据 ≤ 1/3） | `fix/entry-transient` |
+
+## 十三、机械臂链路端到端 + 坐标系修正（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **DEF-020**：`arm_controller` 发布的 `/ARM_TELEOP_STATE` 是**臂基座坐标系**的值（0.1092, 0, 0.3439），而策略观测要 root 系 ⇒ 开着臂节点时策略一直看到偏 24 cm 的 EE 目标。修：发布前加回臂座偏移 `(0.24, 0, 0.0888)`，留 `M20_EE_GOAL_BODY_FRAME=0` 回旧行为 | `ros2 topic echo --once /ARM_TELEOP_STATE`：默认 `(0.3492, 0, 0.4327)`、旧行为 `(0.1092, 0, 0.3439)`；`--mode arm` 下第一拍 `obs[73:80]=(0.3492,0,0.4327)` | `fix/ee-goal-frame-arm-node` |
+| 2026-09-20 | **DEF-021**：`arm_teleop_node` 在非终端 stdin 下崩（`termios.error: Inappropriate ioctl for device`）⇒ 非 TTY 时跳过 raw 模式 | 管道驱动可用（自动化测试与 launch 拉起都不再崩） | `fix/ee-goal-frame-arm-node` |
+| 2026-09-20 | **新增端到端用例 `--mode arm_move`**：起 sim + rl_deploy + arm_controller + arm_teleop，进 RL 后按住 numpad 8（EE +x） | 臂相对默认位姿动 **2.31 rad**、最大关节力矩 **11.4 N·m**（限幅 100）、底盘 height 0.491 m / tilt max **1.7°** —— 即"臂在动、底盘不摔" | `fix/ee-goal-frame-arm-node` |
+| 2026-09-20 | `tests/run_all.sh` 覆盖六个模式（`hold / rl / walk / arm / arm_move / push`） | 见 `DONE_zh.md` 第十一节表格 | `fix/ee-goal-frame-arm-node` |
