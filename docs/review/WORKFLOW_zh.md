@@ -113,11 +113,16 @@
 source /opt/ros/humble/setup.bash && source install/setup.bash
 python3 tests/sim2sim_smoke.py --mode hold --duration 12   # ① 裸模型站立
 python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # ② 站立 → 进 RL（零命令）
-python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w 前进
+python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w 前进（判速度）
+python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # ④ 额外起 arm_controller（判臂位姿/力矩）
 # PASS/FAIL + 高度/倾角数字；遥测 CSV 落在 /tmp/m20_sim2sim.telemetry.csv
 ```
 
 别只靠肉眼看 viewer：`DEF-012`/`DEF-013` 都是"看着像策略不行、其实是进场流程错"。
+
+**并行注意**：仿真的控制循环是**墙钟驱动**的（`if time.time() - last >= 1ms`），
+同机并发跑两个实例会把控制周期拉长，结果不可复现（实测同一配置一次 PASS 一次 FAIL）。
+`sim2sim_smoke.py` 会在开跑前检查残留进程并直接拒绝。
 
 ---
 

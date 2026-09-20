@@ -13,6 +13,7 @@
 | 2026-09-20 | 初版：按主题整理 `origin/main..main` 的 21 个提交；补"当前基线实测"一节 | `docs/review-spec` |
 | 2026-09-20 | 新增第八节：L3 测试基础设施（遥测 + 一键冒烟）+ 两条 sim2sim 修复（DEF-012/013） | `fix/sim2sim-bringup` |
 | 2026-09-20 | 新增第九节：策略接口切到 83/700/16（布局驱动）+ L1 验收 + 走起来了 | `feat/policy-layout-v2` |
+| 2026-09-20 | 新增第十节：臂增益/armature/高度区间三条对齐 + `--mode arm` 用例 | `fix/arm-gains-armature-height` |
 
 ---
 
@@ -125,3 +126,13 @@
 > 结论：**新 checkpoint 在 sim2sim 里已经能站住并且能按命令前进**。
 > 下一步是 `TODO_zh.md` P0 里剩下的命令语义（height 度量、复位初值）、
 > 安全接管阈值，以及 P1 的仿真一致性（armature 仍未生效 = DEF-011）。
+
+## 十、与训练对齐的三条参数修正 + 机械臂用例（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **DEF-011 armature 真正生效**：MJCF 里 `armature` 从 `<motor>`（MuJoCo 静默忽略）挪到 `<joint>`（轮 0.00243216、臂/夹爪 0.01） | `check_mjcf_contract.py` 从 8 PASS/**2 FAIL** 变成 **10 PASS / 0 FAIL / 3 UNKNOWN** | `fix/arm-gains-armature-height` |
+| 2026-09-20 | **DEF-007 臂增益统一到 300/20**（`arm_controller.py` 的 40/8 → 300/20；仿真侧 `ARM_DEFAULT_KP/KD` 同步） | 新增 `--mode arm`：臂相对默认位姿最大偏差 **0.0153 rad**、臂关节最大力矩 **4.6 N·m**（限幅 100）、底盘 height 0.515 m / tilt 1.0° | `fix/arm-gains-armature-height` |
+| 2026-09-20 | **DEF-009 高度命令区间收敛**到训练终值 (0.33, 0.55)（键盘与 VR 都改），并把"高度是**相对足端**度量 `root_z − mean(四轮 z) + 0.09`"写进代码注释 | 默认姿态着地 = 0.5266 m（`check_mjcf_contract.py` 实测），与训练侧文档给的数字一致 | `fix/arm-gains-armature-height` |
+| 2026-09-20 | **L3 第四档 `--mode arm`**：额外起 `arm_controller.py`（IK + `/ARM_JOINTS_CMD` + `/ARM_TELEOP_STATE`），断言臂保持默认位姿、力矩不触限幅、底盘不受扰 | 四档 `hold / rl / walk / arm` **全 PASS** | `fix/arm-gains-armature-height` |
+| 2026-09-20 | 顺带修 `arm_controller.py` 退出时二次 `rclpy.shutdown` 抛 `RCLError`；`tests/sim2sim_smoke.py` 增加"上一次的 sim/rl_deploy 还在跑就拒绝开跑"（仿真的控制循环是墙钟驱动，并发会让结果不可复现） | 四档连续跑全绿；退出日志干净 | `fix/arm-gains-armature-height` |

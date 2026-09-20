@@ -33,12 +33,17 @@ private:
     // Body pose targets (absolute; accumulated while the keys are held).
     // NOTE: 'c' is already used to enter RL control mode, so body height uses
     // h/j instead of the Isaac Lab C/V mapping.
-    float body_height_ = 0.513f;   // m, matches the Isaac Lab default base height
+    // 机身高度命令：**相对足端**的高度，定义与训练一致
+    //   height = root_z - mean(四个轮心 z) + 轮半径(0.09)
+    // 默认 0.513 = 训练课程 s0 的锚点 / `body_pose` 默认命令（DEF-009）。
+    float body_height_ = 0.513f;   // m
     float body_pitch_  = 0.0f;     // rad
     float body_roll_   = 0.0f;     // rad
     const float height_step_ = 0.002f;   // m per repeat
     const float body_pose_step_ = 0.01f; // rad per repeat
-    const float body_height_min_ = 0.33f, body_height_max_ = 0.60f;
+    // 训练终值区间是 (0.33, 0.55)（`flat_env_wbc_cfg.py::WBCCommandsCfg.body_pose`）。
+    // 旧值上限 0.60 超出训练分布 9%，会把策略推到没见过的状态（DEF-009）。
+    const float body_height_min_ = 0.33f, body_height_max_ = 0.55f;
     const float body_pitch_max_ = 0.35f, body_roll_max_ = 0.25f;
 
     // Arm EE increments (non-zero while the numpad key is held, NumLock ON)

@@ -161,8 +161,9 @@ namespace qw {
             uc->side_vel_scale = vr_vel_[1];
             uc->turnning_vel_scale = vr_vel_[2];
 
+            // 训练终值区间 (0.33, 0.55)，见 keyboard_interface.hpp 的说明（DEF-009）
             uc->body_height = std::clamp(vr_body_anchor_[0] + vr_body_off_[0],
-                                         0.33f, 0.60f);
+                                         0.33f, 0.55f);
             uc->body_pitch = std::clamp(vr_body_anchor_[1] + vr_body_off_[1],
                                         -0.35f, 0.35f);
             uc->body_roll = std::clamp(vr_body_anchor_[2] + vr_body_off_[2],

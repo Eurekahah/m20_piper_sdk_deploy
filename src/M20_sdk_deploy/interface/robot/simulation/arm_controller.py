@@ -81,7 +81,13 @@ ARM_JOINT_LIMITS = np.array([
 DEFAULT_ARM_JOINTS = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0])
 
 # gains from the Isaac Lab DelayedPDActuatorCfg
-ARM_KP, ARM_KD = 40.0, 8.0   # matches Isaac Lab piper_arm actuator (stiffness 40 / damping 8)
+# 增益取自本次训练的 actuator 配置（DEF-007）：
+#   `2026-09-20_00-50-31/params/env.yaml` -> piper_arm stiffness 300 / damping 20,
+#                                           piper_gripper 4000 / 200
+# 旧值 40/8 来自更早的一次训练配置，会让臂明显比训练"软"。
+# 与 `hardware/piper_arm_interface.hpp` 的 Start() 保持值、以及仿真侧
+# `mujoco_simulation_ros2.py` 的 ARM_DEFAULT_KP/KD 必须一致。
+ARM_KP, ARM_KD = 300.0, 20.0
 GRIPPER_KP, GRIPPER_KD = 4000.0, 200.0
 GRIPPER_OPEN = np.array([0.035, -0.035])
 GRIPPER_CLOSED = np.array([0.0, 0.0])
@@ -392,9 +398,14 @@ def main(args=None):
     node = ArmController()
     try:
         rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
     finally:
         node.destroy_node()
-        rclpy.shutdown()
+        # SIGINT 时 rclpy 的信号处理可能已经把 context shutdown 过了，
+        # 再调一次会抛 RCLError（退出码变非 0，测试脚本会误判成崩溃）。
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == "__main__":
