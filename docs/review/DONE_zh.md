@@ -14,6 +14,7 @@
 | 2026-09-20 | 新增第八节：L3 测试基础设施（遥测 + 一键冒烟）+ 两条 sim2sim 修复（DEF-012/013） | `fix/sim2sim-bringup` |
 | 2026-09-20 | 新增第九节：策略接口切到 83/700/16（布局驱动）+ L1 验收 + 走起来了 | `feat/policy-layout-v2` |
 | 2026-09-20 | 新增第十节：臂增益/armature/高度区间三条对齐 + `--mode arm` 用例 | `fix/arm-gains-armature-height` |
+| 2026-09-20 | 新增第十一节：安全接管（倾角+腿折叠）+ 扰动注入用例 + 进 RL 偶发摔倒修复 | `fix/safety-takeover` |
 
 ---
 
@@ -136,3 +137,23 @@
 | 2026-09-20 | **DEF-009 高度命令区间收敛**到训练终值 (0.33, 0.55)（键盘与 VR 都改），并把"高度是**相对足端**度量 `root_z − mean(四轮 z) + 0.09`"写进代码注释 | 默认姿态着地 = 0.5266 m（`check_mjcf_contract.py` 实测），与训练侧文档给的数字一致 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | **L3 第四档 `--mode arm`**：额外起 `arm_controller.py`（IK + `/ARM_JOINTS_CMD` + `/ARM_TELEOP_STATE`），断言臂保持默认位姿、力矩不触限幅、底盘不受扰 | 四档 `hold / rl / walk / arm` **全 PASS** | `fix/arm-gains-armature-height` |
 | 2026-09-20 | 顺带修 `arm_controller.py` 退出时二次 `rclpy.shutdown` 抛 `RCLError`；`tests/sim2sim_smoke.py` 增加"上一次的 sim/rl_deploy 还在跑就拒绝开跑"（仿真的控制循环是墙钟驱动，并发会让结果不可复现） | 四档连续跑全绿；退出日志干净 | `fix/arm-gains-armature-height` |
+
+## 十一、安全接管 + 扰动注入用例 + 进 RL 偶发摔倒修复（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **DEF-016 安全接管落地**：`PostureUnsafeCheck()` 从空实现变成两条判据 —— 倾角 `acos(cos(roll)cos(pitch)) > 0.8 rad`（= 训练终止阈值，`M20_TILT_TAKEOVER` 可覆盖）+ 兜底"腿折叠" `|q − q_default| > 1.2 rad`；触发打印 `[TAKEOVER!]` 并切 `kJointDamping` | 见下 | `fix/safety-takeover` |
+| 2026-09-20 | **仿真扰动注入** `M20_SIM_PUSH_FORCE/_AT/_DURATION`（`xfrc_applied` 作用在 `base_link`），让"接管"可自动测试 | `--mode push` 默认 800 N：`[TAKEOVER!] leg fold = 1.228 rad` → `joint_damping`，PASS | `fix/safety-takeover` |
+| 2026-09-20 | 关掉折叠判据复测倾角通路（`M20_LEG_FOLD_TAKEOVER=0`） | `[TAKEOVER!] tilt = 0.818 rad` → `joint_damping`，PASS（两条通路都验证） | `fix/safety-takeover` |
+| 2026-09-20 | **DEF-017 进 RL 偶发摔倒**：`OnEnter()` 先起策略线程、观测缓冲还没填过一帧 ⇒ 第一拍可能用"全零关节角 + 单位姿态"算动作，而且这一垃圾帧会进 history 最旧端影响 200 ms。修法：加 `rbs_ready_` 门禁 + `OnEnter` 先采一帧 | `--mode rl` 连续 3 次全 PASS（修复前连续跑时约 1/3 概率在进 RL 后 1~3 s 摔倒） | `fix/safety-takeover` |
+| 2026-09-20 | L3 用例扩到 **5 档**：`hold / rl / walk / arm / push`，并加"上一轮残留进程"检查与"日志里必须有 runner/rl_control、不许有 Aborted"断言 | 五档序列全绿（见本节表格） | `fix/safety-takeover` |
+
+### 五档 L3 的典型数值（2026-09-20，新 checkpoint）
+
+| 模式 | 判据 | 实测 |
+|---|---|---|
+| `hold`（裸模型站立，12 s） | 不触发摔倒判据 | height min 0.493 m、tilt max 1.4° |
+| `rl`（零命令，25 s） | 同上 | height 0.502~0.515 m、tilt max 1.0° |
+| `walk`（按住 w，25 s） | 前进速度 ∈ [0.3, 1.2] m/s | **+0.576 m/s**（命令 +0.7）、height 0.515 m、tilt max 1.1° |
+| `arm`（带 IK 节点，25 s） | 臂偏差 ≤ 0.1 rad、力矩 < 100 N·m | 偏差 **0.0043~0.0245 rad**、最大力矩 **1.3~7.0 N·m** |
+| `push`（800 N 侧推） | 必须触发 `[TAKEOVER!]` 并切 `joint_damping` | leg fold 1.228 rad / tilt 0.818 rad（分别单独验证） |

@@ -61,6 +61,16 @@ JVEL_PERIOD = 1000           # control ticks (1 ms) -> 1 s
 TELEMETRY_PATH = os.environ.get("M20_SIM_TELEMETRY", "")
 TELEMETRY_PERIOD = int(os.environ.get("M20_SIM_TELEMETRY_PERIOD", "5"))
 
+# ---------------------------------------------------------------------------
+# 扰动注入（用来验证 rl_deploy 的安全接管确实会触发，见 P0-7 / DEF-016）
+#   M20_SIM_PUSH_FORCE=<N>     作用在 base_link 上的 +x 方向的力（默认 0 = 关）
+#   M20_SIM_PUSH_AT=<s>        从第几秒开始推（默认 12）
+#   M20_SIM_PUSH_DURATION=<s>  持续多久（默认 0.3）
+# ---------------------------------------------------------------------------
+PUSH_FORCE = float(os.environ.get("M20_SIM_PUSH_FORCE", "0"))
+PUSH_AT = float(os.environ.get("M20_SIM_PUSH_AT", "12"))
+PUSH_DURATION = float(os.environ.get("M20_SIM_PUSH_DURATION", "0.3"))
+
 DT = 0.001
 RENDER_INTERVAL = 50
 # The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
@@ -171,6 +181,9 @@ class MuJoCoSimulationNode(Node):
         self.arm_cmd_valid = False   # until first /ARM_JOINTS_CMD message
         self.step_count_ = 0
         self.ignored_cmd_frames_ = 0   # 非 kIndexMotorControl 的控制帧计数（DEF-013）
+        self.push_logged_ = False      # 扰动注入只打一次日志
+        self.base_body_id_ = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY,
+                                               "base_link")
 
         self.input_tq = np.zeros((TOTAL_DOF, 1), np.float32)
 
@@ -380,6 +393,14 @@ class MuJoCoSimulationNode(Node):
             rclpy.spin_once(self, timeout_sec=0.0)
 
     def _apply_joint_torque(self):
+        # 扰动注入（默认关）：用来验证安全接管
+        if PUSH_FORCE != 0.0:
+            active = PUSH_AT <= self.timestamp < PUSH_AT + PUSH_DURATION
+            if active and not self.push_logged_:
+                self.get_logger().warn(
+                    f"[push] applying {PUSH_FORCE} N on base_link at t={self.timestamp:.2f}s")
+                self.push_logged_ = True
+            self.data.xfrc_applied[self.base_body_id_, 0] = PUSH_FORCE if active else 0.0
         # 当前关节状态
         q = self.data.qpos[7:7 + TOTAL_DOF].reshape(-1, 1)
         dq = self.data.qvel[6:6 + TOTAL_DOF].reshape(-1, 1)

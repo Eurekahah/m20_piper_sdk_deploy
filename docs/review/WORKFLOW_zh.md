@@ -115,7 +115,11 @@ python3 tests/sim2sim_smoke.py --mode hold --duration 12   # ① 裸模型站立
 python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # ② 站立 → 进 RL（零命令）
 python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w 前进（判速度）
 python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # ④ 额外起 arm_controller（判臂位姿/力矩）
+python3 tests/sim2sim_smoke.py --mode push --duration 25   # ⑤ 800 N 侧推（判安全接管触发）
 # PASS/FAIL + 高度/倾角数字；遥测 CSV 落在 /tmp/m20_sim2sim.telemetry.csv
+
+# ⚠️ 2026-09-20 起：**连续跑五档约有 1/3 概率在 `rl` 档偶发摔倒（DEF-018，未定位）**。
+#    在那之前：单档跑可以当验收，`tests/run_all.sh` 还不能当合并门槛（TODO P0-9）。
 ```
 
 别只靠肉眼看 viewer：`DEF-012`/`DEF-013` 都是"看着像策略不行、其实是进场流程错"。
@@ -155,6 +159,9 @@ python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # ④ 额外起 arm_c
 | `M20_POLICY_DIR` | 策略目录（含 `policy.onnx` + `policy_layout.json`） | `policy/m20_piper_history_20260920` | 策略 |
 | `M20_POLICY_ONNX` / `M20_POLICY_LAYOUT` | 单独覆盖 onnx / layout 路径 | 取自 `M20_POLICY_DIR` | 策略 |
 | `M20_ACTION_CLIP` | 动作安全限幅（训练 `clip_actions` = 100） | `100` | 策略 |
+| `M20_TILT_TAKEOVER` | 安全接管的倾角阈值 [rad]（训练终止阈值；`<=0` 关闭） | `0.8` | 安全 |
+| `M20_LEG_FOLD_TAKEOVER` | 安全接管的"腿折叠"阈值 [rad]（`|q-q_default|`；`<=0` 关闭） | `1.2` | 安全 |
+| `M20_SIM_PUSH_FORCE` / `_AT` / `_DURATION` | 仿真侧扰动注入（`xfrc_applied` 作用在 `base_link`） | `0`（关）/ `12 s` / `0.3 s` | 仿真 |
 | `M20_ARM_TRAINED_DEFAULT` | 仿真里臂初始位姿用训练资产的默认角 | 关 | 仿真 |
 | `M20_ARM_ROT_LOCAL_FRAME` / `M20_ARM_ROLL_SIGN` | 遥操作旋转合成方式（A/B 用） | 与训练一致 | 机械臂 |
 | `M20_EE_MAX_LIN_SPEED` / `M20_EE_MAX_ANG_SPEED` | 键盘积分路径的 EE 限速 | `0.35 m/s` / `0.8 rad/s` | 机械臂 |

@@ -18,6 +18,8 @@
   --mode rl      走到 RL，命令全零（默认；对应契约文档的"零位移命令"步骤）
   --mode walk    走到 RL 后按住 w 前进（vx = +0.7 m/s，键盘上限）
   --mode arm     额外起 arm_controller（IK），验证机械臂保持在默认位姿且不扰动底盘
+  --mode push    进 RL 后由仿真施加一次侧向力，验证安全接管会触发并切到 joint_damping
+                 （力/时刻/时长用 M20_SIM_PUSH_FORCE / _AT / _DURATION，默认 800 N / 12 s / 0.3 s）
 
 用法（容器内）::
 
@@ -151,7 +153,8 @@ def analyse(csv_path: Path):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["hold", "stand", "rl", "walk", "arm"], default="rl")
+    ap.add_argument("--mode", choices=["hold", "stand", "rl", "walk", "arm", "push"],
+                    default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
     ap.add_argument("--viewer", action="store_true", help="开 MuJoCo 窗口（默认无头）")
@@ -177,6 +180,10 @@ def main() -> int:
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
     env.setdefault("M20_JVEL_DEBUG", "0")
+    if args.mode == "push":
+        env.setdefault("M20_SIM_PUSH_FORCE", "800")
+        env.setdefault("M20_SIM_PUSH_AT", "12")
+        env.setdefault("M20_SIM_PUSH_DURATION", "0.3")
 
     sim = deploy = arm = None
     sim_f = dep_f = arm_f = None
@@ -238,7 +245,16 @@ def main() -> int:
             if all(p.poll() is not None for p in procs):
                 break
             time.sleep(0.1)
-        time.sleep(0.5)
+        # 再看一眼有没有残留（zombie 的 poll() 也可能已经返回 None/0）
+        for _ in range(150):
+            if not leftover_processes():
+                break
+            time.sleep(0.1)
+        else:
+            print("[smoke] 警告：仍有 sim/rl_deploy 进程残留，下一个用例可能受影响：")
+            for line in leftover_processes():
+                print("  " + line)
+        time.sleep(1.0)
 
     info = analyse(telemetry)
     if info is None:
@@ -270,7 +286,7 @@ def main() -> int:
             fails.append("rl_deploy 没有进入 rl_control 状态：策略从没被执行过")
     if info["t_end"] < args.duration * 0.8:
         fails.append(f"遥测只录到 {info['t_end']:.1f}s（期望 ~{args.duration}s）")
-    if info["fell_at"] is not None:
+    if info["fell_at"] is not None and args.mode != "push":
         fails.append(f"触发摔倒判据 @ t={info['fell_at']:.2f}s "
                      f"(tilt>{math.degrees(TILT_LIMIT):.0f}° 或 height<{HEIGHT_LIMIT} m)")
     if args.mode == "walk":
@@ -284,6 +300,17 @@ def main() -> int:
             fails.append(f"arm 模式的臂偏离默认位姿 {info['arm_dev']:.4f} rad > 0.1")
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
+    if args.mode == "push":
+        # 这里**期望**摔（被打倒），要验的是"安全接管触发并切进 joint_damping"
+        dep_txt = deploy_log.read_text(errors="ignore") if deploy_log.exists() else ""
+        if "[TAKEOVER!]" not in dep_txt:
+            fails.append("push 模式：没有看到 [TAKEOVER!]（倾角/折叠阈值没触发安全接管）")
+        if "joint_damping" not in dep_txt:
+            fails.append("push 模式：状态机没有切到 joint_damping")
+        else:
+            line = next((l.strip() for l in dep_txt.splitlines()
+                         if l.startswith("[TAKEOVER!]")), "(no event)")
+            print("  安全接管: " + line)
 
     if fails:
         print("\n[smoke] FAIL")

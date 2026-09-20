@@ -24,12 +24,18 @@
 #include <array>
 #include <cstdlib>
 #include <mutex>
+#include <set>
 
 namespace qw {
     class RLControlState : public StateBase {
     private:
         RobotBasicState rbs_[2];
         std::atomic<int> rbs_write_index_{0};
+        // 有没有拿到过至少一帧**真实**观测。策略线程在 OnEnter 里就起来了，
+        // 如果不在门禁后面等一帧，第一拍会拿默认构造的 rbs_（全零关节角、
+        // 单位旋转矩阵）去算动作，而且这一"垃圾帧"会被写进 history 的最旧端，
+        // 影响后面 10 个策略周期（DEF-017）。
+        std::atomic<bool> rbs_ready_{false};
         int getrbsReadIndex() const { return 1 - rbs_write_index_.load(std::memory_order_acquire); }
 
         int state_run_cnt_;
@@ -79,6 +85,11 @@ namespace qw {
         bool jvel_debug_ = true;
         int jvel_period_ = 50;   // 50 policy ticks = 1 s at the 50 Hz policy rate
         int jvel_cnt_ = 0;
+
+        // ---- 安全接管（P0-7 / DEF-016）----
+        float tilt_takeover_ = 0.8f;      // rad；训练终止阈值
+        float leg_fold_takeover_ = 1.2f;  // rad；|q - q_default| 的兜底阈值
+        std::set<std::string> warned_;
 
         void PrintLegWheelVelocity(const RobotAction &ra, const RobotBasicState &rbs) {
             static const char *leg_name[4] = {"fl", "fr", "hl", "hr"};
@@ -134,6 +145,7 @@ namespace qw {
             acc_rot_count = acc_rot_count % 20;
 
             rbs_write_index_.store(1 - write_idx,  std::memory_order_release);
+            rbs_ready_.store(true, std::memory_order_release);
         }
 
         void ApplyVrCommand(UserCommand* uc) {
@@ -173,6 +185,10 @@ namespace qw {
         void PolicyRunner() {
             int run_cnt_record = -1;
             while (start_flag_) {
+                if (!rbs_ready_.load(std::memory_order_acquire)) {
+                    std::this_thread::sleep_for(std::chrono::microseconds(200));
+                    continue;
+                }
                 if (state_run_cnt_ % policy_ptr_->decimation_ == 0 && state_run_cnt_ != run_cnt_record) {
                     timespec start_timestamp, end_timestamp;
                     clock_gettime(CLOCK_MONOTONIC, &start_timestamp);
@@ -289,6 +305,17 @@ namespace qw {
                 int period = std::atoi(p);
                 if (period > 0) jvel_period_ = period;
             }
+            if (const char *e = std::getenv("M20_TILT_TAKEOVER")) {
+                tilt_takeover_ = std::atof(e);
+            }
+            if (const char *e = std::getenv("M20_LEG_FOLD_TAKEOVER")) {
+                leg_fold_takeover_ = std::atof(e);
+            }
+            std::cout << "[TAKEOVER] thresholds: tilt > " << tilt_takeover_
+                      << " rad (" << tilt_takeover_ * 180.0 / M_PI << " deg), |q-q_default| > "
+                      << leg_fold_takeover_ << " rad"
+                      << " (M20_TILT_TAKEOVER / M20_LEG_FOLD_TAKEOVER 可覆盖，<=0 关闭)"
+                      << std::endl;
             std::cout << "[JVEL] wheeled-leg joint velocity print "
                       << (jvel_debug_ ? "enabled" : "disabled")
                       << ", period " << jvel_period_ << " policy ticks"
@@ -301,6 +328,9 @@ namespace qw {
         virtual void OnEnter() {
             state_run_cnt_ = -1;
             start_flag_ = true;
+            // 先把当前真实状态采一帧，再让策略线程跑（否则第一拍用的是全零观测）
+            rbs_ready_.store(false, std::memory_order_release);
+            UpdateRobotObservation();
             arm_ri_ptr_->Start();
             run_policy_thread_ = std::thread(std::bind(&RLControlState::PolicyRunner, this));
             policy_ptr_->OnEnter();
@@ -329,12 +359,47 @@ namespace qw {
         }
 
         bool PostureUnsafeCheck() {
-            // Vec3f rpy = ri_ptr_->GetImuRpy();
-            // if(rpy(0) > 30./180*M_PI || rpy(1) > 45./180*M_PI){
-            //     std::cout << "posture value: " << 180./M_PI*rpy.transpose() << std::endl;
-            //     return true;
-            // }
+            // 接管阈值取训练的终止阈值（docs/sim2sim_layout_contract_zh.md）：
+            //   倾角 = acos(-g_z) = acos(cos(roll)cos(pitch)) > 0.8 rad (45.8°)
+            // 触发后由 StateMachineBase 切到 kJointDamping（在 JointDampingState 里
+            // 零增益 + 阻尼，和训练里"终止后不再执行策略"的语义一致）。
+            //   M20_TILT_TAKEOVER     倾角阈值 [rad]（默认 0.8；设 <=0 关闭）
+            //   M20_LEG_FOLD_TAKEOVER 关节"折叠"阈值 [rad]（默认 1.2；设 <=0 关闭）
+            //     腿被压在身下时 hipy/knee 会远离默认角，用 |q - q_default| 兜底
+            const Vec3f rpy = ri_ptr_->GetImuRpy();
+            if (tilt_takeover_ > 0.f) {
+                const float cos_tilt = std::cos(rpy(0)) * std::cos(rpy(1));
+                const float tilt = std::acos(std::max(-1.f, std::min(1.f, cos_tilt)));
+                if (tilt > tilt_takeover_) {
+                    WarnOnce("tilt", "tilt", tilt,
+                             "rad > " + std::to_string(tilt_takeover_));
+                    return true;
+                }
+            }
+            if (leg_fold_takeover_ > 0.f) {
+                const VecXf &q = ri_ptr_->GetJointPosition();
+                // MJCF 序：每腿 (hipx, hipy, knee, wheel)
+                static const float def_hipy[4] = {-0.6f, -0.6f, 0.6f, 0.6f};
+                static const float def_knee[4] = {1.0f, 1.0f, -1.0f, -1.0f};
+                for (int leg = 0; leg < 4; ++leg) {
+                    const float d_hipy = std::fabs(q(leg * 4 + 1) - def_hipy[leg]);
+                    const float d_knee = std::fabs(q(leg * 4 + 2) - def_knee[leg]);
+                    if (d_hipy > leg_fold_takeover_ || d_knee > leg_fold_takeover_) {
+                        WarnOnce("leg_fold", "leg fold", std::max(d_hipy, d_knee),
+                                 "rad > " + std::to_string(leg_fold_takeover_));
+                        return true;
+                    }
+                }
+            }
             return false;
+        }
+
+        void WarnOnce(const char *key, const std::string &what, float value,
+                      const std::string &how) {
+            if (warned_.count(key)) return;
+            warned_.insert(key);
+            std::cout << "[TAKEOVER!] " << what << " = " << value << " (" << how
+                      << ") -> switch to joint damping" << std::endl;
         }
 
         virtual StateName GetNextStateName() {
