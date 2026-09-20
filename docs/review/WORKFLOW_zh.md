@@ -106,7 +106,18 @@
 * 起步验收：`base_velocity = 0`、`body_pose = 当前实测`、`ee_goal = 当前 EE 位姿` 时，
   20 s 内不触发摔倒判据，且躯干高度稳态误差 < 0.03 m。
 
-> 这些判据要有可执行入口：`tests/` 下逐步补齐，别只靠肉眼看 viewer。
+> 这些判据已有可执行入口（2026-09-20 起）：
+
+```bash
+# 容器内，仓库根目录
+source /opt/ros/humble/setup.bash && source install/setup.bash
+python3 tests/sim2sim_smoke.py --mode hold --duration 12   # ① 裸模型站立
+python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # ② 站立 → 进 RL（零命令）
+python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w 前进
+# PASS/FAIL + 高度/倾角数字；遥测 CSV 落在 /tmp/m20_sim2sim.telemetry.csv
+```
+
+别只靠肉眼看 viewer：`DEF-012`/`DEF-013` 都是"看着像策略不行、其实是进场流程错"。
 
 ---
 
@@ -131,6 +142,7 @@
 | 开关 | 作用 | 默认 | 归属 |
 |---|---|---|---|
 | `M20_USE_VIEWER` | 是否开 MuJoCo 窗口 | `1` | 仿真 |
+| `M20_SIM_TELEMETRY` / `M20_SIM_TELEMETRY_PERIOD` | 遥测 CSV 路径 / 采样周期（tick） | 关 / `5`（=200 Hz） | 仿真 |
 | `M20_JVEL_DEBUG` / `M20_JVEL_PERIOD` | 打印腿/轮关节速度（1 Hz） | `1` / `50` tick | 仿真+部署 |
 | `M20_PIPER_DEBUG` | 把前 300 个 policy tick 的 obs/action dump 到 `policy_debug.txt` | 关 | 策略 |
 | `M20_LAST_ACTION_MODE` | `applied` / `raw` / `processed`：喂回 `actions` 观测的语义 | `applied` | 策略（旧 checkpoint 期引入） |

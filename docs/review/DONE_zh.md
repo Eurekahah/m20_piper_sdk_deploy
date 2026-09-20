@@ -11,6 +11,7 @@
 | 日期 | 更新内容 | 相关 commit / 分支 |
 |---|---|---|
 | 2026-09-20 | 初版：按主题整理 `origin/main..main` 的 21 个提交；补"当前基线实测"一节 | `docs/review-spec` |
+| 2026-09-20 | 新增第八节：L3 测试基础设施（遥测 + 一键冒烟）+ 两条 sim2sim 修复（DEF-012/013） | `fix/sim2sim-bringup` |
 
 ---
 
@@ -96,3 +97,16 @@
   喂标称/扫掠观测看 ONNX 输出的量级与敏感性（当前针对旧 checkpoint 的 86 维布局）。
 * `README.md`：记录了编译选项、4~5 终端运行方式、按键表、臂工作空间限位、
   遥操作约定、真机传输方式与容器创建命令。
+
+## 八、L3 测试基础设施 + sim2sim 进场修复（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **遥测落盘**：仿真节点新增 `M20_SIM_TELEMETRY=<path>`（默认 200 Hz）+ `M20_SIM_TELEMETRY_PERIOD`，列含 `t / base xyz / quat / rpy / omega_b / q[24] / dq[24] / tau[24] / 四轮 z / 四轮接触力` | 12 s 跑出 2653 行（≈200 Hz），可直接算高度/倾角曲线 | `fix/sim2sim-bringup` |
+| 2026-09-20 | **一键 L3 冒烟** `tests/sim2sim_smoke.py`：起仿真 + `rl_deploy`，用管道喂键盘走 idle→standup→RL（可选按住 `w` 前进），按契约文档的判据（高度 = `root_z − mean(轮 z) + 0.09`、倾角 = `acos(-g_z)`；摔倒 = 倾角 > 0.8 rad 或高度 < 0.30 m）打印 PASS/FAIL | `--mode hold` PASS；`--mode rl` 判据可复现（见下） | `fix/sim2sim-bringup` |
+| 2026-09-20 | **修 DEF-012**：仿真的初始腿部保持命令从 `LEG_INIT["M20"]`（旧机型姿势）改成 `LEG_INIT["M20_Piper_own"]`（与初始 qpos 同源） | `--mode hold --duration 12`：height 0.095 → **0.498 m**，tilt 2.2° → 1.4°，FAIL → **PASS** | `fix/sim2sim-bringup` |
+| 2026-09-20 | **修 DEF-013**：`/JOINTS_CMD`、`/ARM_JOINTS_CMD` 只接受 `control_word = kIndexMotorControl(4)` 的帧（`DdsInterface` 的构造函数会发 4 帧 `kp=0/kd=0/pos=0` 的电机状态帧，仿真侧原来把它们当零增益命令执行） | `--mode rl --duration 25`（旧 checkpoint）：修复前 t≈3.4 s 触发摔倒判据（height −0.271 m、tilt 147°）→ 修复后 height min **0.502 m**、tilt max **1.7°**、**PASS** | `fix/sim2sim-bringup` |
+
+> 注意：这两条修复让 sim2sim 的"进场"（裸模型站立 → 站立 → 进 RL）达标了，
+> **不等于**策略接口已经对齐 —— 策略侧仍是旧 checkpoint 的 86/770/23
+> （`DEF-010` / `TODO_zh.md` P0-1）。
