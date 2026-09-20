@@ -43,6 +43,20 @@ USE_VIEWER = os.environ.get("M20_USE_VIEWER", "1") == "1"
 # first place a sign/scale/limit mismatch shows up. Set M20_JVEL_DEBUG=0 to mute.
 JVEL_DEBUG = os.environ.get("M20_JVEL_DEBUG", "1") != "0"
 JVEL_PERIOD = 1000           # control ticks (1 ms) -> 1 s
+
+# ---------------------------------------------------------------------------
+# 遥测落盘（L3 端到端验收用）
+#   M20_SIM_TELEMETRY=<path>         写到这个 CSV；默认关
+#   M20_SIM_TELEMETRY_PERIOD=<ticks> 采样周期（默认 5 tick = 200 Hz）
+# 列：t, base xyz, base quat(wxyz), rpy, omega_b, q[24], dq[24], tau[24],
+#     wheel_contact_force[4]
+# 用途：tests/sim2sim_smoke.py 用它算"高度/倾角"曲线与摔倒判据
+# （判据与训练一致：倾角 > 0.8 rad 或 height < 0.30 m，height 用
+#  root_z − mean(四轮 z) + 0.09 的定义）。
+# ---------------------------------------------------------------------------
+TELEMETRY_PATH = os.environ.get("M20_SIM_TELEMETRY", "")
+TELEMETRY_PERIOD = int(os.environ.get("M20_SIM_TELEMETRY_PERIOD", "5"))
+
 DT = 0.001
 RENDER_INTERVAL = 50
 # The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
@@ -136,7 +150,10 @@ class MuJoCoSimulationNode(Node):
         LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
         self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
         self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
-        self.pos_cmd = LEG_INIT["M20"].reshape(-1, 1)
+        # 保持目标必须与初始 qpos（JOINT_INIT = M20_Piper_own 的训练默认姿态）
+        # 用同一份常量。用 LEG_INIT["M20"]（旧机型站立位姿）会把腿驱动到一个
+        # 训练里从未见过的姿态，底盘直接坐到地上（DEF-012，实测 height 0.095 m）。
+        self.pos_cmd = LEG_INIT["M20_Piper_own"].reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 
@@ -148,6 +165,7 @@ class MuJoCoSimulationNode(Node):
         self.arm_tau_ff = np.zeros_like(self.arm_kp_cmd)
         self.arm_cmd_valid = False   # until first /ARM_JOINTS_CMD message
         self.step_count_ = 0
+        self.ignored_cmd_frames_ = 0   # 非 kIndexMotorControl 的控制帧计数（DEF-013）
 
         self.input_tq = np.zeros((TOTAL_DOF, 1), np.float32)
 
@@ -185,6 +203,25 @@ class MuJoCoSimulationNode(Node):
         if USE_VIEWER:
             self.viewer = mujoco.viewer.launch_passive(self.model, self.data)
 
+        # 遥测（L3 验收）
+        self.telemetry_file = None
+        self.wheel_geom_id_list = self._wheel_geom_ids()
+        self.wheel_body_id_list = [i for i in range(self.model.nbody)
+                                   if self.model.body(i).name.endswith("_wheel")]
+        if TELEMETRY_PATH:
+            self.telemetry_file = open(TELEMETRY_PATH, "w", buffering=1)
+            cols = (["t", "base_x", "base_y", "base_z",
+                     "base_qw", "base_qx", "base_qy", "base_qz",
+                     "roll", "pitch", "yaw", "omega_x", "omega_y", "omega_z"]
+                    + [f"q{i}" for i in range(TOTAL_DOF)]
+                    + [f"dq{i}" for i in range(TOTAL_DOF)]
+                    + [f"tau{i}" for i in range(TOTAL_DOF)]
+                    + ["wheel_z_fl", "wheel_z_fr", "wheel_z_hl", "wheel_z_hr"]
+                    + ["wheel_f_fl", "wheel_f_fr", "wheel_f_hl", "wheel_f_hr"])
+            self.telemetry_file.write(",".join(cols) + "\n")
+            self.get_logger().info(
+                f"[telemetry] -> {TELEMETRY_PATH} @ {1000 // max(TELEMETRY_PERIOD, 1)} Hz")
+
     # ------------------------------------------------------------------------
     def _wheel_geom_ids(self):
         ids = []
@@ -219,7 +256,7 @@ class MuJoCoSimulationNode(Node):
         LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
         self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
         self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
-        self.pos_cmd = LEG_INIT["M20"].reshape(-1, 1)
+        self.pos_cmd = LEG_INIT["M20_Piper_own"].reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 
@@ -238,10 +275,33 @@ class MuJoCoSimulationNode(Node):
         return response
 
     # ------------------------------------------------------------------------
+    # drdds 控制字：只有 kIndexMotorControl(=4) 的帧才是"关节控制命令"。
+    # `DdsInterface` 的构造函数会发 4 帧 kp=0/kd=0/pos=0 的
+    # control_word ∈ {1(disable), 17(error reset), 2(enable), 23(get status)}
+    # 帧（真机上这些帧只做电机状态操作，增益字段被固件忽略）。
+    # 仿真侧如果不看控制字，就会把这 4 帧当成"零增益命令"执行 ⇒ 腿瞬间失去
+    # 支撑、机器人趴下再被后续命令弹起来（记得 DEF-013）。
+    CONTROL_WORD_MOTOR = 4
+
+    def _is_motor_control(self, msg: JointsDataCmd, n: int) -> bool:
+        """True = 这一帧是关节控制命令；非控制字（错误复位/使能…）直接丢弃。"""
+        for i in range(n):
+            if msg.data.joints_data[i].control_word != self.CONTROL_WORD_MOTOR:
+                self.ignored_cmd_frames_ += 1
+                if self.ignored_cmd_frames_ in (1, 10, 100):
+                    self.get_logger().info(
+                        f"ignoring non-motor-control JointsDataCmd "
+                        f"(control_word={msg.data.joints_data[i].control_word}, "
+                        f"seen {self.ignored_cmd_frames_} times)")
+                return False
+        return True
+
     def _cmd_callback(self, msg: JointsDataCmd):
         """Leg joint commands from rl_deploy (published in robot frame)."""
         if len(msg.data.joints_data) != LEG_DOF:
             self.get_logger().warn("Received JointsDataCmd with incorrect number of leg joints")
+            return
+        if not self._is_motor_control(msg, LEG_DOF):
             return
         pub_pos = np.zeros(LEG_DOF, dtype=np.float32)
         pub_vel = np.zeros(LEG_DOF, dtype=np.float32)
@@ -261,6 +321,8 @@ class MuJoCoSimulationNode(Node):
         """Arm/gripper joint commands from arm_controller (raw rad)."""
         if len(msg.data.joints_data) < ARM_DOF:
             self.get_logger().warn("Received JointsDataCmd with fewer than 8 arm joints")
+            return
+        if not self._is_motor_control(msg, ARM_DOF):
             return
 
         pub_pos = np.zeros(ARM_DOF, dtype=np.float32)
@@ -300,6 +362,10 @@ class MuJoCoSimulationNode(Node):
                 # 关节速度打印 (1 Hz)
                 if JVEL_DEBUG and step % JVEL_PERIOD == 0:
                     self._print_leg_wheel_velocity()
+
+                # 遥测落盘（默认 200 Hz）
+                if self.telemetry_file is not None and step % TELEMETRY_PERIOD == 0:
+                    self._write_telemetry()
 
                 # 可视化
                 if self.viewer and step % RENDER_INTERVAL == 0:
@@ -372,6 +438,40 @@ class MuJoCoSimulationNode(Node):
         print("[JVEL-SIM] wheel cmd(rad/s) %s | wheel q(rad) %s" % (cmd, wheel_q))
 
     # --------------------------------------------------------
+    def _wheel_contact_forces(self):
+        """四个轮子的接触法向力（N），按 fl/fr/hl/hr 的 MJCF 顺序。"""
+        forces = [0.0, 0.0, 0.0, 0.0]
+        if not self.wheel_geom_id_list:
+            return forces
+        geom_to_wheel = {g: k for k, g in enumerate(self.wheel_geom_id_list)}
+        f6 = np.zeros(6, dtype=np.float64)
+        for i in range(self.data.ncon):
+            c = self.data.contact[i]
+            k = geom_to_wheel.get(c.geom1, geom_to_wheel.get(c.geom2, None))
+            if k is None:
+                continue
+            mujoco.mj_contactForce(self.model, self.data, i, f6)
+            forces[k] += abs(float(f6[0]))
+        return forces
+
+    def _write_telemetry(self):
+        """一行遥测。列定义见文件头的 M20_SIM_TELEMETRY 注释。"""
+        q_world = self.data.sensordata[:4]
+        rpy = self.quaternion_to_euler(q_world)
+        omega_b = self.data.sensordata[7:10]
+        q = self.data.qpos[7:7 + TOTAL_DOF]
+        dq = self.data.qvel[6:6 + TOTAL_DOF]
+        tau = self.input_tq.flatten()
+        row = ([self.timestamp,
+                self.data.qpos[0], self.data.qpos[1], self.data.qpos[2],
+                q_world[0], q_world[1], q_world[2], q_world[3],
+                rpy[0], rpy[1], rpy[2],
+                omega_b[0], omega_b[1], omega_b[2]]
+               + list(q) + list(dq) + list(tau)
+               + list(self.data.xpos[self.wheel_body_id_list, 2])
+               + self._wheel_contact_forces())
+        self.telemetry_file.write(",".join("%.6g" % v for v in row) + "\n")
+
     def quaternion_to_euler(self, q):
         """
         Convert a quaternion to Euler angles (roll, pitch, yaw).
