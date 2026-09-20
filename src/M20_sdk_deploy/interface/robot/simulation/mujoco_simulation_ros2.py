@@ -71,7 +71,19 @@ PUSH_FORCE = float(os.environ.get("M20_SIM_PUSH_FORCE", "0"))
 PUSH_AT = float(os.environ.get("M20_SIM_PUSH_AT", "12"))
 PUSH_DURATION = float(os.environ.get("M20_SIM_PUSH_DURATION", "0.3"))
 
+# ---------------------------------------------------------------------------
+# 执行器延迟（训练侧 DelayedPDActuator：每个执行器随机 0~5 个**物理步**，
+# 训练 sim.dt=5 ms ⇒ 0~25 ms）。部署/仿真侧原来完全没有延迟，
+# 等于把策略放在比训练更"锐"的执行器上，入口瞬态会更容易发散（DEF-018 候选）。
+#   M20_SIM_ACTUATOR_DELAY_TICKS=<N>  每关节在 [0, N] 个**控制 tick**(1 ms) 里随机
+#                                     取一个固定延迟；0 = 关闭（默认）
+# 延迟按固定种子采样，保证同一配置可复现。
+# ---------------------------------------------------------------------------
+ACTUATOR_DELAY_MAX = int(os.environ.get("M20_SIM_ACTUATOR_DELAY_TICKS", "0"))
+
 DT = 0.001
+# 单次迭代最多补多少个 1 ms 控制 tick（防止落后时雪崩；正常应为 1~2）
+MAX_CATCHUP_TICKS = int(os.environ.get("M20_SIM_MAX_CATCHUP", "20"))
 RENDER_INTERVAL = 50
 # The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
 # that is marginally unstable at a 1 ms integrator step (the base gyro sees
@@ -182,6 +194,19 @@ class MuJoCoSimulationNode(Node):
         self.step_count_ = 0
         self.ignored_cmd_frames_ = 0   # 非 kIndexMotorControl 的控制帧计数（DEF-013）
         self.push_logged_ = False      # 扰动注入只打一次日志
+        self.max_lag_ = 0.0            # 控制循环相对墙钟的最大落后（秒）
+        # 执行器延迟（DEF-018 / P1-1）
+        self.delay_max_ = max(ACTUATOR_DELAY_MAX, 0)
+        if self.delay_max_ > 0:
+            rng = np.random.default_rng(0)
+            self.leg_delay_ = rng.integers(0, self.delay_max_ + 1, size=LEG_DOF)
+            self.arm_delay_ = rng.integers(0, self.delay_max_ + 1, size=ARM_DOF)
+        else:
+            self.leg_delay_ = np.zeros(LEG_DOF, dtype=int)
+            self.arm_delay_ = np.zeros(ARM_DOF, dtype=int)
+        self.cmd_hist_ = []            # 最近 (delay_max_+1) 个控制 tick 的命令帧
+        self.cmd_push_pending_ = False  # 每个控制 tick 只压一帧（5 个物理子步共用）
+
         self.base_body_id_ = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY,
                                                "base_link")
 
@@ -228,7 +253,7 @@ class MuJoCoSimulationNode(Node):
                                    if self.model.body(i).name.endswith("_wheel")]
         if TELEMETRY_PATH:
             self.telemetry_file = open(TELEMETRY_PATH, "w", buffering=1)
-            cols = (["t", "base_x", "base_y", "base_z",
+            cols = (["t", "wall", "base_x", "base_y", "base_z",
                      "base_qw", "base_qx", "base_qy", "base_qz",
                      "roll", "pitch", "yaw", "omega_x", "omega_y", "omega_z"]
                     + [f"q{i}" for i in range(TOTAL_DOF)]
@@ -361,38 +386,80 @@ class MuJoCoSimulationNode(Node):
         # 主模拟循环
         step = 0
         last_time = time.time()
+        wall_t0 = time.monotonic()
         while rclpy.ok():
-            if time.time() - last_time >= DT:
-                last_time = time.time()
-                step += 1
-                self.step_count_ += 1
-                # 每个 1ms 控制 tick 内做 5 个 0.2ms 物理子步
-                for _ in range(SUBSTEPS):
-                    self._apply_joint_torque()
-                    mujoco.mj_step(self.model, self.data)
+            now = time.time()
+            if now - last_time >= DT:
+                # **追帧**：策略（rl_deploy）是按墙钟 50 Hz 跑的，如果仿真落后
+                # 墙钟，等价于把策略的控制周期按仿真时间拉长 —— 既改变稳定性，
+                # 也让"连续跑多档"时结果不可复现（DEF-018）。
+                # 这里按欠账补若干控制 tick，并限制单次补帧上限，避免雪崩。
+                due = int((now - last_time) / DT)
+                due = max(1, min(due, MAX_CATCHUP_TICKS))
+                last_time += due * DT
+                if last_time < now - 0.5:          # 落后太多就重新对齐
+                    last_time = now
+                self.max_lag_ = max(self.max_lag_, now - last_time)
+                for _ in range(due):
+                    step += 1
+                    self.step_count_ += 1
+                    self.cmd_push_pending_ = True   # 本 tick 压一帧命令（执行器延迟用）
+                    # 每个 1ms 控制 tick 内做 5 个 0.2ms 物理子步
+                    for _ in range(SUBSTEPS):
+                        self._apply_joint_torque()
+                        mujoco.mj_step(self.model, self.data)
 
-                self.timestamp = step * DT
+                    self.timestamp = step * DT
 
-                # 采样 & 发送观测 (every 5 control ticks for 200 Hz)
-                if step % 5 == 0:
-                    self._publish_robot_state(step)
+                    # 采样 & 发送观测 (every 5 control ticks for 200 Hz)
+                    if step % 5 == 0:
+                        self._publish_robot_state(step)
 
-                # 关节速度打印 (1 Hz)
-                if JVEL_DEBUG and step % JVEL_PERIOD == 0:
-                    self._print_leg_wheel_velocity()
+                    # 关节速度打印 (1 Hz)
+                    if JVEL_DEBUG and step % JVEL_PERIOD == 0:
+                        self._print_leg_wheel_velocity()
 
-                # 遥测落盘（默认 200 Hz）
-                if self.telemetry_file is not None and step % TELEMETRY_PERIOD == 0:
-                    self._write_telemetry()
+                    # 遥测落盘（默认 200 Hz）
+                    if self.telemetry_file is not None and step % TELEMETRY_PERIOD == 0:
+                        self._write_telemetry(wall_t0)
 
-                # 可视化
-                if self.viewer and step % RENDER_INTERVAL == 0:
-                    self.viewer.sync()
+                    # 可视化
+                    if self.viewer and step % RENDER_INTERVAL == 0:
+                        self.viewer.sync()
 
             # Handle ROS callbacks
             rclpy.spin_once(self, timeout_sec=0.0)
 
     def _apply_joint_torque(self):
+        # ---- 执行器延迟：把"本 tick 收到的命令"压入历史，实际用的是 N 个 tick 之前的那帧
+        frame = np.zeros((TOTAL_DOF, 5), dtype=np.float64)
+        frame[:LEG_DOF, 0] = self.kp_cmd.flatten()
+        frame[:LEG_DOF, 1] = self.pos_cmd.flatten()
+        frame[:LEG_DOF, 2] = self.kd_cmd.flatten()
+        frame[:LEG_DOF, 3] = self.vel_cmd.flatten()
+        frame[:LEG_DOF, 4] = self.tau_ff.flatten()
+        frame[LEG_DOF:, 0] = self.arm_kp_cmd.flatten()
+        frame[LEG_DOF:, 1] = self.arm_pos_cmd.flatten()
+        frame[LEG_DOF:, 2] = self.arm_kd_cmd.flatten()
+        frame[LEG_DOF:, 3] = self.arm_vel_cmd.flatten()
+        frame[LEG_DOF:, 4] = self.arm_tau_ff.flatten()
+        if self.cmd_push_pending_:
+            # 一个控制 tick 只压一帧（本函数 5 个物理子步里会被调用 5 次）
+            self.cmd_hist_.append(frame)
+            if len(self.cmd_hist_) > self.delay_max_ + 1:
+                self.cmd_hist_.pop(0)
+            self.cmd_push_pending_ = False
+        if self.delay_max_ > 0 and len(self.cmd_hist_) > self.delay_max_:
+            # 每个关节按自己的延迟取历史帧（用 vstack 后按行挑，省一个循环）
+            hist = np.stack(self.cmd_hist_)              # (T, 24, 5)
+            T = hist.shape[0]
+            idx_leg = np.clip(T - 1 - self.leg_delay_, 0, T - 1)
+            idx_arm = np.clip(T - 1 - self.arm_delay_, 0, T - 1)
+            delayed = hist[np.concatenate([idx_leg, idx_arm]),
+                           np.arange(TOTAL_DOF)]
+        else:
+            delayed = frame
+
         # 扰动注入（默认关）：用来验证安全接管
         if PUSH_FORCE != 0.0:
             active = PUSH_AT <= self.timestamp < PUSH_AT + PUSH_DURATION
@@ -407,20 +474,20 @@ class MuJoCoSimulationNode(Node):
 
         # legs
         self.input_tq[:LEG_DOF] = (
-                self.kp_cmd * (self.pos_cmd - q[:LEG_DOF]) +
-                self.kd_cmd * (self.vel_cmd - dq[:LEG_DOF]) +
-                self.tau_ff
+                delayed[:LEG_DOF, 0:1] * (delayed[:LEG_DOF, 1:2] - q[:LEG_DOF]) +
+                delayed[:LEG_DOF, 2:3] * (delayed[:LEG_DOF, 3:4] - dq[:LEG_DOF]) +
+                delayed[:LEG_DOF, 4:5]
         )
 
         # arm/gripper: use the default hold until the first command arrives
         arm_q = q[LEG_DOF:]
         arm_dq = dq[LEG_DOF:]
         if self.arm_cmd_valid:
-            kp = self.arm_kp_cmd
-            kd = self.arm_kd_cmd
-            pos = self.arm_pos_cmd
-            vel = self.arm_vel_cmd
-            tau = self.arm_tau_ff
+            kp = delayed[LEG_DOF:, 0:1]
+            pos = delayed[LEG_DOF:, 1:2]
+            kd = delayed[LEG_DOF:, 2:3]
+            vel = delayed[LEG_DOF:, 3:4]
+            tau = delayed[LEG_DOF:, 4:5]
         else:
             kp = ARM_DEFAULT_KP.reshape(-1, 1)
             kd = ARM_DEFAULT_KD.reshape(-1, 1)
@@ -480,15 +547,16 @@ class MuJoCoSimulationNode(Node):
             forces[k] += abs(float(f6[0]))
         return forces
 
-    def _write_telemetry(self):
-        """一行遥测。列定义见文件头的 M20_SIM_TELEMETRY 注释。"""
+    def _write_telemetry(self, wall_t0):
+        """一行遥测。列定义见文件头的 M20_SIM_TELEMETRY 注释。
+        `wall` = 距仿真节点启动的墙钟秒数（与 `t`=仿真时间对照，用来看实时因子）。"""
         q_world = self.data.sensordata[:4]
         rpy = self.quaternion_to_euler(q_world)
         omega_b = self.data.sensordata[7:10]
         q = self.data.qpos[7:7 + TOTAL_DOF]
         dq = self.data.qvel[6:6 + TOTAL_DOF]
         tau = self.input_tq.flatten()
-        row = ([self.timestamp,
+        row = ([self.timestamp, time.monotonic() - wall_t0,
                 self.data.qpos[0], self.data.qpos[1], self.data.qpos[2],
                 q_world[0], q_world[1], q_world[2], q_world[3],
                 rpy[0], rpy[1], rpy[2],

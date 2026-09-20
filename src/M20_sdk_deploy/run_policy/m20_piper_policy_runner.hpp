@@ -103,6 +103,14 @@ private:
     float dof_vel_scale_ = 0.05f;
     float ee_goal_clip_ = 3.0f;      // 训练侧 ee_goal 的 clip
     float action_clip_ = 100.0f;     // 训练侧 clip_actions
+    // 进 RL 的软启动：前 N 个策略 tick 把动作按 `i/N` 线性放开。
+    //   * 训练里 reset 之后 history 整窗用同一帧填满、`actions` 观测为 0，
+    //     策略第一拍的输出是**分布外**的（实测轮速目标能到 ±13 rad/s）；
+    //   * 部署侧从"站立保持"直接切到"策略原始输出"会出现一次冲击，
+    //     在连续跑时表现为偶发摔倒（DEF-018）；
+    //   * 契约文档第 9 节本来就要求"软启动"。
+    // 注意：动作在喂回 `actions` 观测之前缩放，保证观测=实际下发。
+    int soft_start_ticks_ = 10;      // 10 tick x 20 ms = 200 ms
 
     VecXf joint_pos_obs_, joint_vel_obs_, last_action_obs_, current_action_,
           current_observation_, history_obs_, history_step_, robot_goal_;
@@ -250,6 +258,9 @@ private:
         }
         if (const char *e = std::getenv("M20_ACTION_CLIP")) {
             action_clip_ = std::atof(e);
+        }
+        if (const char *e = std::getenv("M20_SOFT_START_TICKS")) {
+            soft_start_ticks_ = std::atoi(e);
         }
     }
 
@@ -496,6 +507,13 @@ public:
 
         // ---- 安全限幅（默认 = 训练 clip_actions，M20_ACTION_CLIP 可收紧）----
         current_action_ = current_action_.cwiseMin(action_clip_).cwiseMax(-action_clip_);
+
+        // ---- 软启动：从"默认站姿 + 零轮速"线性放开到策略输出 ----
+        if (soft_start_ticks_ > 0 && run_cnt_ < soft_start_ticks_) {
+            const float alpha = static_cast<float>(run_cnt_) /
+                                static_cast<float>(soft_start_ticks_);
+            current_action_ *= alpha;
+        }
 
         // 喂回观测的必须是**实际下发**的动作（训练里 actions 观测就是同一个值）
         last_action_obs_ = current_action_;

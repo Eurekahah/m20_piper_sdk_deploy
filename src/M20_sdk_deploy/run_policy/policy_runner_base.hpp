@@ -51,8 +51,10 @@ public:
     }
 
     const std::string policy_name_;
-    int decimation_;
-    int run_cnt_;
+    // ⚠️ 必须就地初始化：`RLControlState` 会先起策略线程、再调 `OnEnter()`，
+    // 策略线程的第一拍照可能早于 `OnEnter()` 读到它们（未初始化 = 栈上垃圾，
+    // 表现为"进 RL 偶发摔倒/偶发抽一下"——DEF-018）。
+    int decimation_ = 4;
+    int run_cnt_ = 0;
     Vec3f vel_delta_const_, cmd_vel_input_;
 };
-
