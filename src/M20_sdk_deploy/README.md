@@ -1,5 +1,12 @@
 # M20 SDK Deploy
 
+> **文档索引（M20 + Piper 部署）**：状态看 [`docs/review/`](../../docs/README_zh.md)——
+> 待办 `review/TODO_zh.md`、已完成 `review/DONE_zh.md`、缺陷记录 `review/DEFECT_LOG_zh.md`、
+> 开发/测试规范 `review/WORKFLOW_zh.md`；
+> **接口契约**（观测/动作布局、关节顺序、坐标系、MuJoCo 参数）
+> `docs/sim2sim_layout_contract_zh.md`。
+> 改任何接口（关节顺序、坐标系、增益、观测维度）都必须同步更新契约文档。
+
 [![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white)](https://discord.gg/gdM9mQutC8)
 ## Overview
 This repository uses ROS2 to implement the entire Sim-to-sim and Sim-to-real workflow. Therefore, ROS2 must first be installed on your computer, such as installing [ROS2 Humble](https://docs.ros.org/en/humble/index.html) on Ubuntu 22.04. We've also released an introduction [video](https://www.youtube.com/watch?v=FNaxsDBtD7A), please check it out! Please go through the whole process on a Ubuntu system.
