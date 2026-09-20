@@ -58,6 +58,13 @@ JVEL_PERIOD = 1000           # control ticks (1 ms) -> 1 s
 # （判据与训练一致：倾角 > 0.8 rad 或 height < 0.30 m，height 用
 #  root_z − mean(四轮 z) + 0.09 的定义）。
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# 模拟"臂还没装"：不发布 /ARM_JOINTS_DATA（但仿真里臂仍然存在、仍按默认姿态保持）。
+#   M20_SIM_NO_ARM_DATA=1
+# 用途：验证无臂部署时的观测自洽性（DEF-023），配合 arm_stub_node.py 做对照。
+# ---------------------------------------------------------------------------
+NO_ARM_DATA = os.environ.get("M20_SIM_NO_ARM_DATA", "0") != "0"
+
 TELEMETRY_PATH = os.environ.get("M20_SIM_TELEMETRY", "")
 TELEMETRY_PERIOD = int(os.environ.get("M20_SIM_TELEMETRY_PERIOD", "5"))
 
@@ -203,6 +210,7 @@ class MuJoCoSimulationNode(Node):
         self.step_count_ = 0
         self.ignored_cmd_frames_ = 0   # 非 kIndexMotorControl 的控制帧计数（DEF-013）
         self.push_logged_ = False      # 扰动注入只打一次日志
+        self.no_arm_logged_ = False
         self.max_lag_ = 0.0            # 控制循环相对墙钟的最大落后（秒）
         # 执行器延迟（DEF-018 / P1-1）
         self.delay_max_ = max(ACTUATOR_DELAY_MAX, 0)
@@ -695,6 +703,11 @@ class MuJoCoSimulationNode(Node):
         self.joints_pub.publish(legs_msg)
 
         # ----- arm / gripper (raw) -----
+        if NO_ARM_DATA:
+            if not self.no_arm_logged_:
+                self.no_arm_logged_ = True
+                self.get_logger().warn("[no-arm] 不发布 /ARM_JOINTS_DATA（模拟臂没装）")
+            return          # 模拟"臂没装"：不发 /ARM_JOINTS_DATA
         arm_q = self.data.qpos[7 + LEG_DOF:7 + TOTAL_DOF]
         arm_dq = self.data.qvel[6 + LEG_DOF:6 + TOTAL_DOF]
         arm_tau = self.input_tq[LEG_DOF:].flatten()

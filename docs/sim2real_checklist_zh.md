@@ -41,6 +41,22 @@ sim2sim 已经能站、能按命令走、能带臂遥操作（见 `review/DONE_z
 
 ---
 
+## 1.5 只装腿、臂还没装（`DEF-023`）
+
+策略观测里**本来就有臂**（24 关节 + `ee_goal`），所以"只部署 M20"要显式处理：
+
+1. `[ ]` 起假臂节点：`python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py`
+   （发布默认姿态的 `/ARM_JOINTS_DATA` 与 root 系默认 `ee_goal`）；
+2. `[ ]` 确认 `ros2 topic echo --once /ARM_JOINTS_DATA` 的 8 个 `position`
+   是 `0 / 0.5 / -0.5 / 0 / 0 / 0 / 0 / 0`；
+3. `[ ]` 确认 `ros2 topic echo --once /ARM_TELEOP_STATE` 是
+   `(0.3492, 0, 0.4327, 0.7373, 0, 0.6756, 0)`；
+4. `[ ]` `rl_deploy` 启动日志里**不该**出现 `[ARM] 没有收到 /ARM_JOINTS_DATA`
+   （出现了说明假臂节点没起或话题不通）；
+5. `[ ]` 之后按阶段 A 的步骤走。
+
+> 这一步与"臂装好且静止"在策略眼里是**同一个状态**，所以阶段 A 的结论可以直接复用。
+
 ## 2. 阶段 A：只上腿（臂固定）
 
 前提：`colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm`
