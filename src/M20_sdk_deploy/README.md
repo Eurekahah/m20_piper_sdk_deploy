@@ -153,26 +153,52 @@ so the same build stays compatible with the real M20 SDK path.
 
 ### Prerequisites
 
-The policy is the `history_adaptation` run (rsl_rl `ActorCriticHistory`, an
-RMA-style history encoder + actor). The deployment ONNX at
-`policy/history_adaptation_full.onnx` contains encoder + actor:
+**策略是"一个目录"**，`M20PiperPolicyRunner` 从目录里的 `policy_layout.json`
+读接口维度，并与 ONNX 的形状/名字交叉断言（不再写死任何维度）。当前目录是
+`policy/m20_piper_history_20260920/`（run `2026-09-20_00-50-31`，
+checkpoint `model_19999.pt`，rsl_rl `ActorCriticHistory`）：
 
-- inputs: `obs` (86), `obs_history` (770 = 10 steps x 77)
-- outputs: `actions` (23 = 12 leg pos + 4 wheel vel + 7 ee_ik, only the first
-  16 are used for the M20 legs/wheels)
+- `policy.onnx`：输入 `policy_obs (batch,83)` + `history_flat (batch,700)`，
+  输出 `action (batch,16)`（12 腿位置 + 4 轮速度；**没有机械臂动作**）
+- `policy.pt`：TorchScript，接口同上（离线数值对照用）
+- `policy_layout.json`：维度、ONNX 输入输出名/形状、history 语义、
+  **24 维原生关节序**、动作序
 
-Policy obs (86): base angular velocity (3, x0.25), projected gravity (3),
-velocity command (3), joint positions rel. default (22: 12 legs + 4 wheels
-zeroed + 6 arm), joint velocities (22, x0.05), last action (23, processed),
-ee goal (7: pos + quat wxyz), body pose (3: height/pitch/roll).
+观测（83）：base 角速度 ×0.25 (3) + 重力投影 (3) + 速度命令 (3)
++ `joint_pos` 24 维原生序（**4 个轮子列置零**）+ `joint_vel` 24 维 ×0.05
++ 上一步动作 (16) + `ee_goal`（root 系 pos+quat wxyz，clip ±3）+ `body_pose` (3)。
+history 每步 70 维（原始值，含轮子），最旧→最新。
 
-History step (77): raw base angular velocity (3), projected gravity (3),
-joint positions rel. default (24, all joints in the USD order: arm first),
-joint velocities (24), last action (23).
+**换策略**：把训练侧 `<run>/exported_deploy/` 整个目录复制成
+`policy/<run 名>/`，然后用 `M20_POLICY_DIR=policy/<run 名>` 启动
+（或直接改 `RLControlState` 里的默认目录）。目录里必须同时有
+`policy.onnx` 与 `policy_layout.json`。
 
-The original actor-only export (`policy/history_adaptation.onnx`) does not
-contain the history encoder, so it cannot be deployed directly; regenerate the
-full model with `scripts/export_history_policy_onnx.py` whenever you retrain.
+**别用 `play.py` 导出的 actor-only `policy.pt`**：那里面没有 history encoder，
+输入是 `[policy_obs, latent]`，latent 没有来源；`policy_layout.json` 的
+`kind` 字段会拦住它（runner 只接受 `kind=history`）。
+
+### 测试（改任何模块后都要跑）
+
+```bash
+# 容器内，仓库根目录
+source /opt/ros/humble/setup.bash && source install/setup.bash
+
+# L1：离线验收（维度/名字/原生序交叉断言 + ONNX↔TorchScript 相对误差）
+python3 src/M20_sdk_deploy/scripts/check_policy_interface.py
+
+# L3'：MJCF 与训练配置逐项对照（关节集合/限位/力矩/armature/FK/高度度量）
+python3 src/M20_sdk_deploy/scripts/check_mjcf_contract.py
+
+# L3：端到端 sim2sim 冒烟（无头 + 遥测 + PASS/FAIL）
+python3 tests/sim2sim_smoke.py --mode hold --duration 12   # 裸模型站立
+python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # 站立 → 进 RL
+python3 tests/sim2sim_smoke.py --mode walk --duration 25   # 按住 w 前进
+```
+
+判据与开发约定见 [`docs/review/WORKFLOW_zh.md`](../../docs/review/WORKFLOW_zh.md)；
+接口契约（含关节顺序、坐标系、每条说法的核对状态）见
+[`docs/sim2sim_layout_contract_zh.md`](../../docs/sim2sim_layout_contract_zh.md)。
 
 `arm_controller.py` uses the Piper MDH table from `pyAgxArm` when installed and
 falls back to an embedded copy otherwise.

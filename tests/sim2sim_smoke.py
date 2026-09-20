@@ -104,6 +104,10 @@ def analyse(csv_path: Path):
     out["height_min"] = min(out["height"])
     out["tilt_max_tail"] = max(out["tilt"][tail])
     out["tilt_max"] = max(out["tilt"])
+    # 行走判据用 base_x 的"后半段平均速度"（t 是仿真时间）
+    j = int(n * 0.6)
+    out["vx_tail"] = (float(rows[-1]["base_x"]) - float(rows[j]["base_x"])) / \
+                     max(out["t"][-1] - out["t"][j], 1e-6)
     out["fell_at"] = next((out["t"][i] for i in range(n)
                            if out["tilt"][i] > TILT_LIMIT or out["height"][i] < HEIGHT_LIMIT), None)
     return out
@@ -129,7 +133,7 @@ def main() -> int:
     env.setdefault("ROS_DOMAIN_ID", "1")
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
-    env["M20_JVEL_DEBUG"] = "0"
+    env.setdefault("M20_JVEL_DEBUG", "0")
 
     sim = deploy = None
     sim_f = dep_f = None
@@ -188,17 +192,32 @@ def main() -> int:
     print(f"  height  : min {info['height_min']:.3f} m, 后半段均值 {info['height_tail_mean']:.3f} m")
     print(f"  tilt    : max {math.degrees(info['tilt_max']):.1f}°, "
           f"后半段 max {math.degrees(info['tilt_max_tail']):.1f}°")
+    if args.mode == "walk":
+        print(f"  vx(后半段): {info['vx_tail']:+.3f} m/s  （键盘命令 +0.7 m/s）")
 
     fails = []
     if args.mode != "hold":
         need_rows = int(max(args.duration - 4.0, 5.0) * 100)
         if info["n"] < need_rows:
             fails.append(f"遥测行数太少（{info['n']} < {need_rows}）：仿真或 rl_deploy 提前挂了")
+        # rl_deploy 真的活着并进过 RL 吗？日志里必须有这两样东西。
+        dep = deploy_log.read_text(errors="ignore") if deploy_log.exists() else ""
+        if "Segmentation fault" in dep or "Traceback" in dep or "Aborted" in dep:
+            fails.append("rl_deploy 崩了（日志里有 Segmentation fault/Traceback/Aborted）")
+        if "M20PiperPolicyRunner" not in dep:
+            fails.append("rl_deploy 日志里没有 M20PiperPolicyRunner：策略 runner 没起来")
+        if "rl_control" not in dep:
+            fails.append("rl_deploy 没有进入 rl_control 状态：策略从没被执行过")
     if info["t_end"] < args.duration * 0.8:
         fails.append(f"遥测只录到 {info['t_end']:.1f}s（期望 ~{args.duration}s）")
     if info["fell_at"] is not None:
         fails.append(f"触发摔倒判据 @ t={info['fell_at']:.2f}s "
                      f"(tilt>{math.degrees(TILT_LIMIT):.0f}° 或 height<{HEIGHT_LIMIT} m)")
+    if args.mode == "walk":
+        # 走起来才算过：命令 0.7 m/s，实测应在合理区间，方向为 +x
+        if not (0.3 <= info["vx_tail"] <= 1.2):
+            fails.append(f"walk 模式的平均前进速度 {info['vx_tail']:+.3f} m/s 不在 "
+                         f"[0.3, 1.2]（键盘命令 +0.7 m/s）")
 
     if fails:
         print("\n[smoke] FAIL")

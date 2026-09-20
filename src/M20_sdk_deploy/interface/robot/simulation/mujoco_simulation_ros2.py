@@ -50,6 +50,10 @@ JVEL_PERIOD = 1000           # control ticks (1 ms) -> 1 s
 #   M20_SIM_TELEMETRY_PERIOD=<ticks> 采样周期（默认 5 tick = 200 Hz）
 # 列：t, base xyz, base quat(wxyz), rpy, omega_b, q[24], dq[24], tau[24],
 #     wheel_contact_force[4]
+# ⚠️ q/dq/tau 的 24 列是 **MuJoCo(MJCF) 顺序**：每腿 hipx/hipy/knee/wheel 连续
+#    （轮子在 3/7/11/15），然后 arm_joint1..6 与 gripper_joint1/2。
+#    这**不是**策略观测用的 articulation 原生序，也不是动作序 ——
+#    离线分析时别用错（很容易把 arm_joint1 的 0.5 当成"轮子位置"）。
 # 用途：tests/sim2sim_smoke.py 用它算"高度/倾角"曲线与摔倒判据
 # （判据与训练一致：倾角 > 0.8 rad 或 height < 0.30 m，height 用
 #  root_z − mean(四轮 z) + 0.09 的定义）。

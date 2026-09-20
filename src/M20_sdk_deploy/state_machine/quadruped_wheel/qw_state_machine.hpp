@@ -123,6 +123,12 @@ public:
     }
 
     void Stop(){
+        // 必须先让当前状态机 OnExit：RLControlState 的策略线程要在这里 join，
+        // 否则线程对象在析构时仍是 joinable → std::terminate → "terminate called
+        // without an active exception"（DEF-015，SIGINT 退出时必现）。
+        if (current_controller_) {
+            current_controller_->OnExit();
+        }
         sc_ptr_->Stop();
         uc_ptr_->Stop();
         ri_ptr_->Stop();

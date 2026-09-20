@@ -1,0 +1,107 @@
+{
+  "kind": "history",
+  "policy_obs_dim": 83,
+  "history_single_step_dim": 70,
+  "history_length": 10,
+  "latent_dim": 32,
+  "action_dim": 16,
+  "activation": "elu",
+  "source_checkpoint": "model_19999.pt",
+  "source_iteration": 19999,
+  "source_run": "logs/rsl_rl/history_adaptation/2026-09-20_00-50-31",
+  "source_policy_class": "ActorCriticHistory",
+  "onnx": {
+    "file": "policy.onnx",
+    "opset": 17,
+    "inputs": [
+      {
+        "name": "policy_obs",
+        "shape": [
+          "batch",
+          83
+        ]
+      },
+      {
+        "name": "history_flat",
+        "shape": [
+          "batch",
+          700
+        ]
+      }
+    ],
+    "outputs": [
+      {
+        "name": "action",
+        "shape": [
+          "batch",
+          16
+        ]
+      }
+    ],
+    "dynamic_axes": {
+      "batch": "所有输入/输出的第 0 维（部署时通常是 1）"
+    },
+    "max_abs_diff_vs_torchscript": 3.4332275390625e-05,
+    "max_rel_diff_vs_torchscript": 1.8700653650180586e-07,
+    "tolerance": "相对误差 < 1e-5（判据按输出幅值归一，见本文件脚本注释）",
+    "verified_batches": {
+      "1": [
+        1,
+        16
+      ],
+      "5": [
+        5,
+        16
+      ]
+    },
+    "runtime": "onnxruntime 1.23.2 / onnx 1.20.1"
+  },
+  "history_order": "oldest -> newest",
+  "history_note": "history_flat = 10 x 70 展平，由调用方自己维护的环形缓冲按『最旧→最新』拼接（每步 [base_ang_vel3, projected_gravity3, joint_pos24, joint_vel24, last_action16]）；reset 后第一次推进时用整窗填满同一帧。",
+  "joint_order_native": [
+    "fl_hipx_joint",
+    "fr_hipx_joint",
+    "hl_hipx_joint",
+    "hr_hipx_joint",
+    "arm_joint1",
+    "fl_hipy_joint",
+    "fr_hipy_joint",
+    "hl_hipy_joint",
+    "hr_hipy_joint",
+    "arm_joint2",
+    "fl_knee_joint",
+    "fr_knee_joint",
+    "hl_knee_joint",
+    "hr_knee_joint",
+    "arm_joint3",
+    "fl_wheel_joint",
+    "fr_wheel_joint",
+    "hl_wheel_joint",
+    "hr_wheel_joint",
+    "arm_joint4",
+    "arm_joint5",
+    "arm_joint6",
+    "gripper_joint1",
+    "gripper_joint2"
+  ],
+  "joint_order_native_note": "articulation 原生序 = 观测 joint_pos/joint_vel 的列序（24）。由训练侧 probe_deploy_layout.py 在 M20_Piper_own 上实测（2026-09-20，wheel=15..18），并由部署侧写进本文件以便与 M20PiperPolicyRunner::NativeOrder 交叉断言。policy_obs 的 joint_pos 把其中 4 个轮子列（15..18）置零。",
+  "joint_order_action": [
+    "fl_hipx_joint",
+    "fl_hipy_joint",
+    "fl_knee_joint",
+    "fr_hipx_joint",
+    "fr_hipy_joint",
+    "fr_knee_joint",
+    "hl_hipx_joint",
+    "hl_hipy_joint",
+    "hl_knee_joint",
+    "hr_hipx_joint",
+    "hr_hipy_joint",
+    "hr_knee_joint",
+    "fl_wheel_joint",
+    "fr_wheel_joint",
+    "hl_wheel_joint",
+    "hr_wheel_joint"
+  ],
+  "joint_order_action_note": "动作槽位顺序（16）：训练 action term 的 joint_names（12 腿 + 4 轮）。腿目标 q_default + gain*a（hipx 0.125，其余 0.25）；轮 ω=5.0*a。"
+}

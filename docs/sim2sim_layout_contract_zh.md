@@ -22,7 +22,7 @@
 | 量 | 值 | 状态 |
 |---|---|---|
 | 策略 run | `logs/rsl_rl/history_adaptation/2026-09-20_00-50-31`，checkpoint `model_19999.pt` | ✅ |
-| 部署产物 | `<run>/exported_deploy/{policy.pt, policy.onnx, policy_layout.json}` | ✅ |
+| 部署产物 | `<run>/exported_deploy/{policy.pt, policy.onnx, policy_layout.json}`；本仓库镜像在 `src/M20_sdk_deploy/policy/m20_piper_history_20260920/` | ✅ |
 | 资产 | `deep_robotics_model/M20_Piper_own/usd/M20_Piper_own.usd`（= 本仓库 MJCF 的同一份 URDF） | ✅ |
 | 策略频率 | **50 Hz**（`sim.dt=0.005` × `decimation=4`） | ✅ |
 | 输入 | `policy_obs (batch,83)` + `history_flat (batch,700)` | ✅ |
@@ -141,24 +141,41 @@
 
 ---
 
-## 3. 关节顺序：三种候选与判定方法（当前最大的不确定项）
+## 3. 关节顺序（已实测判定 ✅）
 
 24 维 `joint_pos` / `joint_vel` 用的是 **articulation 原生序**（PhysX 上报顺序），
-它既不是动作序、也不是 MJCF 序。仓库里出现过三种写法（见 `DEF-005`）：
+它既不是动作序、也不是 MJCF 序。历史上有三种写法（`DEF-005`），
+**2026-09-20 由训练侧 `probe_deploy_layout.py` 在 `M20_Piper_own` 上实测判定**：
 
-| 序 | 写法 | 证据强度 |
-|---|---|---|
-| ① 交错序 | `hipx×4, arm1, hipy×4, arm2, knee×4, arm3, wheel×4, arm4-6, gripper×2` | 训练侧在 `M20_Piper_own` 上跑 `probe_deploy_layout.py` 的实测（二手引用） |
-| ② 分组序 | `hipx×4, hipy×4, knee×4, wheel×4, arm×6, gripper×2` | `M20_adjusted` 旧 run 的 `joint_torque_log_flat.npz`（本仓库实测，但**资产不同**） |
-| ③ 逐腿序 | `(hipx,hipy,knee)×4, wheel×4, arm×6, gripper×2` | 无（把 MJCF 序当成了原生序） |
+```
+idx  0- 3  fl_hipx, fr_hipx, hl_hipx, hr_hipx
+idx  4     arm_joint1
+idx  5- 8  fl_hipy, fr_hipy, hl_hipy, hr_hipy
+idx  9     arm_joint2
+idx 10-13  fl_knee, fr_knee, hl_knee, hr_knee
+idx 14     arm_joint3
+idx 15-18  fl_wheel, fr_wheel, hl_wheel, hr_wheel
+idx 19-21  arm_joint4, arm_joint5, arm_joint6
+idx 22-23  gripper_joint1, gripper_joint2
+```
 
-**判定方法**（不依赖 Isaac）：把顺序做成可切换的配置，在 sim2sim 里跑
-"零位移命令"（`base_velocity=0`、`body_pose=当前实测`、`ee_goal=当前 EE 位姿`、
-history 整窗同帧），看 20 s 内是否触发摔倒判据（倾角 > 0.8 rad 或 height < 0.30 m）。
-正确的序应当能站住；错序会把 24/83 的观测喂错，几乎必然站不住。
+即"**交错序**"（= 训练侧部署文档第 4 节那张表），`wheel = 15..18`。
+这份顺序同时写进了两个地方，两边必须一致：
 
-判定完成后：把胜出的顺序写进布局文件（`policy_layout.json` 同目录的
-`joint_order` 字段），删掉另一条，并在本文档更新这一节。
+* `policy/<run>/policy_layout.json` 的 `joint_order_native` 字段；
+* `M20PiperPolicyRunner::NativeOrder()`（C++ 侧）。
+
+交叉校验由 `scripts/check_policy_interface.py` 的第 [3] 项自动完成；
+**动作序**（12 腿 fl,fr,hl,hr + 4 轮）另记在 `joint_order_action`。
+
+探针同一次输出还顺带核实了：默认角（hipy ∓0.6 / knee ±1.0 / arm2 0.5 / arm3 −0.5）、
+硬限位（**hipx 是左右镜像**：`fl/hl`=[−0.436,0.611]、`fr/hr`=[−0.611,0.436]）、
+软限位 = 硬限位中点 ± 半宽×0.9、轮子无位置限位（±inf）——
+与 `scripts/check_mjcf_contract.py` 在 MJCF 上测到的完全一致。
+
+> 遗留（`TODO_zh.md` P0-8）：目前"顺序错了"只能靠端到端摔倒或人工比对发现，
+> 下一步可以把 `joint_order_native` 做成运行时断言（例如用一处已知的关节角
+> 偏移做闭环自检）—— 但那需要真机或更细的仿真探针，先记录为待办。
 
 ---
 
@@ -214,7 +231,7 @@ docker exec m20_piper_ros bash -lc \
 
 | 项 | 怎么测 | 通过判据 |
 |---|---|---|
-| 24 维原生序（第 3 节） | sim2sim A/B | 零位移命令下 20 s 不触发摔倒判据 |
+| 24 维原生序（第 3 节） | ✅ 已由训练侧探针判定，并写进 layout + runner（交叉断言在 L1） | — |
 | 轮速符号与尺度 | 给 `a[12..15]=+1` | 四轮同向、稳态 ω ≈ 5 rad/s（±10%） |
 | `ee_goal` 坐标系的端到端一致性 | 手动把臂移动一段，比较 `arm_controller` 反馈的 root 系位姿与 IK 目标 | 差 < 1e-3 m |
 | IK 解 vs 训练 DLS | 20 个随机目标上比关节角 | `max|Δq| < 0.02 rad`（或写清偏差来源） |
