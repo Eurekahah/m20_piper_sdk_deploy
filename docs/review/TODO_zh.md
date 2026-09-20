@@ -14,6 +14,7 @@
 | 2026-09-20 | 初版：把部署仓库现状拆成 P0~P3；确认"`main` 上跑的是旧 checkpoint"是首要问题 | `docs/review-spec` |
 | 2026-09-20 | 新增 P0-8（进场已达标后的下一步）；P1-1 部分完成（DEF-012/013 已修）；P3-1/P3-2 部分完成（遥测 + 一键冒烟已可用） | `fix/sim2sim-bringup` |
 | 2026-09-20 | **P0-1 / P0-2 / P0-3 完成**（接口切到 83/700/16；原生序由训练侧探针判定；`actions` 观测=实际下发）；新增 DEF-014/015；P1-1 再加一条（armature） | `feat/policy-layout-v2` |
+| 2026-09-20 | **P0-5 / P0-6 完成、DEF-011 完成**（高度区间收敛、臂增益 300/20、armature 真正生效）；L3 增加 `--mode arm`；P1-1 的 armature 一条清掉 | `fix/arm-gains-armature-height` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
 P2 = sim2real 落地；P3 = 工具与文档。
@@ -53,7 +54,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     `arm_controller` FK 算出的当前位姿一致（差 < 1e-3）。
   - 预估：0.5 个工作日。
 
-- [ ] **P0-5 `body_pose.height` 的度量与取值范围**
+- [~] **P0-5 `body_pose.height` 的度量与取值范围** → 区间已收敛 + 语义写进注释（`fix/arm-gains-armature-height`，见 `DONE_zh.md` 第十节）；剩余：真机上核对我方实测高度与训练默认是否一致（并入 P2-1）
   - 要做什么：把"机身高度命令"从"绝对 `root_z`"改成训练定义
     `height = root_z − mean(四轮 body 的 z) + 0.09`；命令范围收敛到训练区间
     `(0.33, 0.55)`（现在键盘/VR 上限是 `0.60`）。
@@ -65,7 +66,8 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     且把命令改到 0.55/0.60 时不会超出策略训练区间（超出要打警告）。
   - 预估：0.5 个工作日。
 
-- [ ] **P0-6 机械臂 PD 增益对齐到本次训练（40/8 → 300/20）**
+- [x] **P0-6 机械臂 PD 增益对齐到本次训练（40/8 → 300/20）** → 已迁至 `DONE_zh.md` 第十节（`fix/arm-gains-armature-height`）
+- [ ] ~~P0-6（原始条目，保留供对照）~~
   - 要做什么：`arm_controller.py` 的 `ARM_KP/ARM_KD`、仿真侧"首条命令前的默认保持"
     `ARM_DEFAULT_KP/KD`，统一取本次 run 的 `piper_arm` 执行器配置；
     把它做成单一常量来源，避免三处各写一份。
@@ -74,8 +76,8 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     当前仓库三处不一致：`arm_controller.py:84` 是 `40/8`、
     `piper_arm_interface.hpp:78` 是 `300/20`、
     `mujoco_simulation_ros2.py:116` 又写了一份 `40/8`。
-  - 验收：L2/L3 里臂跟踪阶跃不振荡；把三处的值打印出来逐条比对。
-  - 预估：0.5 个工作日。
+  - 验收（已达成）：`--mode arm` 下臂最大力矩 4.6 N·m、偏差 0.0153 rad；
+    `arm_controller.py` / `mujoco_simulation_ros2.py` / `piper_arm_interface.hpp` 三处一致。
 
 - [ ] **P0-7 安全接管阈值与限幅**
   - 要做什么：把训练终止阈值（倾角 > 0.8 rad、height < 0.30 m）接进
@@ -102,8 +104,11 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 ## P1 —— 决定 sim2sim 与训练的一致性上限
 
 > 已完成的子项：**DEF-012**（初始保持位姿用错机型）、**DEF-013**（把非控制字帧当
-> 零增益命令执行）—— 这两条修完，`tests/sim2sim_smoke.py --mode hold/rl` 均已 PASS。
+> 零增益命令执行）、**DEF-011**（armature 写到 `<motor>` 上被忽略）—— 这三条修完，
+> `tests/sim2sim_smoke.py` 的 `hold / rl / walk / arm` 四档全 PASS，
+> `check_mjcf_contract.py` 从 2 个 FAIL 变成 0 个。
 > 遥测（P3-2）与一键冒烟（P3-1 的一半）也已可用。
+> 仍待处理：`timestep` 取舍、执行器延迟、摩擦/恢复系数、`base_link` 显式惯性来源。
 
 - [ ] **P1-1 MuJoCo 物理与训练对齐（结构性差异清单）**
   - 要做什么：逐条核对并记录取舍：`timestep`（MJCF 0.002 vs 训练 `sim.dt=0.005`）、

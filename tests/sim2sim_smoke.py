@@ -17,6 +17,7 @@
   --mode stand   起 rl_deploy 并走到 standup（不进 RL）
   --mode rl      走到 RL，命令全零（默认；对应契约文档的"零位移命令"步骤）
   --mode walk    走到 RL 后按住 w 前进（vx = +0.7 m/s，键盘上限）
+  --mode arm     额外起 arm_controller（IK），验证机械臂保持在默认位姿且不扰动底盘
 
 用法（容器内）::
 
@@ -42,9 +43,13 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 SIM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py"
+ARM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py"
+CANDIDATE_MODES = ("rl", "walk", "arm")
 WHEEL_RADIUS = 0.09
 TILT_LIMIT = 0.8          # rad
 HEIGHT_LIMIT = 0.30       # m
+ARM_DEFAULT = [0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0]   # arm1..6 + gripper1/2
+ARM_TAU_LIMIT = 100.0     # N·m（训练 effort_limit）
 
 
 def spawn(cmd, env, log_path, stdin=subprocess.DEVNULL):
@@ -68,6 +73,28 @@ def killer(proc):
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except ProcessLookupError:
             pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def leftover_processes() -> list[str]:
+    """上一次跑剩下的 sim/rl_deploy。仿真的控制循环是**墙钟驱动**的：
+    同机并发跑两个实例会让 1 ms 控制周期被拉长，结果不可复现（实测出现过
+    同一配置一次 PASS 一次 FAIL），所以这里直接拒绝开跑。"""
+    out = subprocess.run(["pgrep", "-af", "mujoco_simulation_ros2.py|rl_deploy"],
+                         capture_output=True, text=True)
+    bad = []
+    for line in out.stdout.splitlines():
+        if not line.strip():
+            continue
+        # 排除"匹配到自己"的几种情况：pgrep 自身、包着本脚本的 shell、本脚本
+        if ("pgrep" in line or "sim2sim_smoke.py" in line
+                or "bash -lc" in line or "sh -c" in line):
+            continue
+        bad.append(line)
+    return bad
 
 
 def quat_to_R(w, x, y, z):
@@ -108,6 +135,15 @@ def analyse(csv_path: Path):
     j = int(n * 0.6)
     out["vx_tail"] = (float(rows[-1]["base_x"]) - float(rows[j]["base_x"])) / \
                      max(out["t"][-1] - out["t"][j], 1e-6)
+    # 机械臂：稳态偏差（相对默认角）与最大力矩；tau 列同样是 MJCF 序（16..23）
+    arm_dev = 0.0
+    arm_tau = 0.0
+    for r in rows[j:]:
+        for k, name_i in enumerate(range(16, 24)):
+            arm_dev = max(arm_dev, abs(float(r[f"q{name_i}"]) - ARM_DEFAULT[k]))
+            arm_tau = max(arm_tau, abs(float(r[f"tau{name_i}"])))
+    out["arm_dev"] = arm_dev
+    out["arm_tau_max"] = arm_tau
     out["fell_at"] = next((out["t"][i] for i in range(n)
                            if out["tilt"][i] > TILT_LIMIT or out["height"][i] < HEIGHT_LIMIT), None)
     return out
@@ -115,7 +151,7 @@ def analyse(csv_path: Path):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["hold", "stand", "rl", "walk"], default="rl")
+    ap.add_argument("--mode", choices=["hold", "stand", "rl", "walk", "arm"], default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
     ap.add_argument("--viewer", action="store_true", help="开 MuJoCo 窗口（默认无头）")
@@ -129,14 +165,21 @@ def main() -> int:
     if telemetry.exists():
         telemetry.unlink()
 
+    stale = leftover_processes()
+    if stale:
+        print("[smoke] FAIL: 上一次的进程还在跑，先清掉再来（否则控制周期会被拉长、结果不可复现）:")
+        for line in stale:
+            print("  " + line)
+        return 1
+
     env = dict(os.environ)
     env.setdefault("ROS_DOMAIN_ID", "1")
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
     env.setdefault("M20_JVEL_DEBUG", "0")
 
-    sim = deploy = None
-    sim_f = dep_f = None
+    sim = deploy = arm = None
+    sim_f = dep_f = arm_f = None
     try:
         print(f"[smoke] mode={args.mode} duration={args.duration}s out={out_prefix}*")
         sim, sim_f = spawn([sys.executable, str(SIM)], env, sim_log)
@@ -148,6 +191,12 @@ def main() -> int:
             while time.time() - t_start < args.duration:
                 time.sleep(0.2)
         else:
+            if args.mode == "arm":
+                # IK 节点：它会把 /ARM_JOINTS_CMD 与 /ARM_TELEOP_STATE 接起来，
+                # 也就是策略观测里 ee_goal 的来源（P0-4 的路径）
+                arm_log = out_prefix.with_suffix(".arm.log")
+                arm, arm_f = spawn([sys.executable, str(ARM)], env, arm_log)
+                time.sleep(1.0)
             # rl_deploy 用管道接键盘（KeyboardInterface 是非阻塞读 stdin），
             # 按键脚本：z 站立 → 4 s 后 c 进 RL（stand_duration = 2 s，留余量）
             deploy, dep_f = spawn(["ros2", "run", "m20_sdk_deploy", "rl_deploy"],
@@ -175,13 +224,21 @@ def main() -> int:
                 time.sleep(0.2)
     finally:
         killer(deploy)
+        killer(arm)
         killer(sim)
-        for f in (sim_f, dep_f):
+        for f in (sim_f, dep_f, arm_f):
             try:
                 if f:
                     f.close()
             except Exception:
                 pass
+        # 等进程真的退干净，避免下一个用例被上一个的残留影响
+        for _ in range(50):
+            procs = [p for p in (sim, deploy, arm) if p is not None]
+            if all(p.poll() is not None for p in procs):
+                break
+            time.sleep(0.1)
+        time.sleep(0.5)
 
     info = analyse(telemetry)
     if info is None:
@@ -194,6 +251,9 @@ def main() -> int:
           f"后半段 max {math.degrees(info['tilt_max_tail']):.1f}°")
     if args.mode == "walk":
         print(f"  vx(后半段): {info['vx_tail']:+.3f} m/s  （键盘命令 +0.7 m/s）")
+    if args.mode == "arm":
+        print(f"  arm     : 相对默认角最大偏差 {info['arm_dev']:.4f} rad, "
+              f"最大关节力矩 {info['arm_tau_max']:.1f} N·m（限幅 {ARM_TAU_LIMIT}）")
 
     fails = []
     if args.mode != "hold":
@@ -218,6 +278,12 @@ def main() -> int:
         if not (0.3 <= info["vx_tail"] <= 1.2):
             fails.append(f"walk 模式的平均前进速度 {info['vx_tail']:+.3f} m/s 不在 "
                          f"[0.3, 1.2]（键盘命令 +0.7 m/s）")
+    if args.mode == "arm":
+        # IK 节点把臂保持在默认位姿（默认目标就是默认关节角），力矩不超限
+        if info["arm_dev"] > 0.1:
+            fails.append(f"arm 模式的臂偏离默认位姿 {info['arm_dev']:.4f} rad > 0.1")
+        if info["arm_tau_max"] >= ARM_TAU_LIMIT:
+            fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
 
     if fails:
         print("\n[smoke] FAIL")

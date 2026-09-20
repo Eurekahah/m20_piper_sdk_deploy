@@ -15,13 +15,13 @@
       <motor ctrllimited="true" ctrlrange="-76.4 76.4" />
     </default>
     <default class="wheel_motor">
-      <motor ctrllimited="true" ctrlrange="-21.6 21.6" armature="0.00243216" />
+      <motor ctrllimited="true" ctrlrange="-21.6 21.6" />
     </default>
     <default class="arm_motor">
-      <motor ctrllimited="true" ctrlrange="-100 100" armature="0.01" />
+      <motor ctrllimited="true" ctrlrange="-100 100" />
     </default>
     <default class="gripper_motor">
-      <motor ctrllimited="true" ctrlrange="-10 10" armature="0.01" />
+      <motor ctrllimited="true" ctrlrange="-10 10" />
     </default>
   </default>
 
@@ -59,7 +59,7 @@
             <geom name="fl_knee_visual" type="mesh" mesh="fl_knee_fl_knee" material="default_material" class="visual" />
             <body name="fl_wheel" pos="0 0.059676 -0.25">
               <inertial pos="-3.11398454355682E-07 0.000279001520740008 5.70329233673394E-07" mass="0.638" diaginertia="0.001535 0.002853 0.001535" />
-              <joint name="fl_wheel_joint" type="hinge" axis="0 -1 0" />
+              <joint name="fl_wheel_joint" type="hinge" axis="0 -1 0"  armature="0.00243216"/>
               <geom name="fl_wheel_collision" quat="0.7071 0.7071 0 0" type="cylinder" size="0.09 0.027" class="collision" />
               <geom name="fl_wheel_visual" type="mesh" mesh="fl_wheel_fl_wheel" material="default_material" class="visual" />
             </body>
@@ -85,7 +85,7 @@
             <geom name="fr_knee_visual" type="mesh" mesh="fr_knee_fr_knee" material="default_material" class="visual" />
             <body name="fr_wheel" pos="0 -0.059676 -0.25">
               <inertial pos="-6.4732687427016E-07 -0.000279012463466427 -4.62420470803693E-08" mass="0.638" diaginertia="0.001535 0.002853 0.001535" />
-              <joint name="fr_wheel_joint" type="hinge" axis="0 -1 0" />
+              <joint name="fr_wheel_joint" type="hinge" axis="0 -1 0"  armature="0.00243216"/>
               <geom name="fr_wheel_collision" quat="0.7071 0.7071 0 0" type="cylinder" size="0.09 0.027" class="collision" />
               <geom name="fr_wheel_visual" type="mesh" mesh="fr_wheel_fr_wheel" material="default_material" class="visual" />
             </body>
@@ -111,7 +111,7 @@
             <geom name="hl_knee_visual" type="mesh" mesh="hl_knee_hl_knee" material="default_material" class="visual" />
             <body name="hl_wheel" pos="0 0.059676 -0.25">
               <inertial pos="-6.07889369508285E-07 0.000279009097070765 2.10489879304276E-07" mass="0.638" diaginertia="0.001535 0.002853 0.001535" />
-              <joint name="hl_wheel_joint" type="hinge" axis="0 -1 0" />
+              <joint name="hl_wheel_joint" type="hinge" axis="0 -1 0"  armature="0.00243216"/>
               <geom name="hl_wheel_collision" quat="0.7071 0.7071 0 0" type="cylinder" size="0.09 0.027" class="collision" />
               <geom name="hl_wheel_visual" type="mesh" mesh="hl_wheel_hl_wheel" material="default_material" class="visual" />
             </body>
@@ -137,7 +137,7 @@
             <geom name="hr_knee_visual" type="mesh" mesh="hr_knee_hr_knee" material="default_material" class="visual" />
             <body name="hr_wheel" pos="0 -0.059676 -0.25">
               <inertial pos="6.09746291457824E-07 -0.00027900886004309 2.0131377032051E-07" mass="0.638" diaginertia="0.001535 0.002853 0.001535" />
-              <joint name="hr_wheel_joint" type="hinge" axis="0 -1 0" />
+              <joint name="hr_wheel_joint" type="hinge" axis="0 -1 0"  armature="0.00243216"/>
               <geom name="hr_wheel_collision" quat="0.7071 0.7071 0 0" type="cylinder" size="0.09 0.027" class="collision" />
               <geom name="hr_wheel_visual" type="mesh" mesh="hr_wheel_hr_wheel" material="default_material" class="visual" />
             </body>
@@ -150,32 +150,32 @@
         <geom name="arm_base_link_visual" type="mesh" mesh="arm_base_link_arm_base_link" material="default_material" class="visual" />
         <body name="arm_link1" pos="0 0 0.123">
           <inertial pos="0.000121504734057468 0.000104632162460536 -0.00438597309559853" mass="0.71" diaginertia="0.00048916 0.00040472 0.00043982" />
-          <joint name="arm_joint1" type="hinge" range="-2.618 2.168" axis="0 0 1" />
+          <joint name="arm_joint1" type="hinge" range="-2.618 2.168" axis="0 0 1"  armature="0.01"/>
           <geom name="arm_link1_collision" type="mesh" mesh="arm_link1_collision_link1" class="collision" />
           <geom name="arm_link1_visual" type="mesh" mesh="arm_link1_link1" material="default_material" class="visual" />
           <body name="arm_link2" quat="0.048 -0.048 -0.7055 -0.7055">
             <inertial pos="0.198666145229743 -0.010926924140076 0.00142121714502687" mass="1.17" diaginertia="0.00116918 0.06785384 0.06774489" />
-            <joint name="arm_joint2" type="hinge" range="0 3.14" axis="0 0 1" />
+            <joint name="arm_joint2" type="hinge" range="0 3.14" axis="0 0 1"  armature="0.01"/>
             <geom name="arm_link2_collision" type="mesh" mesh="arm_link2_collision_link2" class="collision" />
             <geom name="arm_link2_visual" type="mesh" mesh="arm_link2_link2" material="default_material" class="visual" />
             <body name="arm_link3" pos="0.28503 0 0" quat="0.624 0 0 -0.7814">
               <inertial pos="-0.0202737662122021 -0.133914995944595 -0.000458682652737356" mass="0.5" diaginertia="0.01361711 0.00045024 0.01380322" />
-              <joint name="arm_joint3" type="hinge" range="-2.967 0" axis="0 0 1" />
+              <joint name="arm_joint3" type="hinge" range="-2.967 0" axis="0 0 1"  armature="0.01"/>
               <geom name="arm_link3_collision" type="mesh" mesh="arm_link3_collision_link3" class="collision" />
               <geom name="arm_link3_visual" type="mesh" mesh="arm_link3_link3" material="default_material" class="visual" />
               <body name="arm_link4" pos="-0.021984 -0.25075 0" quat="0.7071 0.7071 0 0">
                 <inertial pos="-9.66635791618542E-05 0.000876064475651083 -0.00496880904640868" mass="0.38" diaginertia="0.00018501 0.00018965 0.00015484" />
-                <joint name="arm_joint4" type="hinge" range="-1.745 1.745" axis="0 0 1" />
+                <joint name="arm_joint4" type="hinge" range="-1.745 1.745" axis="0 0 1"  armature="0.01"/>
                 <geom name="arm_link4_collision" type="mesh" mesh="arm_link4_collision_link4" class="collision" />
                 <geom name="arm_link4_visual" type="mesh" mesh="arm_link4_link4" material="default_material" class="visual" />
                 <body name="arm_link5" quat="0.7071 -0.7071 0 0">
                   <inertial pos="-4.10554118924211E-05 -0.0566486692356075 -0.0037205791677906" mass="0.383" diaginertia="0.00166169 0.0001851 0.00164321" />
-                  <joint name="arm_joint5" type="hinge" range="-1.22 1.22" axis="0 0 1" />
+                  <joint name="arm_joint5" type="hinge" range="-1.22 1.22" axis="0 0 1"  armature="0.01"/>
                   <geom name="arm_link5_collision" type="mesh" mesh="arm_link5_collision_link5" class="collision" />
                   <geom name="arm_link5_visual" type="mesh" mesh="arm_link5_link5" material="default_material" class="visual" />
                   <body name="arm_link6" pos="8.8259E-05 -0.091 0" quat="0.7071 0.7071 0 0">
                     <inertial pos="-8.82590762930069E-05 9.0598378529832E-06 -0.002" mass="0.00699089613564366" diaginertia="5.73015540542155e-07 5.73015540542155e-07 1.06738869138926e-06" />
-                    <joint name="arm_joint6" type="hinge" range="-2.0944 2.0944" axis="0 0 1" />
+                    <joint name="arm_joint6" type="hinge" range="-2.0944 2.0944" axis="0 0 1"  armature="0.01"/>
                     <geom name="arm_link6_collision" type="mesh" mesh="arm_link6_collision_link6" class="collision" />
                     <geom name="arm_link6_visual" type="mesh" mesh="arm_link6_link6" material="default_material" class="visual" />
                     <body name="gripper_base">
@@ -184,13 +184,13 @@
                       <geom name="gripper_base_visual" type="mesh" mesh="gripper_base_gripper_base" material="default_material" class="visual" />
                       <body name="gripper_link1" pos="0 0 0.1358" quat="0.7071 0.7071 0 0">
                         <inertial pos="0.00065123185041968 -0.0491929869131989 0.00972258769184025" mass="0.025" diaginertia="7.371e-05 7.81e-06 7.47e-05" />
-                        <joint name="gripper_joint1" type="slide" range="0 0.035" axis="0 0 1" />
+                        <joint name="gripper_joint1" type="slide" range="0 0.035" axis="0 0 1"  armature="0.01"/>
                         <geom name="gripper_link1_collision" type="mesh" mesh="gripper_link1_collision_link7" class="collision" />
                         <geom name="gripper_link1_visual" type="mesh" mesh="gripper_link1_link7" material="default_material" class="visual" />
                       </body>
                       <body name="gripper_link2" pos="0 0 0.1358" quat="0 0 -0.7071 -0.7071">
                         <inertial pos="0.000651231850419722 -0.0491929869131991 0.00972258769184024" mass="0.025" diaginertia="7.371e-05 7.81e-06 7.47e-05" />
-                        <joint name="gripper_joint2" type="slide" range="-0.035 0" axis="0 0 -1" />
+                        <joint name="gripper_joint2" type="slide" range="-0.035 0" axis="0 0 -1"  armature="0.01"/>
                         <geom name="gripper_link2_collision" type="mesh" mesh="gripper_link2_collision_link8" class="collision" />
                         <geom name="gripper_link2_visual" type="mesh" mesh="gripper_link2_link8" material="default_material" class="visual" />
                       </body>
