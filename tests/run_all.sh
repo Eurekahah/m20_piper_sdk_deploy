@@ -16,7 +16,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 SCRIPTS=src/M20_sdk_deploy/scripts
-MODES=${MODES:-"hold wheel_step no_arm rl walk arm arm_move push"}
+MODES=${MODES:-"hold wheel_step no_arm arm_mixed rl walk arm arm_move push"}
 fail=0
 step() { printf '\n=========== %s ===========\n' "$1"; }
 report() { if [ "$1" -eq 0 ]; then echo "  -> OK: $2"; else echo "  -> FAIL: $2"; fail=1; fi }
@@ -38,7 +38,7 @@ report $? "check_mjcf_contract.py"
 
 for m in $MODES; do
   step "L3 sim2sim --mode $m"
-  if [ "$m" = "rl" ] || [ "$m" = "walk" ] || [ "$m" = "arm_move" ] || [ "$m" = "no_arm" ]; then
+  if [ "$m" = "rl" ] || [ "$m" = "walk" ] || [ "$m" = "arm_move" ] || [ "$m" = "no_arm" ] || [ "$m" = "arm_mixed" ]; then
     # 这两档都有"进 RL 入口瞬态"，用失败率判（见 DEF-018）
     python3 tests/sim2sim_smoke.py --mode "$m" --duration 20 --repeat 6
   elif [ "$m" = "hold" ]; then

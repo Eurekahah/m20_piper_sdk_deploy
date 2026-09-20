@@ -204,3 +204,12 @@
 | 2026-09-20 | **DEF-023**：臂没装时策略会看到"臂不在默认姿态"（接口把臂反馈初始化为 0，而默认姿态是 arm2 0.5 / arm3 -0.5 ⇒ 观测与 `ee_goal` 矛盾）。修：接口初值改成默认姿态 + `HasData()` + `EnterRL` 时打印无臂警告 | 见下 | `feat/no-arm-stub` |
 | 2026-09-20 | 新增 **`arm_stub_node.py`（假臂节点）**：无臂部署时以 200 Hz 发 `/ARM_JOINTS_DATA`（默认姿态、零速度/力矩）、50 Hz 发 `/ARM_TELEOP_STATE`（root 系默认位姿 `(0.3492,0,0.4327)`），订阅丢弃 `/ARM_JOINTS_CMD`；`M20_ARM_STUB_POSE` / `M20_ARM_STUB_EE` 可改 | `ros2 topic echo --once /ARM_JOINTS_DATA` → `position: 0.0 / 0.5 / -0.5 ...`；`/ARM_TELEOP_STATE` → `(0.3492, 0, 0.4327, 0.7373, 0, 0.6756, 0)` | `feat/no-arm-stub` |
 | 2026-09-20 | 仿真侧新增 `M20_SIM_NO_ARM_DATA=1`（照常跑，只是不发臂反馈）用来模拟"臂没装"；新增 L3 用例 `--mode no_arm` | 第一拍观测臂项 = `[0,0,0,0,0,0,0,0]`、`ee_goal` = 默认位姿；`--repeat 6` 失败率 17%（仅入口瞬态）；不起假节点时启动打印无臂警告且观测仍自洽（接口初值兜底） | `feat/no-arm-stub` |
+
+## 十七、sim2sim 的腿/臂分离调试（2026-09-20/21）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-21 | **`scripts/run_sim2sim.sh` 三套配置**：`full`（腿臂都来自 MuJoCo）/ `legs`（臂=假臂默认姿态）/ `mixed`（腿来自 MuJoCo、臂走独立传输）。三者下 `rl_deploy` 看到的接口完全一致，只是"谁在发布"不同 | Ctrl-C 能收干净所有子进程（实测无残留）；`legs` 起 sim+stub、`mixed` 起 sim+stub(follow)+arm_controller | `feat/no-arm-stub` 之后 |
+| 2026-09-21 | **假臂节点增加"跟随模式"**（`M20_ARM_STUB_FOLLOW=1`，`M20_ARM_STUB_MAX_VEL=3.0 rad/s`）：把 `/ARM_JOINTS_CMD` 的位置目标一阶跟随出来当反馈 = **假 CAN 驱动**，于是没有真臂也能调 `arm_controller`/`arm_teleop` 这条链路 | 见下 | 同上 |
+| 2026-09-21 | **新增 L3 用例 `--mode arm_mixed`**：sim 不发臂数据 + 假 CAN 驱动 + IK + 键盘，按住 numpad 8 后断言**策略观测里的臂项真的变化** | 变化量 **1.037 rad**（tick0 → tick299），底盘 height 0.511 m / tilt ≤1.1° ⇒ 数据链路通了 | 同上 |
+| 2026-09-21 | `tests/run_all.sh` 扩到 **9 档**（新增 `no_arm`、`arm_mixed`） | 见第十一节表 | 同上 |

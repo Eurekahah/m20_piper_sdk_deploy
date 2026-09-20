@@ -157,7 +157,8 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 
 - [ ] **P2-4 无臂部署上线确认（新增）**
   - 现状：代码/工具层已完成（`DEF-023`：接口默认姿态兜底 + `HasData()` 警告 +
-    `arm_stub_node.py` 假臂节点 + 仿真 `M20_SIM_NO_ARM_DATA` + `--mode no_arm` 用例）。
+    `arm_stub_node.py` 假臂节点（含**跟随模式=假 CAN 驱动**）+ 仿真 `M20_SIM_NO_ARM_DATA`
+    + `scripts/run_sim2sim.sh {full|legs|mixed}` 三套配置 + `--mode no_arm` / `--mode arm_mixed` 用例）。
   - 待做：真机上**只装腿**跑一次完整流程（起 `arm_stub_node.py`，进 RL、走、
     急停），确认没有臂时策略行为与"臂装好且静止"一致。
   - 验收：真机 `--` 无臂行走不触发 `[TAKEOVER!]`；`ros2 topic echo /ARM_TELEOP_STATE`

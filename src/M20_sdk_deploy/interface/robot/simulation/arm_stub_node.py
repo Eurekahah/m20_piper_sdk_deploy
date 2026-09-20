@@ -32,6 +32,12 @@
   M20_ARM_STUB_RATE=200                       /ARM_JOINTS_DATA 的频率 [Hz]
   M20_ARM_STUB_DEBUG=1                        打印收到的 /ARM_JOINTS_CMD（1 Hz）
   M20_ARM_STUB_EE=""                          覆盖 ee_goal（"x,y,z,qw,qx,qy,qz"，root 系）
+  M20_ARM_STUB_FOLLOW=1                       打开"跟随命令"（模拟 CAN 驱动器）：
+                                              /ARM_JOINTS_CMD 的位置目标被当成真的会执行，
+                                              反馈按 M20_ARM_STUB_MAX_VEL 的速度上限一阶跟随。
+                                              用途：**没有真臂**也想调 arm_controller /
+                                              arm_teleop 这条链路（sim2sim 的 mixed 配置）。
+  M20_ARM_STUB_MAX_VEL=3.0                    跟随速度上限 [rad/s]（真机 piper 的限速）
 """
 
 from __future__ import annotations
@@ -79,7 +85,12 @@ class ArmStubNode(Node):
             self.ee_goal = DEFAULT_EE_GOAL_BODY.copy()
 
         rate = float(os.environ.get("M20_ARM_STUB_RATE", "200"))
+        self.rate = max(rate, 1.0)
         self.debug = os.environ.get("M20_ARM_STUB_DEBUG", "0") != "0"
+        # 跟随模式 = 模拟 CAN 驱动器；关闭时是"静态假臂"（臂没装，只保持默认姿态）
+        self.follow = os.environ.get("M20_ARM_STUB_FOLLOW", "0") != "0"
+        self.max_vel = float(os.environ.get("M20_ARM_STUB_MAX_VEL", "3.0"))
+        self.target = self.pose.copy()
         self.cmd_count = 0
         self.last_cmd_time = self.get_clock().now()
 
@@ -88,7 +99,7 @@ class ArmStubNode(Node):
         self.cmd_sub = self.create_subscription(
             JointsDataCmd, "/ARM_JOINTS_CMD", self._cmd_cb, 10)
 
-        self.create_timer(1.0 / max(rate, 1.0), self._publish_data)
+        self.create_timer(1.0 / self.rate, self._publish_data)
         self.create_timer(0.02, self._publish_state)          # 50 Hz，与 arm_controller 一致
 
         print("[arm_stub] 假臂节点启动（臂没装时用）")
@@ -98,9 +109,17 @@ class ArmStubNode(Node):
               + " ".join("%+.4f" % v for v in self.ee_goal) + " (root 系)")
         if self.debug:
             print("[arm_stub] 会以 1 Hz 打印收到的 /ARM_JOINTS_CMD（丢弃）")
+        if self.follow:
+            print("[arm_stub] 跟随模式：按 /ARM_JOINTS_CMD 的位置目标运动，速度上限 "
+                  "%.2f rad/s（模拟 CAN 驱动器）" % self.max_vel)
 
     # ------------------------------------------------------------------
     def _publish_data(self) -> None:
+        if self.follow:
+            # 一阶跟随（速度限幅），把命令位置变成"真实反馈"
+            dt = 1.0 / self.rate
+            step = self.max_vel * dt
+            self.pose = self.pose + np.clip(self.target - self.pose, -step, step)
         msg = JointsData()
         msg.data.joints_data = [JointData() for _ in range(16)]
         for i in range(8):
@@ -121,9 +140,11 @@ class ArmStubNode(Node):
         self.state_pub.publish(msg)
 
     def _cmd_cb(self, msg: JointsDataCmd) -> None:
-        # 丢弃：无臂部署时没有执行器；仅在 debug 打开时低频打印，便于确认
-        # "有没有别的东西在发臂命令"。
+        # 静态模式：丢弃（无臂部署时没有执行器）；跟随模式：当成位置目标执行。
         self.cmd_count += 1
+        if self.follow:
+            for i in range(8):
+                self.target[i] = float(msg.data.joints_data[i].position)
         if not self.debug:
             return
         now = self.get_clock().now()

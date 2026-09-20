@@ -24,6 +24,10 @@
                  验证臂真的动、末端位姿跟着走、底盘不受扰（端到端臂链路）
   --mode wheel_step 轮子速度伺服阶跃（5 rad/s @ t=5 s）：验证四个轮子同向、
                  稳态 ω ≈ 5 rad/s（速度环 + armature + 力矩限幅这条链）
+  --mode arm_mixed  "腿仿真 + 臂走独立传输"（对应 run_sim2sim.sh mixed）：
+                  MuJoCo 不发臂反馈，假 CAN 驱动（arm_stub_node --follow）按
+                  /ARM_JOINTS_CMD 一阶跟随，arm_controller(IK) + arm_teleop(键盘) 都在跑。
+                  断言：按住 numpad 8 后**策略观测里的臂真的变了**（数据链路通了）
   --mode no_arm  模拟"臂还没装"：仿真不发 /ARM_JOINTS_DATA，用 arm_stub_node 提供
                  默认姿态的假反馈 + ee_goal；断言策略观测里臂是"默认姿态"、
                  ee_goal 是默认位姿（DEF-023）。加 --no-stub 则不起假臂节点，
@@ -245,7 +249,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode",
                     choices=["hold", "stand", "rl", "walk", "arm", "arm_move",
-                             "wheel_step", "no_arm", "push"],
+                             "wheel_step", "no_arm", "arm_mixed", "push"],
                     default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
@@ -315,9 +319,11 @@ def main() -> int:
     env.setdefault("M20_JVEL_DEBUG", "0")
     if args.mode == "arm_move":
         env.setdefault("M20_ARM_DEBUG", "1")   # arm_controller 打印 IK 残差
-    if args.mode == "no_arm":
+    if args.mode in ("no_arm", "arm_mixed"):
         env["M20_SIM_NO_ARM_DATA"] = "1"        # 仿真不发臂反馈 = 模拟"臂没装"
-        env.setdefault("M20_PIPER_DEBUG", "1")  # dump 第一拍观测，便于断言
+        env.setdefault("M20_PIPER_DEBUG", "1")  # dump 观测，便于断言
+    if args.mode == "arm_mixed":
+        env["M20_ARM_STUB_FOLLOW"] = "1"        # 假 CAN 驱动：按命令一阶跟随
     if args.mode == "wheel_step":
         env.setdefault("M20_SIM_WHEEL_STEP_RAD_S", "5")
         env.setdefault("M20_SIM_WHEEL_STEP_AT", "5")
@@ -340,6 +346,19 @@ def main() -> int:
             while time.time() - t_start < args.duration:
                 time.sleep(0.2)
         else:
+            if args.mode == "arm_mixed":
+                # 假 CAN 驱动（跟随模式）+ IK 节点 + 键盘，臂的链路与真机同构
+                stub_log = out_prefix.with_suffix(".stub.log")
+                arm, arm_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
+                time.sleep(1.0)
+                ctrl_log = out_prefix.with_suffix(".arm.log")
+                ctrl, ctrl_f = spawn([sys.executable, str(ARM)], env, ctrl_log)
+                time.sleep(1.0)
+                arm = ctrl            # 让清理逻辑收掉 arm_controller
+                teleop_log = out_prefix.with_suffix(".arm_teleop.log")
+                teleop, tel_f = spawn([sys.executable, str(ARM_TELEOP)], env,
+                                      teleop_log, stdin=subprocess.PIPE)
+                time.sleep(1.0)
             if args.mode == "no_arm" and not args.no_stub:
                 stub_log = out_prefix.with_suffix(".stub.log")
                 arm, arm_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
@@ -385,7 +404,7 @@ def main() -> int:
                     # 需要每 0.2 s 重复一次。
                     if time.time() - t_start > 4.5:
                         press(b"w")
-                if args.mode == "arm_move":
+                if args.mode in ("arm_move", "arm_mixed"):
                     # 进 RL 之后**短按** numpad 8（EE +x）：等 2 s 让策略接管稳定，
                     # 按住 1.5 s 把臂挪出去，然后松开 —— 之后的稳态 IK 残差才是
                     # "跟踪精度"（一直按住会撞到工作空间限位，残差是结构性的）。
@@ -483,21 +502,29 @@ def main() -> int:
             fails.append(f"arm 模式的臂偏离默认位姿 {info['arm_dev']:.4f} rad > 0.1")
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
-    if args.mode == "no_arm":
-        # 模拟"臂没装"时，策略第一拍看到的臂状态必须与 ee_goal 自洽
+    if args.mode in ("arm_mixed", "no_arm"):
+        # 解析 policy_debug.txt：第一拍与最后一拍的臂项（原生序 8 个）+ ee_goal
         dbg = REPO / "policy_debug.txt"
         info["arm_obs"] = None
+        info["arm_obs_last"] = None
         if dbg.exists():
             lines = dbg.read_text(errors="ignore").split("\n")
+            # 观测前 9 维是 ang_vel(3)+gravity(3)+cmd(3)，joint_pos 从第 9 维开始；
+            # 臂关节在原生序里的下标是 4/9/14/19..23
+            arm_native = (4, 9, 14, 19, 20, 21, 22, 23)
             for i, ln in enumerate(lines):
-                if ln.startswith("tick 0"):
+                if ln.startswith("tick "):
                     obs = [float(v) for v in lines[i + 2].split()]
-                    # 观测前 9 维是 ang_vel(3)+gravity(3)+cmd(3)，joint_pos 从第 9 维开始；
-                    # 臂关节在原生序里的下标是 4/9/14/19..23
-                    arm_native = (4, 9, 14, 19, 20, 21, 22, 23)
-                    info["arm_obs"] = [obs[9 + k] for k in arm_native]
-                    info["arm_ee_goal"] = [round(v, 4) for v in obs[73:80]]
-                    break
+                    vals = [obs[9 + k] for k in arm_native]
+                    if info["arm_obs"] is None:
+                        info["arm_obs"] = vals
+                        info["arm_ee_goal"] = [round(v, 4) for v in obs[73:80]]
+                    info["arm_obs_last"] = vals
+                    info["arm_obs_ticks"] = int(ln.split()[1])
+        if args.mode == "arm_mixed" and info.get("arm_obs_last"):
+            d = max(abs(a - b) for a, b in zip(info["arm_obs"], info["arm_obs_last"]))
+            print(f"  arm_mixed: 观测里臂项的变化量（tick0 → tick{info.get('arm_obs_ticks')}）"
+                  f"最大 {d:.3f} rad")
         print("  no_arm  : 第一拍观测里的臂（q - q_default, 原生序 8 个）= "
               + (str([round(v, 4) for v in info["arm_obs"]]) if info["arm_obs"] else "N/A")
               + ("，ee_goal = " + str(info["arm_ee_goal"]) if info.get("arm_ee_goal") else ""))
@@ -542,6 +569,16 @@ def main() -> int:
                          f"{target:+.3f} 相差超过 10%")
         elif max(abs(v - target) for v in w) > 0.1 * abs(target):
             fails.append(f"wheel_step：四轮彼此不一致 {['%.2f' % v for v in w]}")
+    if args.mode == "arm_mixed":
+        # 混合配置：按键后"策略观测里的臂"必须真的变化（说明
+        # arm_teleop → arm_controller → 假 CAN 驱动 → /ARM_JOINTS_DATA → 策略 这条链是通的）
+        if info.get("arm_obs_last") is None:
+            fails.append("arm_mixed：没读到 policy_debug.txt（M20_PIPER_DEBUG 没生效？）")
+        else:
+            d = max(abs(a - b) for a, b in zip(info["arm_obs"], info["arm_obs_last"]))
+            if d < 0.05:
+                fails.append(f"arm_mixed：按住 numpad 8 后策略观测里的臂只变了 {d:.4f} rad，"
+                             f"说明臂的数据链路没通")
     if args.mode == "no_arm":
         if info.get("arm_obs") is None:
             fails.append("no_arm：没读到 policy_debug.txt 的第一拍观测（M20_PIPER_DEBUG 没生效？）")
@@ -554,6 +591,16 @@ def main() -> int:
             if goal is None or max(abs(a - b) for a, b in
                                    zip(goal, (0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0))) > 0.01:
                 fails.append(f"no_arm：ee_goal 不是默认位姿（{goal}）")
+    if args.mode == "arm_mixed":
+        # 混合配置：按键后"策略观测里的臂"必须真的变化（说明
+        # arm_teleop → arm_controller → 假 CAN 驱动 → /ARM_JOINTS_DATA → 策略 这条链是通的）
+        if info.get("arm_obs_last") is None:
+            fails.append("arm_mixed：没读到 policy_debug.txt（M20_PIPER_DEBUG 没生效？）")
+        else:
+            d = max(abs(a - b) for a, b in zip(info["arm_obs"], info["arm_obs_last"]))
+            if d < 0.05:
+                fails.append(f"arm_mixed：按住 numpad 8 后策略观测里的臂只变了 {d:.4f} rad，"
+                             f"说明臂的数据链路没通")
     if args.mode == "no_arm":
         if info.get("arm_obs") is None:
             fails.append("no_arm：没读到 policy_debug.txt 的第一拍观测（M20_PIPER_DEBUG 没生效？）")

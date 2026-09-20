@@ -109,7 +109,10 @@
 > 这些判据已有可执行入口（2026-09-20 起）：
 
 ```bash
-# 一键（L0 编译 + L1 + L3' + 六档 L3）：
+# sim2sim 三套配置（腿/臂来源分离，详见 src/M20_sdk_deploy/README.md）：
+bash src/M20_sdk_deploy/scripts/run_sim2sim.sh {full|legs|mixed}
+
+# 一键（L0 编译 + L1 + L3' + 九档 L3）：
 bash tests/run_all.sh                 # 完整
 SKIP_BUILD=1 MODES="hold rl" bash tests/run_all.sh   # 只跑子集
 
@@ -166,6 +169,9 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | `M20_POLICY_DIR` | 策略目录（含 `policy.onnx` + `policy_layout.json`） | `policy/m20_piper_history_20260920` | 策略 |
 | `M20_POLICY_ONNX` / `M20_POLICY_LAYOUT` | 单独覆盖 onnx / layout 路径 | 取自 `M20_POLICY_DIR` | 策略 |
 | `M20_ACTION_CLIP` | 动作安全限幅（训练 `clip_actions` = 100） | `100` | 策略 |
+| `M20_SIM_NO_ARM_DATA` | 仿真不发 `/ARM_JOINTS_DATA`（模拟"臂没装"） | `0` | 仿真 |
+| `M20_ARM_STUB_FOLLOW` / `M20_ARM_STUB_MAX_VEL` | 假臂节点"跟随命令"（假 CAN 驱动）与速度上限 | `0` / `3.0 rad/s` | 机械臂 |
+| `M20_ARM_TRANSPORT` | `mixed` 配置用真臂（`real`）还是假 CAN 驱动（默认 `sim`） | `sim` | 机械臂 |
 | `M20_TILT_TAKEOVER` | 安全接管的倾角阈值 [rad]（训练终止阈值；`<=0` 关闭） | `0.8` | 安全 |
 | `M20_LEG_FOLD_TAKEOVER` | 安全接管的"腿折叠"阈值 [rad]（`|q-q_default|`；`<=0` 关闭） | `1.2` | 安全 |
 | `M20_SIM_PUSH_FORCE` / `_AT` / `_DURATION` | 仿真侧扰动注入（`xfrc_applied` 作用在 `base_link`） | `0`（关）/ `12 s` / `0.3 s` | 仿真 |

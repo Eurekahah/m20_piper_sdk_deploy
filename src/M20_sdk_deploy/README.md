@@ -178,6 +178,41 @@ history 每步 70 维（原始值，含轮子），最旧→最新。
 输入是 `[policy_obs, latent]`，latent 没有来源；`policy_layout.json` 的
 `kind` 字段会拦住它（runner 只接受 `kind=history`）。
 
+### sim2sim 的三种配置（腿和臂的数据来源分开调）
+
+真机上"腿的数据"来自机器人 SDK、"臂的数据"来自 CAN 传输，两条路是独立的。
+sim2sim 里也按这个结构拆开，方便**先分开调、再合并调**：
+
+| 配置 | 腿的数据 | 臂的数据 | 用途 |
+|---|---|---|---|
+| `full`（默认） | MuJoCo | MuJoCo（同一个节点） | 最接近训练时的闭环，回归/整体验证 |
+| `legs` | MuJoCo | `arm_stub_node`：**默认姿态**（等价"臂没装"） | 只调腿；和真机"没装臂"完全同构 |
+| `mixed` | MuJoCo | `arm_stub_node --follow`（**假 CAN 驱动**，按 `/ARM_JOINTS_CMD` 一阶跟随）或真机 `arm_real_adapter` | 分开调臂链路：`arm_controller`(IK) + `arm_teleop`(键盘) 全在跑 |
+
+```bash
+# 一键起（每个配置一个终端；再开一个终端跑 rl_deploy）
+bash src/M20_sdk_deploy/scripts/run_sim2sim.sh full     # 全仿真
+bash src/M20_sdk_deploy/scripts/run_sim2sim.sh legs     # 只调腿（臂=默认姿态）
+bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed    # 腿仿真 + 臂走独立传输
+
+# mixed 想接真臂（先起 agx_arm_ctrl）：
+M20_ARM_TRANSPORT=real bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed
+
+# 策略（另一个终端，所有配置都一样）
+ros2 run m20_sdk_deploy rl_deploy      # z 站立 → c 进 RL
+```
+
+关键点：**三种配置下 `rl_deploy` 看到的接口完全一样**（腿 `/JOINTS_DATA`、
+臂 `/ARM_JOINTS_DATA`），只是"谁在发布"不同 —— 所以分开调得到的结论可以直接
+用到合并调和真机上。
+
+自动化验证（每档一个用例）：
+
+```bash
+python3 tests/sim2sim_smoke.py --mode no_arm     # legs：断言策略看到的臂=默认姿态
+python3 tests/sim2sim_smoke.py --mode arm_mixed  # mixed：断言按键后策略观测里的臂真的变了
+```
+
 ### 臂还没装怎么部署（只跑 M20）
 
 这条策略的观测里**有机械臂**（24 关节的 `joint_pos/joint_vel` + 7 维 `ee_goal`），
@@ -212,7 +247,6 @@ M20_ARM_STUB_DEBUG=1                        # 1 Hz 打印收到的 /ARM_JOINTS_C
 仿真里等价场景用 `M20_SIM_NO_ARM_DATA=1`（仿真照常跑，但不发臂反馈），
 一键验证：`python3 tests/sim2sim_smoke.py --mode no_arm`。
 
-### 测试（改任何模块后都要跑）
 
 ```bash
 # 容器内，仓库根目录

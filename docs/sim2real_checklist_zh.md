@@ -43,6 +43,11 @@ sim2sim 已经能站、能按命令走、能带臂遥操作（见 `review/DONE_z
 
 ## 1.5 只装腿、臂还没装（`DEF-023`）
 
+> 真机是"腿走 SDK、臂走 CAN"两条独立通路。sim2sim 里用
+> `run_sim2sim.sh legs`（腿=MuJoCo，臂=假臂默认姿态）与
+> `run_sim2sim.sh mixed`（腿=MuJoCo，臂=假 CAN 驱动/真臂）复现同一结构，
+> 因此下面这些步骤在仿真里可以先跑一遍。
+
 策略观测里**本来就有臂**（24 关节 + `ee_goal`），所以"只部署 M20"要显式处理：
 
 1. `[ ]` 起假臂节点：`python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py`
