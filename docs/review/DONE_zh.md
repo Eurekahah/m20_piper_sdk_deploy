@@ -12,6 +12,7 @@
 |---|---|---|
 | 2026-09-20 | 初版：按主题整理 `origin/main..main` 的 21 个提交；补"当前基线实测"一节 | `docs/review-spec` |
 | 2026-09-20 | 新增第八节：L3 测试基础设施（遥测 + 一键冒烟）+ 两条 sim2sim 修复（DEF-012/013） | `fix/sim2sim-bringup` |
+| 2026-09-20 | 新增第九节：策略接口切到 83/700/16（布局驱动）+ L1 验收 + 走起来了 | `feat/policy-layout-v2` |
 
 ---
 
@@ -110,3 +111,17 @@
 > 注意：这两条修复让 sim2sim 的"进场"（裸模型站立 → 站立 → 进 RL）达标了，
 > **不等于**策略接口已经对齐 —— 策略侧仍是旧 checkpoint 的 86/770/23
 > （`DEF-010` / `TODO_zh.md` P0-1）。
+
+## 九、策略接口切到新 checkpoint（83/700/16，布局驱动）(2026-09-20)
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **策略产物**：删除旧 checkpoint 的三个 onnx 与三个旧探针脚本；新增 `policy/m20_piper_history_20260920/{policy.onnx, policy.pt, policy_layout.json}`（来自 run `2026-09-20_00-50-31` / `model_19999.pt`），并在 layout 里补 `joint_order_native` / `joint_order_action`（部署侧交叉断言用） | 目录即"一次训练的部署产物"，换策略 = 换目录 | `feat/policy-layout-v2` |
+| 2026-09-20 | **runner 布局驱动**（`M20PiperPolicyRunner` 重写）：维度全部来自 `policy_layout.json` 并与 ONNX 形状/名字交叉断言；`joint_pos/joint_vel` 换成 **24 维原生序**（交错序），`joint_pos` 只把 4 个轮子列（15..18）置零；history 每步 **70**；动作 **16**（没有 `ee_ik` 槽位）；`ee_goal` 按训练 clip ±3；喂回 `actions` 观测的就是**实际下发**的动作 | 启动打印 `layout kind=history obs=83 history=10x70 latent=32 action=16` | `feat/policy-layout-v2` |
+| 2026-09-20 | **L1 离线验收** `scripts/check_policy_interface.py`：layout 自洽 + ONNX 形状/名字 + 原生序与 C++ 表交叉断言 + 标称状态输出有限 + ONNX↔TorchScript **相对**误差 | **PASS**；标称状态 `|a|max = 1.459`（远小于训练 clip 100）；相对误差 **9.8e-07**（独立复核了训练侧导出时 1.87e-07 的结论） | `feat/policy-layout-v2` |
+| 2026-09-20 | **L3 三档全绿**（`tests/sim2sim_smoke.py`，判据见契约文档） | `hold`：height 0.498 m / tilt 1.4°；`rl`（零命令）：height 0.515 m / tilt 1.0°；**`walk`（按住 w）**：height 0.515 m / tilt 1.1°、后半段平均 **+0.58 m/s**（键盘命令 +0.7 m/s），四轮转速 ≈ −7 rad/s（= 0.63 m/s） | `feat/policy-layout-v2` |
+| 2026-09-20 | **修 DEF-014**（ORT C++ API 生命周期：nullptr allocator 段错误、`GetTensorTypeAndShapeInfo()` 悬垂 → `std::length_error`）**与 DEF-015**（SIGINT 退出时 `Stop()` 不调 `OnExit()` → 策略线程 joinable 析构 → abort） | 退出日志干净；`tests/sim2sim_smoke.py` 新增"日志里必须出现 `M20PiperPolicyRunner` 与 `rl_control`、且不许有 Aborted/Segmentation fault"的断言 | `feat/policy-layout-v2` |
+
+> 结论：**新 checkpoint 在 sim2sim 里已经能站住并且能按命令前进**。
+> 下一步是 `TODO_zh.md` P0 里剩下的命令语义（height 度量、复位初值）、
+> 安全接管阈值，以及 P1 的仿真一致性（armature 仍未生效 = DEF-011）。

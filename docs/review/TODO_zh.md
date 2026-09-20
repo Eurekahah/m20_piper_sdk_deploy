@@ -13,6 +13,7 @@
 |---|---|---|
 | 2026-09-20 | 初版：把部署仓库现状拆成 P0~P3；确认"`main` 上跑的是旧 checkpoint"是首要问题 | `docs/review-spec` |
 | 2026-09-20 | 新增 P0-8（进场已达标后的下一步）；P1-1 部分完成（DEF-012/013 已修）；P3-1/P3-2 部分完成（遥测 + 一键冒烟已可用） | `fix/sim2sim-bringup` |
+| 2026-09-20 | **P0-1 / P0-2 / P0-3 完成**（接口切到 83/700/16；原生序由训练侧探针判定；`actions` 观测=实际下发）；新增 DEF-014/015；P1-1 再加一条（armature） | `feat/policy-layout-v2` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
 P2 = sim2real 落地；P3 = 工具与文档。
@@ -21,55 +22,25 @@ P2 = sim2real 落地；P3 = 工具与文档。
 
 ## 0. 现状一句话
 
-`main`（`40744b5`）能编译、能起 sim2sim，但**整条链喂给策略的接口是旧 checkpoint 的**
-（`policy_obs 86 / history 770 / action 23`，训练在 `M20_adjusted` 资产上）；
-最新训练 run `logs/rsl_rl/history_adaptation/2026-09-20_00-50-31`
-是 **`83 / 700 / 16`**、资产是 `M20_Piper_own`。这是"部署效果欠佳"的第一嫌疑，
-必须先把接口换过来，再谈策略本身。
+接口已经切到新 checkpoint（**83 / 700 / 16**、资产 `M20_Piper_own`），
+sim2sim 三档冒烟（`hold` / `rl` / `walk`）全绿：**站得住、按命令走得动**
+（walk 后半段 +0.58 m/s，命令 +0.7）。剩下的 P0 是"命令语义 + 安全接管"，
+P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 
 ---
 
 ## P0 —— 挡在"sim2sim 能稳定跑"前面
 
-- [ ] **P0-1 策略接口层切到新 checkpoint（83 / 700 / 16）**
-  - 要做什么：把 `M20PiperPolicyRunner` 从"写死 86/770/23"改成**读
-    `policy_layout.json`** 驱动：`policy_obs_dim` / `history_single_step_dim` /
-    `history_length` / `action_dim` 全部来自布局文件并与 ONNX 的输入输出形状交叉断言；
-    按新布局重写观测组装（`joint_pos` / `joint_vel` 都是 **24 维原生序**，
-    `joint_pos` 只把 4 个轮子列置零）、history 每步 **70 维**、动作 **16 维**
-    （12 腿位置 + 4 轮速度，**没有 `ee_ik` 槽位**）。
-  - 依据（为什么）：`docs/sim2sim_layout_contract_zh.md` 第 2 节逐项核对结果；
-    训练侧 `logs/.../2026-09-20_00-50-31/params/env.yaml` 的 `observations.policy`
-    与 `exported_deploy/policy_layout.json`。
-  - 验收：`check_policy_interface.py` 通过；L3 的"零位移命令"步骤 20 s 不摔倒。
-  - 预估：1 个工作日（含测试）。
-
-- [ ] **P0-2 确认 `M20_Piper_own` 的 articulation 原生关节顺序（当前是 `(推断)`）**
-  - 要做什么：把 24 维原生序做成**可切换**（布局文件里的 `joint_order` 字段 + 环境变量
-    覆盖），然后在 sim2sim 里 A/B 两种候选序：
-    ①训练侧文档/DEF-021 实测的**交错序**（`hipx×4, arm1, hipy×4, arm2, knee×4, arm3,
-    wheel×4, arm4-6, gripper×2`）；②按关节类型分组的**分组序**（`hipx×4, hipy×4,
-    knee×4, wheel×4, arm×6, gripper×2`）。
-  - 依据（为什么）：支持交错序的证据是训练仓库 `DEF-021` / `docs/deploy_sim2sim_sim2real_zh.md`
-    第 4 节（在 `M20_Piper_own` 上跑 `probe_deploy_layout.py` 的实测输出，
-    "原生关节序 wheel=15..18"）；支持分组序的证据是**另一个资产**
-    （`M20_adjusted`）的 `joint_torque_log_flat.npz` 里 `robot.find_joints(".*")` 的
-    `joint_names` 实测值（该资产夹爪叫 `arm_joint7/8`）。两者资产不同，不构成矛盾，
-    但**本仓库没有在 `M20_Piper_own` 上实测过**，所以必须 A/B。
-  - 验收：两条候选各跑 L3 的"零位移命令"，把 20 s 内的高度/倾角曲线记录下来，
-    差异明确的那条写进契约文档并删掉另一条。
-  - 预估：0.5 个工作日。
-
-- [ ] **P0-3 `last_action` 与"实际下发的动作"必须一致**
-  - 要做什么：确定部署侧的限幅策略后，把**限幅后**的动作喂回 `actions` 观测
-    （训练语义：`env.action_manager.action` = 原始输出被 `clip_actions=100` 截断；
-    部署侧若再加安全限幅，就必须把限幅后的值喂回去）。同时把"轮速目标 ±15 rad/s"
-    这类部署专有限幅改成**可配置**并登记。
-  - 依据（为什么）：训练侧 `DEFECT_LOG_zh.md` DEF-008；本仓库
-    `m20_piper_policy_runner.hpp` 里 `last_action_mode` 的注释已经踩过一次
-    （`processed` 会让机器人 3 s 内翻倒）。
-  - 验收：L1 打印"喂回的 16 维"与"实际下发"逐元素相等；L3 零位移命令稳定。
-  - 预估：0.5 个工作日。
+> **P0-1 / P0-2 / P0-3 已完成**，见 `DONE_zh.md` 第九节（`feat/policy-layout-v2`）：
+> 接口切到 83/700/16 且布局驱动；24 维原生序由训练侧探针实测判定（交错序，
+> `wheel=15..18`）并写进 layout + runner，L1 交叉断言；`actions` 观测 = 实际下发的动作。
+> 下面保留原来的验收口径，供以后换策略时复用：
+>
+> * P0-1 验收 = `scripts/check_policy_interface.py` 通过 + L3 零命令 20 s 不摔；
+>   （实测：L1 PASS、`hold/rl/walk` 三档 L3 全 PASS，walk 后半段 +0.58 m/s）
+> * P0-2 验收 = 顺序写进 `policy_layout.json::joint_order_native` 且与
+>   `M20PiperPolicyRunner::NativeOrder()` 一致；
+> * P0-3 验收 = 喂回 `actions` 的 16 维与实际下发逐元素相等（现在是同一个变量）。
 
 - [ ] **P0-4 复位/进入 RL 时**不要**喂零命令**
   - 要做什么：进入 `RLControlState` 的那一帧就把 `ee_goal` 设成"当前 EE 位姿（root 系）"、

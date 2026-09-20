@@ -219,15 +219,20 @@ namespace qw {
             if (robot_name_ == RobotName::M20) {
                 namespace fs = std::filesystem;
                 fs::path base = fs::path(__FILE__).parent_path();
-                auto model_path = base / ".." / ".." / "policy" / "history_adaptation_full.onnx";
-                if (!fs::exists(model_path)) {
-                    std::cerr << "[RLControlState] policy not found: " << model_path
-                              << "\nGenerate it with scripts/export_history_policy_onnx.py "
-                                 "and place it at policy/history_adaptation_full.onnx" << std::endl;
-                    exit(0);
+                // 策略目录（含 policy.onnx + policy_layout.json）；环境变量可覆盖
+                fs::path policy_dir = base / ".." / ".." / "policy" / "m20_piper_history_20260920";
+                if (const char *e = std::getenv("M20_POLICY_DIR")) policy_dir = e;
+                if (!fs::exists(policy_dir / "policy.onnx")) {
+                    std::cerr << "[RLControlState] policy not found in " << policy_dir
+                              << "\n把训练侧 <run>/exported_deploy/ 整个目录放到 "
+                                 "src/M20_sdk_deploy/policy/<run 名>/（需要 policy.onnx + "
+                                 "policy_layout.json），或用 M20_POLICY_DIR 指定目录。"
+                              << std::endl;
+                    exit(1);
                 }
-                auto model_path_abs = fs::canonical(model_path);
-                piper_policy_ = std::make_shared<M20PiperPolicyRunner>("m20_piper_policy", model_path_abs.string());
+                const std::string policy_dir_abs = fs::canonical(policy_dir).string();
+                piper_policy_ = std::make_shared<M20PiperPolicyRunner>("m20_piper_policy",
+                                                                      policy_dir_abs);
 
                 auto node = ri_ptr_->get_node();
                 arm_ri_ptr_ = std::make_shared<PiperArmInterface>("M20PiperArm", node);
@@ -302,6 +307,10 @@ namespace qw {
         };
 
         virtual void OnExit() {
+            // 幂等：切换状态时调用一次，进程退出（QwStateMachine::Stop）时可能再调用一次。
+            if (!run_policy_thread_.joinable()) {
+                return;
+            }
             start_flag_ = false;
             run_policy_thread_.join();
             arm_ri_ptr_->Stop();

@@ -145,12 +145,11 @@ python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w
 | `M20_SIM_TELEMETRY` / `M20_SIM_TELEMETRY_PERIOD` | 遥测 CSV 路径 / 采样周期（tick） | 关 / `5`（=200 Hz） | 仿真 |
 | `M20_JVEL_DEBUG` / `M20_JVEL_PERIOD` | 打印腿/轮关节速度（1 Hz） | `1` / `50` tick | 仿真+部署 |
 | `M20_PIPER_DEBUG` | 把前 300 个 policy tick 的 obs/action dump 到 `policy_debug.txt` | 关 | 策略 |
-| `M20_LAST_ACTION_MODE` | `applied` / `raw` / `processed`：喂回 `actions` 观测的语义 | `applied` | 策略（旧 checkpoint 期引入） |
-| `M20_IK_FEEDBACK` | `mean` / `noisy` / `zero` / `hold`：7 维 `ee_ik` 槽位喂什么 | `mean` | 策略（旧 checkpoint 期引入） |
-| `M20_FREEZE_EE_GOAL` / `M20_FREEZE_ARM_OBS` | 冻结 obs 的臂/EE 通路（隔离用） | 关 | 策略（旧 checkpoint 期引入） |
-| `M20_ARM_DEFAULT_TRAINED` | 用 `M20_adjusted` 的臂默认角（arm2 3.0 / arm3 -1.0） | 关 | 策略（旧 checkpoint 专用） |
-| `M20_ZERO_CMD_WHEEL_BRAKE` | 零速度命令时强制轮速目标为 0 | 关 | 策略（旧 checkpoint 专用） |
+| `<del>M20_LAST_ACTION_MODE / M20_IK_FEEDBACK / M20_FREEZE_* / M20_ARM_DEFAULT_TRAINED / M20_ZERO_CMD_WHEEL_BRAKE</del>` | 旧 checkpoint 期的诊断开关（16 维动作、无 `ee_ik`）——**已随旧策略一起删除** | — | 策略（历史） |
 | `M20_EE_GOAL_BODY_FRAME` | `ee_goal` 用机体坐标系（`1`）还是臂基座坐标系（`0`） | `1` | 机械臂 |
+| `M20_POLICY_DIR` | 策略目录（含 `policy.onnx` + `policy_layout.json`） | `policy/m20_piper_history_20260920` | 策略 |
+| `M20_POLICY_ONNX` / `M20_POLICY_LAYOUT` | 单独覆盖 onnx / layout 路径 | 取自 `M20_POLICY_DIR` | 策略 |
+| `M20_ACTION_CLIP` | 动作安全限幅（训练 `clip_actions` = 100） | `100` | 策略 |
 | `M20_ARM_TRAINED_DEFAULT` | 仿真里臂初始位姿用训练资产的默认角 | 关 | 仿真 |
 | `M20_ARM_ROT_LOCAL_FRAME` / `M20_ARM_ROLL_SIGN` | 遥操作旋转合成方式（A/B 用） | 与训练一致 | 机械臂 |
 | `M20_EE_MAX_LIN_SPEED` / `M20_EE_MAX_ANG_SPEED` | 键盘积分路径的 EE 限速 | `0.35 m/s` / `0.8 rad/s` | 机械臂 |
