@@ -11,6 +11,13 @@
  * All arm/gripper values are raw rad (identity calibration). The real arm
  * (pyAgxArm over CAN) is driven by the separate arm_controller node; this
  * interface only carries the sim-side arm feedback into the policy obs.
+ *
+ * 臂还没装/没上电时（`/ARM_JOINTS_DATA` 一直没有发布者）：
+ *   - 本接口把 8 个关节**初始化为训练默认姿态**（arm2 0.5 / arm3 -0.5），不是 0 ——
+ *     这样第一帧观测与 `ee_goal` 的默认值自洽（否则策略会被告知"臂在非默认姿态"，
+ *     见 DEF-023）；
+ *   - `HasData()` 为 false，`RLControlState::OnEnter` 会打印一条明确的警告，
+ *     提醒"无臂部署请起 arm_stub_node.py，否则策略看到的臂状态是假的"。
  */
 
 #pragma once
@@ -26,6 +33,7 @@ using namespace types;
 class PiperArmInterface : public RobotInterface {
 private:
     VecXf joint_pos_, joint_vel_, joint_tau_;
+    bool received_ = false;   // 有没有真的收到过 /ARM_JOINTS_DATA
 
     rclcpp::Publisher<drdds::msg::JointsDataCmd>::SharedPtr arm_cmd_pub_;
     rclcpp::Subscription<drdds::msg::JointsData>::SharedPtr arm_data_sub_;
@@ -35,7 +43,9 @@ public:
 
     PiperArmInterface(const std::string &robot_name, rclcpp::Node::SharedPtr node)
         : RobotInterface(robot_name, kArmDof, node) {
+        // 训练默认姿态（arm_joint1..6 + gripper1/2）：与 Isaac init_state 一致
         joint_pos_ = VecXf::Zero(kArmDof);
+        joint_pos_ << 0.0f, 0.5f, -0.5f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f;
         joint_vel_ = VecXf::Zero(kArmDof);
         joint_tau_ = VecXf::Zero(kArmDof);
 
@@ -86,7 +96,11 @@ public:
         SetJointCommand(cmd);
     }
 
+    /// 有没有收到过真实的臂反馈（无臂部署时为 false）
+    bool HasData() const { return received_; }
+
     void Handler(const drdds::msg::JointsData::SharedPtr msg) {
+        received_ = true;
         for (int i = 0; i < kArmDof; ++i) {
             joint_pos_(i) = msg->data.joints_data[i].position;
             joint_vel_(i) = msg->data.joints_data[i].velocity;

@@ -24,6 +24,10 @@
                  验证臂真的动、末端位姿跟着走、底盘不受扰（端到端臂链路）
   --mode wheel_step 轮子速度伺服阶跃（5 rad/s @ t=5 s）：验证四个轮子同向、
                  稳态 ω ≈ 5 rad/s（速度环 + armature + 力矩限幅这条链）
+  --mode no_arm  模拟"臂还没装"：仿真不发 /ARM_JOINTS_DATA，用 arm_stub_node 提供
+                 默认姿态的假反馈 + ee_goal；断言策略观测里臂是"默认姿态"、
+                 ee_goal 是默认位姿（DEF-023）。加 --no-stub 则不起假臂节点，
+                 用来看"没有假反馈时会差多少"。
 
 用法（容器内）::
 
@@ -51,6 +55,7 @@ REPO = Path(__file__).resolve().parent.parent
 SIM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py"
 ARM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py"
 ARM_TELEOP = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py"
+ARM_STUB = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py"
 # 直接起安装好的二进制，而不是 `ros2 run ...`：后者会再 fork 一个子进程，
 # 父进程一退就没法回收孙进程（实测会留下跑着的 rl_deploy，污染下一个用例）。
 RL_DEPLOY_BIN = REPO / "install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy"
@@ -240,11 +245,13 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode",
                     choices=["hold", "stand", "rl", "walk", "arm", "arm_move",
-                             "wheel_step", "push"],
+                             "wheel_step", "no_arm", "push"],
                     default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
     ap.add_argument("--viewer", action="store_true", help="开 MuJoCo 窗口（默认无头）")
+    ap.add_argument("--no-stub", action="store_true",
+                    help="no_arm 模式下不起假臂节点（对照用）")
     ap.add_argument("--repeat", type=int, default=1,
                     help="同一模式重复跑 N 次并报告失败率（`rl` 档入口有 ~25%% 的边缘发散，"
                          "单次跑会给假阴性；重复跑才是有意义的验收口径，见 DEF-018）")
@@ -270,7 +277,7 @@ def main() -> int:
         # 边缘稳定性：部署侧 4 组对照实验全部排除，见 DEFECT_LOG_zh.md）。
         # 这三档用"失败率"当判据（≤ 1/2，且必须报告出来以便训练侧回归对比），
         # 其余档位要求 0 失败 —— 那些档位测的是接口/执行器/安全，不该抖。
-        limit = 0.5 if args.mode in ("rl", "walk", "arm_move") else 0.0
+        limit = 0.5 if args.mode in ("rl", "walk", "arm_move", "no_arm") else 0.0
         if fails / args.repeat > limit + 1e-9:
             print(f"[smoke] FAIL: 失败率 {fails / args.repeat:.0%} 超过允许的 {limit:.0%}")
             return 1
@@ -308,6 +315,9 @@ def main() -> int:
     env.setdefault("M20_JVEL_DEBUG", "0")
     if args.mode == "arm_move":
         env.setdefault("M20_ARM_DEBUG", "1")   # arm_controller 打印 IK 残差
+    if args.mode == "no_arm":
+        env["M20_SIM_NO_ARM_DATA"] = "1"        # 仿真不发臂反馈 = 模拟"臂没装"
+        env.setdefault("M20_PIPER_DEBUG", "1")  # dump 第一拍观测，便于断言
     if args.mode == "wheel_step":
         env.setdefault("M20_SIM_WHEEL_STEP_RAD_S", "5")
         env.setdefault("M20_SIM_WHEEL_STEP_AT", "5")
@@ -330,6 +340,10 @@ def main() -> int:
             while time.time() - t_start < args.duration:
                 time.sleep(0.2)
         else:
+            if args.mode == "no_arm" and not args.no_stub:
+                stub_log = out_prefix.with_suffix(".stub.log")
+                arm, arm_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
+                time.sleep(1.0)
             if args.mode in ("arm", "arm_move"):
                 # IK 节点：它会把 /ARM_JOINTS_CMD 与 /ARM_TELEOP_STATE 接起来，
                 # 也就是策略观测里 ee_goal 的来源（P0-4 的路径）
@@ -469,6 +483,24 @@ def main() -> int:
             fails.append(f"arm 模式的臂偏离默认位姿 {info['arm_dev']:.4f} rad > 0.1")
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
+    if args.mode == "no_arm":
+        # 模拟"臂没装"时，策略第一拍看到的臂状态必须与 ee_goal 自洽
+        dbg = REPO / "policy_debug.txt"
+        info["arm_obs"] = None
+        if dbg.exists():
+            lines = dbg.read_text(errors="ignore").split("\n")
+            for i, ln in enumerate(lines):
+                if ln.startswith("tick 0"):
+                    obs = [float(v) for v in lines[i + 2].split()]
+                    # 观测前 9 维是 ang_vel(3)+gravity(3)+cmd(3)，joint_pos 从第 9 维开始；
+                    # 臂关节在原生序里的下标是 4/9/14/19..23
+                    arm_native = (4, 9, 14, 19, 20, 21, 22, 23)
+                    info["arm_obs"] = [obs[9 + k] for k in arm_native]
+                    info["arm_ee_goal"] = [round(v, 4) for v in obs[73:80]]
+                    break
+        print("  no_arm  : 第一拍观测里的臂（q - q_default, 原生序 8 个）= "
+              + (str([round(v, 4) for v in info["arm_obs"]]) if info["arm_obs"] else "N/A")
+              + ("，ee_goal = " + str(info["arm_ee_goal"]) if info.get("arm_ee_goal") else ""))
     if args.mode == "arm_move":
         arm_log = out_prefix.with_suffix(".arm.log")
         res = []
@@ -510,6 +542,31 @@ def main() -> int:
                          f"{target:+.3f} 相差超过 10%")
         elif max(abs(v - target) for v in w) > 0.1 * abs(target):
             fails.append(f"wheel_step：四轮彼此不一致 {['%.2f' % v for v in w]}")
+    if args.mode == "no_arm":
+        if info.get("arm_obs") is None:
+            fails.append("no_arm：没读到 policy_debug.txt 的第一拍观测（M20_PIPER_DEBUG 没生效？）")
+        else:
+            worst = max(abs(v) for v in info["arm_obs"])
+            if worst > 0.02:
+                fails.append(f"no_arm：策略看到的臂不是默认姿态（最大偏差 {worst:.3f} rad；"
+                             f"没起假臂节点时会是 ~0.5）")
+            goal = info.get("arm_ee_goal")
+            if goal is None or max(abs(a - b) for a, b in
+                                   zip(goal, (0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0))) > 0.01:
+                fails.append(f"no_arm：ee_goal 不是默认位姿（{goal}）")
+    if args.mode == "no_arm":
+        if info.get("arm_obs") is None:
+            fails.append("no_arm：没读到 policy_debug.txt 的第一拍观测（M20_PIPER_DEBUG 没生效？）")
+        else:
+            worst = max(abs(v) for v in info["arm_obs"])
+            if worst > 0.02:
+                fails.append(f"no_arm：策略看到的臂不是默认姿态（最大偏差 {worst:.3f} rad；"
+                             f"没起假臂节点时会是 ~0.5）")
+            goal = info.get("arm_ee_goal")
+            if goal is None or max(abs(a - b) for a, b in
+                                   zip(goal, (0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0))) > 0.01:
+                fails.append(f"no_arm：ee_goal 不是默认位姿（{goal}）")
+
     if args.mode == "push":
         # 这里**期望**摔（被打倒），要验的是"安全接管触发并切进 joint_damping"
         dep_txt = deploy_log.read_text(errors="ignore") if deploy_log.exists() else ""

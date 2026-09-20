@@ -178,6 +178,40 @@ history 每步 70 维（原始值，含轮子），最旧→最新。
 输入是 `[policy_obs, latent]`，latent 没有来源；`policy_layout.json` 的
 `kind` 字段会拦住它（runner 只接受 `kind=history`）。
 
+### 臂还没装怎么部署（只跑 M20）
+
+这条策略的观测里**有机械臂**（24 关节的 `joint_pos/joint_vel` + 7 维 `ee_goal`），
+所以"没有臂"意味着**两个输入没有来源**，不能不管：
+
+| 情况 | 会发生什么 | 怎么做 |
+|---|---|---|
+| 臂没装，什么都不起 | `PiperArmInterface` 找不到 `/ARM_JOINTS_DATA`，会把 8 个臂关节当成**训练默认姿态**（arm2 0.5 / arm3 -0.5），并打印一条 `[ARM] 没有收到 /ARM_JOINTS_DATA` 警告 | 能用，但策略看到的臂状态是"假设值"。短测可以，长跑建议用下面的假臂节点 |
+| 臂没装 + **假臂节点**（推荐） | 假臂节点以 200 Hz 发默认姿态的 `/ARM_JOINTS_DATA`、50 Hz 发默认位姿的 `/ARM_TELEOP_STATE`，观测与目标**自洽** | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py`（见下） |
+| 臂装上了但没上电 | `arm_real_adapter` 没有反馈，等价于上表第一行 | 要么让 `agx_arm_ctrl` 上电，要么临时用假臂节点 |
+| 臂要动 | 需要 `arm_controller` + `arm_teleop_node`（或 VR） | 见上面的 4~5 终端流程 |
+
+```bash
+# 无臂部署（腿 + 假臂）：
+export ROS_DOMAIN_ID=1; source install/setup.bash
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py   # 假臂（可调姿态）
+ros2 run m20_sdk_deploy rl_deploy                                        # 正常 z 站立 → c 进 RL
+```
+
+假臂节点可调：
+
+```bash
+M20_ARM_STUB_POSE="0,0.5,-0.5,0,0,0,0,0"   # 8 关节角（rad）
+M20_ARM_STUB_EE="0.3492,0,0.4327,0.7373,0,0.6756,0"   # ee_goal（root 系 pos+quat wxyz）
+M20_ARM_STUB_DEBUG=1                        # 1 Hz 打印收到的 /ARM_JOINTS_CMD（丢弃）
+```
+
+> ⚠️ 假臂节点是"**假装臂在默认姿态**"，不是"把臂从观测里拿掉"。真要拿掉臂，
+> 必须改**训练侧**观测口径并重训 —— 部署侧单方面改观测等于换了策略
+> （见 [policy/README.md](policy/README.md) 的硬性约束）。
+
+仿真里等价场景用 `M20_SIM_NO_ARM_DATA=1`（仿真照常跑，但不发臂反馈），
+一键验证：`python3 tests/sim2sim_smoke.py --mode no_arm`。
+
 ### 测试（改任何模块后都要跑）
 
 ```bash

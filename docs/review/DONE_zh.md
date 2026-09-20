@@ -15,7 +15,7 @@
 | 2026-09-20 | 新增第九节：策略接口切到 83/700/16（布局驱动）+ L1 验收 + 走起来了 | `feat/policy-layout-v2` |
 | 2026-09-20 | 新增第十节：臂增益/armature/高度区间三条对齐 + `--mode arm` 用例 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | 新增第十一节：安全接管（倾角+腿折叠）+ 扰动注入用例 + 进 RL 偶发摔倒修复 | `fix/safety-takeover` |
-| 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端；第十四节：轮子速度伺服 + 末端跟踪验收 | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端；第十四节：轮子速度伺服 + 末端跟踪验收；第十五节：策略版本管理 + 物理对照；第十六节：无臂部署方案 | `feat/no-arm-stub` |
 
 ---
 
@@ -196,3 +196,11 @@
 |---|---|---|---|
 | 2026-09-20 | **`policy/README.md`**：定下"一个子目录 = 一次训练的部署产物"的约定 —— 命名 `<实验名>_<日期>`、换策略 6 步（导出 → 复制 → 补 `joint_order_native`/`joint_order_action` → L1 → `M20_POLICY_DIR` 试跑 → 默认值 + `run_all.sh`）、以及两条硬性约束（别用 actor-only 的 `exported/policy.pt`；onnx 与 layout 必须成对且维度一致） | 当前默认目录 `policy/m20_piper_history_20260920/`（policy.onnx + policy.pt + policy_layout.json） | `edde463` 之后 |
 | 2026-09-20 | **P1-1 物理对照定案**：契约文档第 5 节从"待办清单"变成逐项结论（控制周期/积分步长/执行器延迟/增益/armature/限幅/重力/摩擦/恢复系数/求解器/基座惯性/初始位姿/碰撞/地形） | `base_link` 显式惯性 = URDF（质量 15.882、三个主惯量一致，仅丢 ~0.2% 的非对角项）；摩擦取训练分布内的固定值 1.0、恢复系数 0 | `edde463` |
+
+## 十六、无臂部署方案（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **DEF-023**：臂没装时策略会看到"臂不在默认姿态"（接口把臂反馈初始化为 0，而默认姿态是 arm2 0.5 / arm3 -0.5 ⇒ 观测与 `ee_goal` 矛盾）。修：接口初值改成默认姿态 + `HasData()` + `EnterRL` 时打印无臂警告 | 见下 | `feat/no-arm-stub` |
+| 2026-09-20 | 新增 **`arm_stub_node.py`（假臂节点）**：无臂部署时以 200 Hz 发 `/ARM_JOINTS_DATA`（默认姿态、零速度/力矩）、50 Hz 发 `/ARM_TELEOP_STATE`（root 系默认位姿 `(0.3492,0,0.4327)`），订阅丢弃 `/ARM_JOINTS_CMD`；`M20_ARM_STUB_POSE` / `M20_ARM_STUB_EE` 可改 | `ros2 topic echo --once /ARM_JOINTS_DATA` → `position: 0.0 / 0.5 / -0.5 ...`；`/ARM_TELEOP_STATE` → `(0.3492, 0, 0.4327, 0.7373, 0, 0.6756, 0)` | `feat/no-arm-stub` |
+| 2026-09-20 | 仿真侧新增 `M20_SIM_NO_ARM_DATA=1`（照常跑，只是不发臂反馈）用来模拟"臂没装"；新增 L3 用例 `--mode no_arm` | 第一拍观测臂项 = `[0,0,0,0,0,0,0,0]`、`ee_goal` = 默认位姿；`--repeat 6` 失败率 17%（仅入口瞬态）；不起假节点时启动打印无臂警告且观测仍自洽（接口初值兜底） | `feat/no-arm-stub` |

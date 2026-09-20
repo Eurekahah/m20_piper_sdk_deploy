@@ -339,6 +339,13 @@ namespace qw {
             rbs_ready_.store(false, std::memory_order_release);
             UpdateRobotObservation();
             arm_ri_ptr_->Start();
+            if (!arm_ri_ptr_->HasData()) {
+                std::cout << "[ARM] 没有收到 /ARM_JOINTS_DATA：策略会把机械臂当成**默认姿态**"
+                             "（arm2 0.5 / arm3 -0.5）。\n"
+                             "      臂确实没装/没上电时，请起 `arm_stub_node.py` 发布一致的"
+                             "假反馈与 ee_goal（DEF-023），否则策略看到的是假状态。"
+                          << std::endl;
+            }
             // 先让 runner 复位（清零 last_action / history / run_cnt_），
             // 再起策略线程 —— 否则第一拍可能读到上一段或未初始化的状态（DEF-018）
             policy_ptr_->OnEnter();
