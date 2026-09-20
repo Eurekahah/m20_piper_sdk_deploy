@@ -17,7 +17,7 @@
 | 2026-09-20 | **P0-5 / P0-6 完成、DEF-011 完成**（高度区间收敛、臂增益 300/20、armature 真正生效）；L3 增加 `--mode arm`；P1-1 的 armature 一条清掉 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | **P0-7 完成**（安全接管 + `--mode push` 用例）；新增 DEF-016/017/018，其中 **DEF-018（连续跑偶发摔倒）未修 → 新 P0-9** | `fix/safety-takeover` |
 | 2026-09-20 | **P0-4 完成**（`ee_goal` 默认值 + `arm_controller` 发布的坐标系都修到 root 系）；DEF-018 定位为**策略侧**边缘稳定性并交接训练侧；新增 DEF-020/021 与 `--mode arm_move` | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
-| 2026-09-20 | **P1-1 完成**（物理对照表定案，写入契约文档第 5 节） | `main` |
+| 2026-09-20 | **P1-1 完成**（物理对照表定案，写入契约文档第 5 节）；**P3-4 完成**（`policy/README.md` 定策略版本管理） | `main` |
 | 2026-09-20 | **P1-2 完成**（轮子速度伺服阶跃验收）；新增 `--mode wheel_step`；`arm_move` 增加末端位移判据；仿真遥测增加末端位姿与轮速指令列；**DEF-022 修键盘目标限速**，IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
@@ -211,7 +211,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     按新规范改写成"历史归档"，或并入 `DONE_zh.md` 并在原处留指针。
   - 验收：`rg "M20_Piper_deploy_6commits" docs/ README.md` 的引用都指到现行文档。
 
-- [ ] **P3-4 把策略文件纳入版本管理的方式定下来**
+- [x] **P3-4 把策略文件纳入版本管理的方式定下来** → 已迁至 `src/M20_sdk_deploy/policy/README.md`（一个目录=一次训练的部署产物；命名/换策略 6 步/硬性约束都在里面）+ `DONE_zh.md` 第十五节
   - 要做什么：现在 `policy/*.onnx` 是直接提交进仓库的（旧 checkpoint）。
     需要定规则：新策略放哪、命名规则（含 run 与 checkpoint 版本）、
     是否连 `policy_layout.json` 一起提交、如何在部署机上换策略。

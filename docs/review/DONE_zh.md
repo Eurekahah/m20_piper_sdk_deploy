@@ -189,3 +189,10 @@
 | 2026-09-20 | `tests/run_all.sh` 扩到 **7 档**（`hold / wheel_step / rl / walk / arm / arm_move / push`） | 一键全绿 | `feat/actuator-accuracy-tests` |
 | 2026-09-20 | **DEF-022 修键盘增量路径的目标限速**：`arm_teleop` 以 200 Hz 发增量，原实现逐条累加 ⇒ 按 0.1~0.4 s 就把目标甩到工作空间边界。改成"累计增量 → 在 50 Hz tick 里按 `M20_EE_MAX_LIN_SPEED`(0.35 m/s) 推进请求位姿 → 被跟踪目标再限速逼近"；VR 路径用 2.0 m/s / 5.0 rad/s | 短按 0.4 s：末端 **+0.246 m**、**IK 位置残差 0.18 mm**（修复前 +0.49 m 撞限位、残差 21.8 mm） | `feat/actuator-accuracy-tests` |
 | 2026-09-20 | **IK 精度验收通道**：`arm_controller` 增加 `M20_ARM_DEBUG=1` 的 IK 残差打印（目标 vs 解出关节角的 FK），`--mode arm_move` 自动解析并断言 | 可达目标稳态残差 **0.2 mm**（IK 迭代收敛到 `IK_ERROR_TOL=1e-3` 以下）；撞限位时残差变大属结构性，日志另有 `reached limit` 提示 | `feat/actuator-accuracy-tests` |
+
+## 十五、策略版本管理 + 物理对照定案（2026-09-20）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-20 | **`policy/README.md`**：定下"一个子目录 = 一次训练的部署产物"的约定 —— 命名 `<实验名>_<日期>`、换策略 6 步（导出 → 复制 → 补 `joint_order_native`/`joint_order_action` → L1 → `M20_POLICY_DIR` 试跑 → 默认值 + `run_all.sh`）、以及两条硬性约束（别用 actor-only 的 `exported/policy.pt`；onnx 与 layout 必须成对且维度一致） | 当前默认目录 `policy/m20_piper_history_20260920/`（policy.onnx + policy.pt + policy_layout.json） | `edde463` 之后 |
+| 2026-09-20 | **P1-1 物理对照定案**：契约文档第 5 节从"待办清单"变成逐项结论（控制周期/积分步长/执行器延迟/增益/armature/限幅/重力/摩擦/恢复系数/求解器/基座惯性/初始位姿/碰撞/地形） | `base_link` 显式惯性 = URDF（质量 15.882、三个主惯量一致，仅丢 ~0.2% 的非对角项）；摩擦取训练分布内的固定值 1.0、恢复系数 0 | `edde463` |
