@@ -17,7 +17,7 @@
 | 2026-09-20 | **P0-5 / P0-6 完成、DEF-011 完成**（高度区间收敛、臂增益 300/20、armature 真正生效）；L3 增加 `--mode arm`；P1-1 的 armature 一条清掉 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | **P0-7 完成**（安全接管 + `--mode push` 用例）；新增 DEF-016/017/018，其中 **DEF-018（连续跑偶发摔倒）未修 → 新 P0-9** | `fix/safety-takeover` |
 | 2026-09-20 | **P0-4 完成**（`ee_goal` 默认值 + `arm_controller` 发布的坐标系都修到 root 系）；DEF-018 定位为**策略侧**边缘稳定性并交接训练侧；新增 DEF-020/021 与 `--mode arm_move` | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
-| 2026-09-20 | **P1-1 完成**（物理对照表定案，写入契约文档第 5 节）；**P3-4 完成**（`policy/README.md` 定策略版本管理） | `main` |
+| 2026-09-20 | **P1-1 完成**；**P3-1/P3-2/P3-3/P3-4/P1-5 完成**；清理 TODO 占位条目（P0 全部清空） | `main` |
 | 2026-09-20 | **P1-2 完成**（轮子速度伺服阶跃验收）；新增 `--mode wheel_step`；`arm_move` 增加末端位移判据；仿真遥测增加末端位姿与轮速指令列；**DEF-022 修键盘目标限速**，IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
@@ -50,7 +50,6 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 - [x] **P0-4 复位/进入 RL 时不要喂零命令** → 已迁至 `DONE_zh.md` 第十二/十三节
   （默认值改成 root 系的当前默认位姿；`arm_controller` 从第一拍起就发布状态且坐标系已对齐；
   `--mode arm` 用 dump 验证第一拍 `obs[73:80] = (0.3492, 0, 0.4327)`）
-- [ ] ~~P0-4（原始条目，保留供对照）~~
   - 要做什么：进入 `RLControlState` 的那一帧就把 `ee_goal` 设成"当前 EE 位姿（root 系）"、
     `body_pose` 设成"当前实测 height/pitch/roll"，history 整窗用同一帧填满。
   - 依据（为什么）：训练侧 `TODO_zh.md` P1-3 ⑫（reset 后第一帧 `pose_command_b` 全 0）
@@ -74,7 +73,6 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 预估：0.5 个工作日。
 
 - [x] **P0-6 机械臂 PD 增益对齐到本次训练（40/8 → 300/20）** → 已迁至 `DONE_zh.md` 第十节（`fix/arm-gains-armature-height`）
-- [ ] ~~P0-6（原始条目，保留供对照）~~
   - 要做什么：`arm_controller.py` 的 `ARM_KP/ARM_KD`、仿真侧"首条命令前的默认保持"
     `ARM_DEFAULT_KP/KD`，统一取本次 run 的 `piper_arm` 执行器配置；
     把它做成单一常量来源，避免三处各写一份。
@@ -86,16 +84,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收（已达成）：`--mode arm` 下臂最大力矩 4.6 N·m、偏差 0.0153 rad；
     `arm_controller.py` / `mujoco_simulation_ros2.py` / `piper_arm_interface.hpp` 三处一致。
 
-- [ ] **P0-7 安全接管阈值与限幅**
-  - 要做什么：把训练终止阈值（倾角 > 0.8 rad、height < 0.30 m）接进
-    `RLControlState::PostureUnsafeCheck`（现在是空实现），触发后切阻尼/站立；
-    关节力矩/速度限幅按训练 `env.yaml`（腿 76.4 N·m / 22.4 rad/s，轮 21.6 / 79.3，
-    臂 100 / 3.0，夹爪 10 / 1.0）；补通信超时与软启动。
-  - 依据（为什么）：`docs/deploy_sim2sim_sim2real_zh.md` 第 9 节；
-    本仓库 `PostureUnsafeCheck()` 里两段判断被注释掉了。
-  - 验收：人为把机器人推倒时能自动接管且日志给出原因；力矩限幅在
-    L3 的大命令注入测试里生效。
-  - 预估：1 个工作日。
+- [x] **P0-7 安全接管阈值与限幅** → 已迁至 `DONE_zh.md` 第十一节
 
 - [~] **P0-9 定位 DEF-018：进 RL 的入口瞬态（约 25% 发散）**
   - 现状：部署侧 4 组对照实验全部排除（软启动长度 / 轮子执行器语义 / 执行器延迟 /
@@ -116,7 +105,6 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 
 - [x] **P0-7 安全接管阈值与限幅** → 已迁至 `DONE_zh.md` 第十一节（`fix/safety-takeover`；
     倾角 0.8 rad + 腿折叠 1.2 rad 两条通路都用 `--mode push` 验证过）
-- [ ] ~~P0-7（原始条目，保留供对照）~~
   - 要做什么：① 把 `tests/sim2sim_smoke.py --mode hold` 与 `--mode rl`
     写成 `tests/run_all.sh`，作为合并前的必跑项；② 覆盖"进 RL 前机器人已经
     被撞歪/输入抖动"的起点；③ 让 `--mode walk` 也能给出方向与速度的判据。
@@ -153,7 +141,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收：随机 20 个目标上 `max |Δq| < 0.02 rad`（或在文档里写清偏差来源）。
   - 预估：1 个工作日。
 
-- [ ] **P1-5 清理旧 checkpoint 的调试开关**
+- [x] **P1-5 清理旧 checkpoint 的调试开关** → 已随新 runner 一起删除（`grep M20_LAST_ACTION|M20_IK_FEEDBACK|M20_FREEZE|M20_ARM_DEFAULT_TRAINED|M20_ZERO_CMD_WHEEL_BRAKE` 在 `src/` 下已无命中）；`M20_ARM_TRAINED_DEFAULT` 也已移除
   - 要做什么：逐条判定 `WORKFLOW_zh.md` 第 6.1 节里"旧 checkpoint 期"引入的开关
     （`M20_LAST_ACTION_MODE` / `M20_IK_FEEDBACK` / `M20_FREEZE_*` /
     `M20_ARM_DEFAULT_TRAINED` / `M20_ZERO_CMD_WHEEL_BRAKE`）在新 checkpoint 下是否还需要，
@@ -194,18 +182,18 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
 
 ## P3 —— 工具与文档
 
-- [ ] **P3-1 `tests/` 一键验收**
+- [x] **P3-1 `tests/` 一键验收** → 已迁至 `tests/run_all.sh`（L0+L1+L3'+7 档 L3，`DONE_zh.md` 第十一~十四节）
   - 要做什么：`tests/run_all.sh` 依次跑 L0 → L1 → L3（无头 + 数值判据），
     输出 PASS/FAIL 与关键数字；CI 或人工合并前只跑这一条命令。
   - 验收：故意引入一个错误（改错关节顺序）时脚本必须 FAIL。
 
-- [ ] **P3-2 遥测落盘**
+- [x] **P3-2 遥测落盘** → 已完成：`M20_SIM_TELEMETRY` 写出 `t/wall/base 位姿/rpy/omega/q[24]/dq[24]/tau[24]/轮 z/轮接触力/末端位姿/轮速指令`，200 Hz（`DONE_zh.md` 第八/十四节）
   - 要做什么：仿真侧提供 `M20_SIM_TELEMETRY=<path>`，按 200 Hz 写 CSV：
     `t, base_pos, base_quat, rpy, omega, q[24], dq[24], tau[24], 轮接触力`，
     供 L3 判据与离线画图使用（现在只能靠 `[JVEL-SIM]` 打印肉眼判断）。
   - 验收：CSV 行数 = 时长 × 200（±1%），能直接算出高度/倾角曲线。
 
-- [ ] **P3-3 清理过时文档**
+- [x] **P3-3 清理过时文档** → 已完成：`docs/M20_Piper_deploy_6commits_zh.md` 头部加历史归档横幅、`docs/README_zh.md` 的过时描述改掉、悬空引用指向现行文档
   - 要做什么：`docs/M20_Piper_deploy_6commits_zh.md` 描述的是早期 6 个提交
     （`9095957`~`2fcab7c`），与 `main`（领先 `origin/main` 21 个提交）已经不符；
     按新规范改写成"历史归档"，或并入 `DONE_zh.md` 并在原处留指针。

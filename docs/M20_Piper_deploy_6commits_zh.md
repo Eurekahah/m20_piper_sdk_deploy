@@ -1,3 +1,10 @@
+> ⚠️ **历史归档（2026-09-20 起）**：本文记录的是最早 6 个提交
+> （`9095957`~`2fcab7c`，2026-08-20~09-04）当时的工作总结，其中的策略文件
+> （`policy/history_adaptation_full.onnx` 等）与接口（86/770/23）**都已不在 `main` 上**。
+> 现行状态请看 [`review/DONE_zh.md`](review/DONE_zh.md)、接口看
+> [`sim2sim_layout_contract_zh.md`](sim2sim_layout_contract_zh.md)。
+> 保留本文件只是为了"当时为什么这么改"的追溯。
+
 # M20 + Piper sim2sim 部署：6 次本地提交总结（中文）
 
 > 说明：本文对应 `origin/main..HEAD` 的 6 个本地提交，尚未 push 到远程。

@@ -27,4 +27,4 @@
 
 | 文件 | 说明 |
 |---|---|
-| `M20_Piper_deploy_6commits_zh.md` | 最早 6 个提交（`9095957`~`2fcab7c`，2026-08-20~09-04）的工作总结。**已过时**：`main` 目前领先 `origin/main` 21 个提交，现行状态看 `review/DONE_zh.md` |
+| `M20_Piper_deploy_6commits_zh.md` | 最早 6 个提交（`9095957`~`2fcab7c`，2026-08-20~09-04）的工作总结。**已加历史归档横幅**：里面的策略文件与接口都已不在 `main` 上，现行状态看 `review/DONE_zh.md` |
