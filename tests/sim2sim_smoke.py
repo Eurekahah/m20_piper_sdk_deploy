@@ -525,7 +525,7 @@ def main() -> int:
             d = max(abs(a - b) for a, b in zip(info["arm_obs"], info["arm_obs_last"]))
             print(f"  arm_mixed: 观测里臂项的变化量（tick0 → tick{info.get('arm_obs_ticks')}）"
                   f"最大 {d:.3f} rad")
-        print("  no_arm  : 第一拍观测里的臂（q - q_default, 原生序 8 个）= "
+        print(f"  {args.mode:8s}: 第一拍观测里的臂（q - q_default, 原生序 8 个）= "
               + (str([round(v, 4) for v in info["arm_obs"]]) if info["arm_obs"] else "N/A")
               + ("，ee_goal = " + str(info["arm_ee_goal"]) if info.get("arm_ee_goal") else ""))
     if args.mode == "arm_move":
