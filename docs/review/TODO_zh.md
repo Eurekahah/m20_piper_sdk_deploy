@@ -17,7 +17,7 @@
 | 2026-09-20 | **P0-5 / P0-6 完成、DEF-011 完成**（高度区间收敛、臂增益 300/20、armature 真正生效）；L3 增加 `--mode arm`；P1-1 的 armature 一条清掉 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | **P0-7 完成**（安全接管 + `--mode push` 用例）；新增 DEF-016/017/018，其中 **DEF-018（连续跑偶发摔倒）未修 → 新 P0-9** | `fix/safety-takeover` |
 | 2026-09-20 | **P0-4 完成**（`ee_goal` 默认值 + `arm_controller` 发布的坐标系都修到 root 系）；DEF-018 定位为**策略侧**边缘稳定性并交接训练侧；新增 DEF-020/021 与 `--mode arm_move` | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
-| 2026-09-20 | **P1-2 完成**（轮子速度伺服阶跃验收）；新增 `--mode wheel_step`；`arm_move` 增加末端位移判据（+0.48 m）；仿真遥测增加末端位姿与轮速指令列 | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | **P1-2 完成**（轮子速度伺服阶跃验收）；新增 `--mode wheel_step`；`arm_move` 增加末端位移判据；仿真遥测增加末端位姿与轮速指令列；**DEF-022 修键盘目标限速**，IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
 P2 = sim2real 落地；P3 = 工具与文档。
@@ -162,7 +162,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收：故意把布局 JSON 改错一个数字，脚本必须报错退出。
   - 预估：0.5 个工作日。
 
-- [ ] **P1-4 IK 与训练侧 DLS 的一致性**
+- [~] **P1-4 IK 与训练侧 DLS 的一致性**（精度侧已完成：`--mode arm_move` 实测可达目标残差 **0.2 mm**，见 `DONE_zh.md` 第十四节；剩余是与训练侧 `CommandDrivenIKAction` 的逐目标对照）
   - 要做什么：对比 `arm_controller.py` 的 DLS 解与训练侧
     `velocity/mdp/actions.py::CommandDrivenIKAction`（λ=0.01、绝对位姿、
     `gripper_base`、root 系）在若干目标位姿上的解，记录关节角差。

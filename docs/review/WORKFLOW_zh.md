@@ -172,7 +172,9 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | `M20_ARM_TRAINED_DEFAULT` | 仿真里臂初始位姿用训练资产的默认角 | 关 | 仿真 |
 | `M20_ARM_ROT_LOCAL_FRAME` / `M20_ARM_ROLL_SIGN` | 遥操作旋转合成方式（A/B 用） | 与训练一致 | 机械臂 |
 | `M20_EE_MAX_LIN_SPEED` / `M20_EE_MAX_ANG_SPEED` | 键盘积分路径的 EE 限速 | `0.35 m/s` / `0.8 rad/s` | 机械臂 |
-| `M20_VR_MAX_LIN_SPEED` / `M20_VR_MAX_ANG_SPEED` | VR 绝对偏移路径的 EE 限速 | `2.0 m/s` / `5.0 rad/s` | 机械臂 |
+| `M20_VR_MAX_LIN_SPEED` / `M20_VR_MAX_ANG_SPEED` | VR 绝对偏移路径的 **目标** 限速 | `2.0 m/s` / `5.0 rad/s` | 机械臂 |
+| `M20_ARM_DEBUG` / `M20_ARM_DEBUG_PERIOD` | 打印 IK 残差（目标 vs FK），用于 P1-4 精度验收 | 关 / `50` tick | 机械臂 |
+| `M20_SIM_WHEEL_STEP_RAD_S` / `_AT` | 仿真侧轮子速度阶跃（P1-2 验收） | `0`（关）/ `5 s` | 仿真 |
 
 > 上面这些开关多数是为**旧 checkpoint** 的诊断引入的（在
 > `wip/old-ckpt-arm-coupling-debug` 上）。换到新 checkpoint 后要逐条判定

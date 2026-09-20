@@ -38,7 +38,8 @@ report $? "check_mjcf_contract.py"
 
 for m in $MODES; do
   step "L3 sim2sim --mode $m"
-  if [ "$m" = "rl" ]; then
+  if [ "$m" = "rl" ] || [ "$m" = "walk" ] || [ "$m" = "arm_move" ]; then
+    # 这两档都有"进 RL 入口瞬态"，用失败率判（见 DEF-018）
     python3 tests/sim2sim_smoke.py --mode "$m" --duration 20 --repeat 6
   elif [ "$m" = "hold" ]; then
     python3 tests/sim2sim_smoke.py --mode "$m" --duration 12

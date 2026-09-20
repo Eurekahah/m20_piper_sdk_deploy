@@ -187,3 +187,5 @@
 | 2026-09-20 | **遥测增加末端位姿与轮速指令列**：`ee_x/y/z`、`ee_qw..qz`（gripper_base 相对 base_link，root 系）、`wcmd_fl/fr/hl/hr` | 默认姿态下 `ee = (0.3492, 0, 0.4326)`，与 `check_mjcf_contract.py` 的 FK 实测一致 | `feat/actuator-accuracy-tests` |
 | 2026-09-20 | **`--mode arm_move` 增加末端位移判据**：按住 numpad 8（EE +x），参考点取默认姿态的 `ee_x = 0.3492`（不能用"中间某刻"——臂几秒内就走到工作空间边界） | 末端 x：**0.3492 → 0.8336 m（Δ = +0.48 m）**，臂关节最大偏差 2.31 rad、最大力矩 11.6 N·m，底盘 tilt ≤ 1.2° | `feat/actuator-accuracy-tests` |
 | 2026-09-20 | `tests/run_all.sh` 扩到 **7 档**（`hold / wheel_step / rl / walk / arm / arm_move / push`） | 一键全绿 | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | **DEF-022 修键盘增量路径的目标限速**：`arm_teleop` 以 200 Hz 发增量，原实现逐条累加 ⇒ 按 0.1~0.4 s 就把目标甩到工作空间边界。改成"累计增量 → 在 50 Hz tick 里按 `M20_EE_MAX_LIN_SPEED`(0.35 m/s) 推进请求位姿 → 被跟踪目标再限速逼近"；VR 路径用 2.0 m/s / 5.0 rad/s | 短按 0.4 s：末端 **+0.246 m**、**IK 位置残差 0.18 mm**（修复前 +0.49 m 撞限位、残差 21.8 mm） | `feat/actuator-accuracy-tests` |
+| 2026-09-20 | **IK 精度验收通道**：`arm_controller` 增加 `M20_ARM_DEBUG=1` 的 IK 残差打印（目标 vs 解出关节角的 FK），`--mode arm_move` 自动解析并断言 | 可达目标稳态残差 **0.2 mm**（IK 迭代收敛到 `IK_ERROR_TOL=1e-3` 以下）；撞限位时残差变大属结构性，日志另有 `reached limit` 提示 | `feat/actuator-accuracy-tests` |

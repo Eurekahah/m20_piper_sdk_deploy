@@ -105,6 +105,17 @@ ARM_BASE_OFFSET = np.array([0.24, 0.0, 0.0888], dtype=np.float64)
 #   M20_EE_GOAL_BODY_FRAME=0 -> 发布臂基座坐标系（旧行为，仅调试）
 EE_GOAL_IN_BODY_FRAME = os.environ.get("M20_EE_GOAL_BODY_FRAME", "1") != "0"
 
+# 被跟踪目标的限速（DEF-022）：键盘的增量是按 200 Hz 累加的（每 tick 5 mm），
+# 一次按键按住 0.1 s 就能把目标推到工作空间边界 —— 观感是"一按就撞死、
+# 之后不动了"。这里限制**被跟踪目标**的移动速度，输入怎么给都不会瞬移。
+#   M20_EE_MAX_LIN_SPEED  0.35 m/s（键盘积分路径）
+#   M20_EE_MAX_ANG_SPEED  0.8 rad/s
+# VR 的绝对偏移路径另有更松的限速（M20_VR_MAX_LIN_SPEED / _ANG_SPEED）。
+EE_MAX_LIN_SPEED = float(os.environ.get("M20_EE_MAX_LIN_SPEED", "0.35"))
+EE_MAX_ANG_SPEED = float(os.environ.get("M20_EE_MAX_ANG_SPEED", "0.8"))
+VR_MAX_LIN_SPEED = float(os.environ.get("M20_VR_MAX_LIN_SPEED", "2.0"))
+VR_MAX_ANG_SPEED = float(os.environ.get("M20_VR_MAX_ANG_SPEED", "5.0"))
+
 EE_POS_CLAMP = ((-0.6, 0.6), (-0.6, 0.6), (0.02, 0.95))
 IK_LAMBDA = 0.01
 MAX_DQ_PER_STEP = 0.05
@@ -183,6 +194,18 @@ def _link_mdh(d, a, alpha, theta):
         [sa * st, sa * ct, ca, ca * d],
         [0.0, 0.0, 0.0, 1.0],
     ])
+
+
+# ---------------------------------------------------------------------------
+# IK 残差打印（P1-4 的验收手段）：每隔 M20_ARM_DEBUG_PERIOD 个 tick 打印一次
+# "目标位姿 vs FK(当前关节角)" 的位置/姿态残差。
+#   M20_ARM_DEBUG=1             打开（默认关）
+#   M20_ARM_DEBUG_PERIOD=50     每 50 个 tick（=1 s，节点 50 Hz）打印一次
+# 判据：稳态下位置残差应在 IK_ERROR_TOL(1e-3 m) 量级；被限位钳住时会变大，
+# 这时要看日志里的 "reached limit" 提示，而不是当成 IK 坏了。
+# ---------------------------------------------------------------------------
+ARM_DEBUG = os.environ.get("M20_ARM_DEBUG", "0") != "0"
+ARM_DEBUG_PERIOD = int(os.environ.get("M20_ARM_DEBUG_PERIOD", "50"))
 
 
 def fk_mdh(mdh, q):
@@ -267,6 +290,12 @@ class ArmController(Node):
         # absolute EE target, initialised at the default arm pose
         self.target_pos, self.target_R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
         self.target_quat = mat_to_quat(self.target_R)
+        # 请求位姿（键盘累加的目标）；被跟踪目标 target_* 以限速逼近它（DEF-022）
+        self._req_pos = self.target_pos.copy()
+        self._req_quat = self.target_quat.copy()
+        self._last_input_mode = 0.0
+        self._inc_pos_accum = np.zeros(3)
+        self._inc_euler_accum = np.zeros(3)
         self.gripper_target = GRIPPER_CLOSED.copy()
 
         self.arm_data_sub = self.create_subscription(
@@ -283,6 +312,7 @@ class ArmController(Node):
         # Anchor state used by mode 1 (absolute-offset / VR):
         # target = anchor + controller offset, with the anchor captured from
         # the actual robot pose on ee_recalibrate.
+        self.debug_cnt = 0
         self.anchor_pos, self.anchor_R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
         self.anchor_quat = mat_to_quat(self.anchor_R)
         self.abs_anchor_initialized = False
@@ -310,6 +340,7 @@ class ArmController(Node):
             return
 
         mode = msg.data[ARM_TELEOP_MODE_IDX]
+        self._last_input_mode = float(mode)   # 0=键盘增量 1=VR 绝对偏移（决定限速档）
         dx, dy, dz = msg.data[ARM_TELEOP_POS_START:ARM_TELEOP_POS_START + 3]
         droll, dpitch, dyaw = msg.data[
             ARM_TELEOP_EULER_START:ARM_TELEOP_EULER_START + 3]
@@ -331,12 +362,16 @@ class ArmController(Node):
             self.target_pos = pos
             self.target_R = R
             self.target_quat = mat_to_quat(R)
+            self._req_pos = pos.copy()
+            self._req_quat = self.target_quat.copy()
             self.abs_anchor_initialized = False
         else:
-            self.target_pos += np.array([dx, dy, dz])
-            dq = quat_from_euler(droll, dpitch, dyaw)
-            self.target_quat = quat_multiply(dq, self.target_quat)
-            self.target_R = quat_to_mat(self.target_quat)
+            # 先把原始增量**累计**起来，真正的限速在 _tick 里按 50 Hz 做
+            # （键盘/VR 是以 200 Hz 发增量的，每条消息各自限速等于没限 —— DEF-022）。
+            self._inc_pos_accum = self._inc_pos_accum + np.array([dx, dy, dz],
+                                                                dtype=np.float64)
+            self._inc_euler_accum = self._inc_euler_accum + np.array(
+                [droll, dpitch, dyaw], dtype=np.float64)
 
         self._clamp_and_gripper(gripper_cmd)
 
@@ -357,12 +392,37 @@ class ArmController(Node):
             self.anchor_quat = mat_to_quat(R)
             self.abs_anchor_initialized = True
 
-        self.target_pos = self.anchor_pos + np.array([dx, dy, dz])
+        self._req_pos = self.anchor_pos + np.array([dx, dy, dz])
         dq = quat_from_euler(droll, dpitch, dyaw)
-        self.target_quat = quat_multiply(dq, self.anchor_quat)
-        self.target_R = quat_to_mat(self.target_quat)
+        self._req_quat = quat_multiply(dq, self.anchor_quat)
 
         self._clamp_and_gripper(gripper_cmd)
+
+    def _slew_toward(self, desired_pos, desired_R, max_lin, max_ang, dt):
+        """把被跟踪目标往期望位姿走，每 tick 的位移/转角不超过限速。"""
+        d = np.asarray(desired_pos, dtype=np.float64) - self.target_pos
+        dist = float(np.linalg.norm(d))
+        step = max_lin * dt
+        if dist > step and dist > 1e-9:
+            self.target_pos = self.target_pos + d * (step / dist)
+        else:
+            self.target_pos = np.asarray(desired_pos, dtype=np.float64).copy()
+
+        # 姿态：用 quaternion 的夹角限制每 tick 的最大旋转
+        q_des = mat_to_quat(desired_R)
+        q_cur = self.target_quat
+        q_err = quat_multiply(q_des, np.array([q_cur[0], -q_cur[1], -q_cur[2], -q_cur[3]]))
+        ang = 2.0 * math.acos(float(np.clip(abs(q_err[0]), -1.0, 1.0)))
+        max_ang_step = max_ang * dt
+        if ang > max_ang_step and ang > 1e-9:
+            t = max_ang_step / ang
+            q_new = np.array([1.0, 0.0, 0.0, 0.0]) * (1.0 - t) + q_err * t
+            q_new /= np.linalg.norm(q_new)
+            self.target_quat = quat_multiply(q_new, q_cur)
+        else:
+            self.target_quat = q_des
+        self.target_quat /= np.linalg.norm(self.target_quat)
+        self.target_R = quat_to_mat(self.target_quat)
 
     def _clamp_and_gripper(self, gripper_cmd):
         self.target_pos = np.clip(self.target_pos,
@@ -374,12 +434,55 @@ class ArmController(Node):
 
     def _tick(self):
         # solve IK from the current (feedback) joint angles
+        # 先把"被跟踪目标"往请求位姿限速逼近（DEF-022）：键盘的增量是 200 Hz 累加的，
+        # 不限速的话按一下就把目标甩到工作空间边界；VR 的绝对偏移路径用更松的限速。
+        dt = 1.0 / 50.0
+        # 键盘增量路径：把累计的原始增量按限速写进"请求位姿"
+        if getattr(self, "_last_input_mode", 0.0) <= 0.5:
+            step = EE_MAX_LIN_SPEED * dt
+            n = float(np.linalg.norm(self._inc_pos_accum))
+            if n > 1e-12:
+                inc = self._inc_pos_accum * (min(1.0, step / n))
+                self._req_pos = self._req_pos + inc
+            ang_step = EE_MAX_ANG_SPEED * dt
+            a = float(np.linalg.norm(self._inc_euler_accum))
+            if a > 1e-12:
+                e = self._inc_euler_accum * (min(1.0, ang_step / a))
+                self._req_quat = quat_multiply(
+                    quat_from_euler(e[0], e[1], e[2]), self._req_quat)
+            self._inc_pos_accum = np.zeros(3)
+            self._inc_euler_accum = np.zeros(3)
+            self._req_pos = np.clip(self._req_pos,
+                                    [c[0] for c in EE_POS_CLAMP],
+                                    [c[1] for c in EE_POS_CLAMP])
+        if getattr(self, "_last_input_mode", 0.0) > 0.5:
+            self._slew_toward(self._req_pos, quat_to_mat(self._req_quat),
+                              VR_MAX_LIN_SPEED, VR_MAX_ANG_SPEED, dt)
+        else:
+            self._slew_toward(self._req_pos, quat_to_mat(self._req_quat),
+                              EE_MAX_LIN_SPEED, EE_MAX_ANG_SPEED, dt)
         q = self.cur_joints.copy()
         err = 1e9
+        ik_iters = 0
         for _ in range(IK_ITERATIONS):
+            ik_iters += 1
             q, err = ik_step(PIPER_MDH, q, self.target_pos, self.target_R)
             if err < IK_ERROR_TOL:
                 break
+
+        # IK 残差（目标 vs 用解出的关节角做 FK），用于 P1-4 的精度验收：
+        # 位置残差用米、姿态残差用度。被工作空间/关节限位钳住时残差会变大，
+        # 那种情况日志里同时会有 "reached limit" 提示（不是 IK 坏了）。
+        if ARM_DEBUG and (self.debug_cnt % max(ARM_DEBUG_PERIOD, 1) == 0):
+            fk_pos, fk_R = fk_pose(PIPER_MDH, q)
+            pos_err = float(np.linalg.norm(fk_pos - self.target_pos))
+            R_delta = fk_R @ self.target_R.T
+            cos_a = float(np.clip((np.trace(R_delta) - 1.0) / 2.0, -1.0, 1.0))
+            ang_err = float(np.degrees(math.acos(cos_a)))
+            print("[arm_ik] target=(%.4f %.4f %.4f) pos_err=%.5f m ang_err=%.3f deg "
+                  "(ik_iters %d)" % (self.target_pos[0], self.target_pos[1],
+                                     self.target_pos[2], pos_err, ang_err, ik_iters))
+        self.debug_cnt += 1
 
         cmd = JointsDataCmd()
         for i in range(6):

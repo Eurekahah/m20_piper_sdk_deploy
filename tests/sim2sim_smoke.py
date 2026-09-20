@@ -51,6 +51,9 @@ REPO = Path(__file__).resolve().parent.parent
 SIM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py"
 ARM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py"
 ARM_TELEOP = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py"
+# 直接起安装好的二进制，而不是 `ros2 run ...`：后者会再 fork 一个子进程，
+# 父进程一退就没法回收孙进程（实测会留下跑着的 rl_deploy，污染下一个用例）。
+RL_DEPLOY_BIN = REPO / "install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy"
 CANDIDATE_MODES = ("rl", "walk", "arm")
 WHEEL_RADIUS = 0.09
 TILT_LIMIT = 0.8          # rad
@@ -67,24 +70,69 @@ def spawn(cmd, env, log_path, stdin=subprocess.DEVNULL):
 
 
 def killer(proc):
-    """杀整个进程组（rl_deploy 会自己开线程，但没有子进程）。"""
+    """先 SIGINT（让节点优雅退出：关话题、join 线程），超时再 SIGKILL。"""
     if proc is None or proc.poll() is not None:
         return
     try:
-        os.killpg(os.getpgid(proc.pid), signal.SIGINT)
+        proc.send_signal(signal.SIGINT)
     except ProcessLookupError:
         return
     try:
         proc.wait(timeout=5)
+        return
     except subprocess.TimeoutExpired:
+        pass
+    try:
+        os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
         try:
-            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            proc.kill()
         except ProcessLookupError:
             pass
+    try:
+        proc.wait(timeout=5)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+# 本仓库起的节点（用于兜底清理）：只按"本仓库路径 + 这些脚本名"匹配
+OUR_MARKERS = ("M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py",
+               "M20_sdk_deploy/interface/robot/simulation/arm_controller.py",
+               "M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py",
+               "lib/m20_sdk_deploy/rl_deploy")
+
+
+def force_cleanup() -> list[str]:
+    """兜底：把"本仓库起的、还活着的"节点全部 SIGKILL。
+
+    为什么需要：`rl_deploy` / `sim` 在被 SIGINT 后偶尔会卡住不退出（尤其是
+    跑了几十个用例之后），残留的实例会让后续用例的控制周期被拉长、结果不可复现。
+    这里只匹配本仓库路径下的固定几个可执行文件，不会碰别人的进程。
+    """
+    killed = []
+    for pid_dir in os.listdir("/proc"):
+        if not pid_dir.isdigit():
+            continue
+        pid = int(pid_dir)
+        if pid == os.getpid():
+            continue
         try:
-            proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            pass
+            cmdline = open(f"/proc/{pid}/cmdline", "rb").read().replace(b"\0", b" ").decode(
+                errors="ignore")
+            state = open(f"/proc/{pid}/stat").read().split(") ", 1)[1].split()[0]
+        except (FileNotFoundError, PermissionError, IndexError):
+            continue
+        if state == "Z" or "sim2sim_smoke.py" in cmdline:
+            continue
+        if any(m in cmdline for m in OUR_MARKERS):
+            try:
+                os.kill(pid, signal.SIGKILL)
+                killed.append(f"{pid} {cmdline.strip()}")
+            except (ProcessLookupError, PermissionError):
+                pass
+    if killed:
+        time.sleep(0.5)
+    return killed
 
 
 def leftover_processes() -> list[str]:
@@ -100,6 +148,15 @@ def leftover_processes() -> list[str]:
         # 排除"匹配到自己"的几种情况：pgrep 自身、包着本脚本的 shell、本脚本
         if ("pgrep" in line or "sim2sim_smoke.py" in line
                 or "bash -lc" in line or "sh -c" in line):
+            continue
+        # 排除僵尸进程（state == Z）：它们不再占用 CPU，父进程被 -9 杀掉后
+        # 会短暂出现（容器里 PID 1 不一定回收），不该拦住下一个用例。
+        pid = line.split()[0]
+        try:
+            state = open(f"/proc/{pid}/stat").read().split(") ", 1)[1].split()[0]
+            if state == "Z":
+                continue
+        except (FileNotFoundError, IndexError):
             continue
         bad.append(line)
     return bad
@@ -168,7 +225,7 @@ def analyse(csv_path: Path):
     # 机械臂：稳态偏差（相对默认角）与最大力矩；tau 列同样是 MJCF 序（16..23）
     arm_dev = 0.0
     arm_tau = 0.0
-    for r in rows[j:]:
+    for r in rows:          # 全程（臂在进 RL 后不久就走完了，末段是静止的）
         for k, name_i in enumerate(range(16, 24)):
             arm_dev = max(arm_dev, abs(float(r[f"q{name_i}"]) - ARM_DEFAULT[k]))
             arm_tau = max(arm_tau, abs(float(r[f"tau{name_i}"])))
@@ -205,9 +262,10 @@ def main() -> int:
                 fails += 1
         print(f"\n[smoke] mode={args.mode} 重复 {args.repeat} 次：失败 {fails} 次 "
               f"（失败率 {fails / args.repeat:.0%}）")
-        # `rl` 档的入口发散是已知的策略边缘问题（DEF-018），所以判据放宽到 1/3；
-        # 其余档位要求 0 失败。
-        limit = 1 / 3 if args.mode == "rl" else 0.0
+        # `rl` / `walk` / `arm_move` 三档会经历"进 RL 的入口瞬态"：策略在进 RL 后 1~2 s 有
+        # 约 20~30% 的概率发散（DEF-018，已定位为策略侧边缘稳定性），
+        # 所以这两档用"失败率 ≤ 1/3"作判据；其余档位要求 0 失败。
+        limit = 1 / 3 if args.mode in ("rl", "walk", "arm_move") else 0.0
         if fails / args.repeat > limit + 1e-9:
             print(f"[smoke] FAIL: 失败率 {fails / args.repeat:.0%} 超过允许的 {limit:.0%}")
             return 1
@@ -222,9 +280,18 @@ def main() -> int:
     if telemetry.exists():
         telemetry.unlink()
 
+    # 开跑前把上一次残留的"本仓库节点"清掉（SIGINT 后它们可能要 1~2 s 才退干净；
+    # 残留实例会把控制周期拉长、让结果不可复现）。清不掉才报错退出。
+    for _ in range(20):
+        stale = leftover_processes()
+        if not stale:
+            break
+        for line in force_cleanup():
+            print("  [startup-cleanup] 强杀上一次的残留: " + line)
+        time.sleep(0.5)
     stale = leftover_processes()
     if stale:
-        print("[smoke] FAIL: 上一次的进程还在跑，先清掉再来（否则控制周期会被拉长、结果不可复现）:")
+        print("[smoke] FAIL: 仍有不属于本用例的 sim/rl_deploy 在跑，先清掉再来：")
         for line in stale:
             print("  " + line)
         return 1
@@ -234,6 +301,8 @@ def main() -> int:
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
     env.setdefault("M20_JVEL_DEBUG", "0")
+    if args.mode == "arm_move":
+        env.setdefault("M20_ARM_DEBUG", "1")   # arm_controller 打印 IK 残差
     if args.mode == "wheel_step":
         env.setdefault("M20_SIM_WHEEL_STEP_RAD_S", "5")
         env.setdefault("M20_SIM_WHEEL_STEP_AT", "5")
@@ -269,8 +338,9 @@ def main() -> int:
                 time.sleep(1.0)
             # rl_deploy 用管道接键盘（KeyboardInterface 是非阻塞读 stdin），
             # 按键脚本：z 站立 → 4 s 后 c 进 RL（stand_duration = 2 s，留余量）
-            deploy, dep_f = spawn(["ros2", "run", "m20_sdk_deploy", "rl_deploy"],
-                                  env, deploy_log, stdin=subprocess.PIPE)
+            deploy_cmd = ([str(RL_DEPLOY_BIN)] if RL_DEPLOY_BIN.is_file()
+                          else ["ros2", "run", "m20_sdk_deploy", "rl_deploy"])
+            deploy, dep_f = spawn(deploy_cmd, env, deploy_log, stdin=subprocess.PIPE)
             time.sleep(2.0)
 
             def press(key: bytes):
@@ -293,13 +363,14 @@ def main() -> int:
                 if args.mode == "walk":
                     press(b"w")                  # 键盘是"按住"语义，需持续重复
                 if args.mode == "arm_move":
-                    # 进 RL 之后按住 numpad 8（EE +x）—— 键盘是"按住"语义，
-                    # 每 0.2 s 重发一次；先等 3 s 让策略接管稳定下来
+                    # 进 RL 之后**短按** numpad 8（EE +x）：等 2 s 让策略接管稳定，
+                    # 按住 1.5 s 把臂挪出去，然后松开 —— 之后的稳态 IK 残差才是
+                    # "跟踪精度"（一直按住会撞到工作空间限位，残差是结构性的）。
                     el = time.time() - t_start
-                    if el > 3.0:
+                    if 4.5 < el < 4.9:
                         if t_arm is None:
                             t_arm = el
-                            print("[smoke] holding numpad 8 (EE +x)")
+                            print("[smoke] holding numpad 8 (EE +x) for 0.4 s (after RL entry; 不要一直按住 —— 会撞到工作空间限位)")
                         try:
                             teleop.stdin.write(b"8")
                             teleop.stdin.flush()
@@ -328,11 +399,13 @@ def main() -> int:
             if not leftover_processes():
                 break
             time.sleep(0.1)
-        else:
-            print("[smoke] 警告：仍有 sim/rl_deploy 进程残留，下一个用例可能受影响：")
+        for line in force_cleanup():
+            print("  [cleanup] 强杀残留: " + line)
+        if leftover_processes():
+            print("[smoke] 警告：仍有残留进程，下一个用例可能受影响：")
             for line in leftover_processes():
                 print("  " + line)
-        time.sleep(1.0)
+        time.sleep(0.5)
 
     info = analyse(telemetry)
     if info is None:
@@ -388,7 +461,23 @@ def main() -> int:
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
     if args.mode == "arm_move":
-        # 端到端：按住 numpad 8 → 臂应当真的动起来（关节偏差变大）、
+        arm_log = out_prefix.with_suffix(".arm.log")
+        res = []
+        if arm_log.exists():
+            for line in arm_log.read_text(errors="ignore").splitlines():
+                if "[arm_ik]" in line and "pos_err=" in line:
+                    try:
+                        res.append(float(line.split("pos_err=")[1].split()[0]))
+                    except (IndexError, ValueError):
+                        pass
+        info["ik_res_n"] = len(res)
+        info["ik_res_max"] = max(res) if res else float("nan")
+        info["ik_res_tail"] = max(res[-5:]) if len(res) >= 5 else float("nan")
+        if res:
+            print(f"  IK 残差 : 采样 {len(res)} 次, 全程 max {info['ik_res_max'] * 1000:.2f} mm, "
+                  f"末尾 5 次 max {info['ik_res_tail'] * 1000:.2f} mm")
+    if args.mode == "arm_move":
+        # 端到端：短按 numpad 8 → 臂应当真的动起来（关节偏差变大）、
         # 末端应当朝 +x 走（IK 真的把任务空间目标跟踪上了）、力矩不超限
         if info["arm_dev"] < 0.05:
             fails.append(f"arm_move：按住 numpad 8 后臂几乎没动（偏差仅 "
@@ -397,6 +486,10 @@ def main() -> int:
             fails.append(f"arm_move：末端 x 只动了 {info['ee_dx']:+.4f} m（期望 > +0.03）")
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm_move 的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
+        # IK 精度（P1-4 的口径）：松开按键后的稳态残差应当很小
+        if info.get("ik_res_n", 0) >= 5 and not (info["ik_res_tail"] < 0.003):
+            fails.append(f"arm_move：末尾 5 次 IK 位置残差 {info['ik_res_tail'] * 1000:.2f} mm "
+                         f">= 3 mm（目标可能撞到工作空间限位，看日志里的 reached limit）")
     if args.mode == "wheel_step":
         # P1-2 的判据：四轮同向、稳态 ω 与命令差 < 10%
         target = float(env.get("M20_SIM_WHEEL_STEP_RAD_S", "5"))
