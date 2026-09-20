@@ -102,11 +102,22 @@ class ArmTeleopNode(Node):
         self.sim_reset_client = self.create_client(Empty, '/reset_sim')
 
     def _setup_stdin(self):
-        self._old_attr = termios.tcgetattr(sys.stdin.fileno())
-        tty.setraw(sys.stdin.fileno())
+        # stdin 可能不是终端（管道/重定向/被 launch 拉起）：termios 在那种情况下
+        # 会抛 `Inappropriate ioctl for device` 并让整个节点起不来（DEF-021）。
+        # 非 TTY 时跳过 raw 模式，仍然能按行/按字节读键盘输入。
+        try:
+            self._old_attr = termios.tcgetattr(sys.stdin.fileno())
+            tty.setraw(sys.stdin.fileno())
+            self._tty = True
+        except termios.error:
+            self._old_attr = None
+            self._tty = False
+            print("[arm_teleop] stdin 不是终端，跳过 raw 模式"
+                  "（管道/重定向下仍可读按键）")
 
     def _restore_stdin(self):
-        termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_attr)
+        if self._old_attr is not None:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, self._old_attr)
 
     def print_help(self):
         print("\n" + "=" * 52)

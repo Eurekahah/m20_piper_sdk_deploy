@@ -20,6 +20,8 @@
   --mode arm     额外起 arm_controller（IK），验证机械臂保持在默认位姿且不扰动底盘
   --mode push    进 RL 后由仿真施加一次侧向力，验证安全接管会触发并切到 joint_damping
                  （力/时刻/时长用 M20_SIM_PUSH_FORCE / _AT / _DURATION，默认 800 N / 12 s / 0.3 s）
+  --mode arm_move 同 arm，额外起 arm_teleop 键盘节点并按住 numpad 8（EE +x）：
+                 验证臂真的动、`ee_goal` 跟着变、底盘不受扰（端到端臂链路）
 
 用法（容器内）::
 
@@ -46,6 +48,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 SIM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py"
 ARM = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py"
+ARM_TELEOP = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py"
 CANDIDATE_MODES = ("rl", "walk", "arm")
 WHEEL_RADIUS = 0.09
 TILT_LIMIT = 0.8          # rad
@@ -165,7 +168,8 @@ def analyse(csv_path: Path):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["hold", "stand", "rl", "walk", "arm", "push"],
+    ap.add_argument("--mode",
+                    choices=["hold", "stand", "rl", "walk", "arm", "arm_move", "push"],
                     default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
@@ -221,8 +225,8 @@ def main() -> int:
         env.setdefault("M20_SIM_PUSH_AT", "12")
         env.setdefault("M20_SIM_PUSH_DURATION", "0.3")
 
-    sim = deploy = arm = None
-    sim_f = dep_f = arm_f = None
+    sim = deploy = arm = teleop = None
+    sim_f = dep_f = arm_f = tel_f = None
     try:
         print(f"[smoke] mode={args.mode} duration={args.duration}s out={out_prefix}*")
         sim, sim_f = spawn([sys.executable, str(SIM)], env, sim_log)
@@ -234,11 +238,16 @@ def main() -> int:
             while time.time() - t_start < args.duration:
                 time.sleep(0.2)
         else:
-            if args.mode == "arm":
+            if args.mode in ("arm", "arm_move"):
                 # IK 节点：它会把 /ARM_JOINTS_CMD 与 /ARM_TELEOP_STATE 接起来，
                 # 也就是策略观测里 ee_goal 的来源（P0-4 的路径）
                 arm_log = out_prefix.with_suffix(".arm.log")
                 arm, arm_f = spawn([sys.executable, str(ARM)], env, arm_log)
+                time.sleep(1.0)
+            if args.mode == "arm_move":
+                teleop_log = out_prefix.with_suffix(".arm_teleop.log")
+                teleop, tel_f = spawn([sys.executable, str(ARM_TELEOP)], env,
+                                      teleop_log, stdin=subprocess.PIPE)
                 time.sleep(1.0)
             # rl_deploy 用管道接键盘（KeyboardInterface 是非阻塞读 stdin），
             # 按键脚本：z 站立 → 4 s 后 c 进 RL（stand_duration = 2 s，留余量）
@@ -261,15 +270,30 @@ def main() -> int:
                 press(b"c")
                 print("[smoke] sent 'c' (RL control)")
 
+            t_arm = None
             while time.time() - t_start < args.duration:
                 if args.mode == "walk":
                     press(b"w")                  # 键盘是"按住"语义，需持续重复
+                if args.mode == "arm_move":
+                    # 进 RL 之后按住 numpad 8（EE +x）—— 键盘是"按住"语义，
+                    # 每 0.2 s 重发一次；先等 3 s 让策略接管稳定下来
+                    el = time.time() - t_start
+                    if el > 3.0:
+                        if t_arm is None:
+                            t_arm = el
+                            print("[smoke] holding numpad 8 (EE +x)")
+                        try:
+                            teleop.stdin.write(b"8")
+                            teleop.stdin.flush()
+                        except (BrokenPipeError, ValueError, AttributeError):
+                            pass
                 time.sleep(0.2)
     finally:
         killer(deploy)
+        killer(teleop)
         killer(arm)
         killer(sim)
-        for f in (sim_f, dep_f, arm_f):
+        for f in (sim_f, dep_f, arm_f, tel_f):
             try:
                 if f:
                     f.close()
@@ -277,7 +301,7 @@ def main() -> int:
                 pass
         # 等进程真的退干净，避免下一个用例被上一个的残留影响
         for _ in range(50):
-            procs = [p for p in (sim, deploy, arm) if p is not None]
+            procs = [p for p in (sim, deploy, arm, teleop) if p is not None]
             if all(p.poll() is not None for p in procs):
                 break
             time.sleep(0.1)
@@ -306,7 +330,7 @@ def main() -> int:
           f"后半段 max {math.degrees(info['tilt_max_tail']):.1f}°")
     if args.mode == "walk":
         print(f"  vx(后半段): {info['vx_tail']:+.3f} m/s  （键盘命令 +0.7 m/s）")
-    if args.mode == "arm":
+    if args.mode in ("arm", "arm_move"):
         print(f"  arm     : 相对默认角最大偏差 {info['arm_dev']:.4f} rad, "
               f"最大关节力矩 {info['arm_tau_max']:.1f} N·m（限幅 {ARM_TAU_LIMIT}）")
 
@@ -339,6 +363,13 @@ def main() -> int:
             fails.append(f"arm 模式的臂偏离默认位姿 {info['arm_dev']:.4f} rad > 0.1")
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
+    if args.mode == "arm_move":
+        # 端到端：按住 numpad 8 → 臂应当真的动起来（偏差变大）、力矩不超限
+        if info["arm_dev"] < 0.05:
+            fails.append(f"arm_move：按住 numpad 8 后臂几乎没动（偏差仅 "
+                         f"{info['arm_dev']:.4f} rad）")
+        if info["arm_tau_max"] >= ARM_TAU_LIMIT:
+            fails.append(f"arm_move 的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
     if args.mode == "push":
         # 这里**期望**摔（被打倒），要验的是"安全接管触发并切进 joint_damping"
         dep_txt = deploy_log.read_text(errors="ignore") if deploy_log.exists() else ""

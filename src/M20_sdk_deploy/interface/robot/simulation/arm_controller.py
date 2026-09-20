@@ -30,6 +30,7 @@
 """
 
 import math
+import os
 
 import numpy as np
 
@@ -91,6 +92,18 @@ ARM_KP, ARM_KD = 300.0, 20.0
 GRIPPER_KP, GRIPPER_KD = 4000.0, 200.0
 GRIPPER_OPEN = np.array([0.035, -0.035])
 GRIPPER_CLOSED = np.array([0.0, 0.0])
+
+# 臂座相对机体（base_link）的安装偏移：M20_Piper_own.xml 里
+# `arm_base_link pos = "0.24 0 0.0888"`（纯平移，两个坐标系轴向一致）。
+ARM_BASE_OFFSET = np.array([0.24, 0.0, 0.0888], dtype=np.float64)
+
+# 本节点整条链路（FK/IK/限位/目标）都在**臂基座坐标系**，
+# 但策略观测里的 `ee_goal` 要的是 **root（机体）坐标系**的目标位姿
+# （训练 `HeightInvariantEECommand.command_local`）。所以对外发布
+# `/ARM_TELEOP_STATE` 时必须把臂座偏移加回去（DEF-020）。
+#   M20_EE_GOAL_BODY_FRAME=1 -> 发布机体坐标系（与训练一致，默认）
+#   M20_EE_GOAL_BODY_FRAME=0 -> 发布臂基座坐标系（旧行为，仅调试）
+EE_GOAL_IN_BODY_FRAME = os.environ.get("M20_EE_GOAL_BODY_FRAME", "1") != "0"
 
 EE_POS_CLAMP = ((-0.6, 0.6), (-0.6, 0.6), (0.02, 0.95))
 IK_LAMBDA = 0.01
@@ -385,9 +398,13 @@ class ArmController(Node):
             cmd.data.joints_data[6 + i].control_word = 4
         self.arm_cmd_pub.publish(cmd)
 
+        # 策略观测用的 ee_goal：默认按**机体坐标系**发布（把臂座偏移加回去），
+        # 否则策略会拿到一个落在机体内部的 EE 目标（差 24 cm，DEF-020）。
+        goal_pos = (self.target_pos + ARM_BASE_OFFSET
+                    if EE_GOAL_IN_BODY_FRAME else self.target_pos)
         state = Float32MultiArray()
         state.data = [float(v) for v in
-                      [self.target_pos[0], self.target_pos[1], self.target_pos[2],
+                      [goal_pos[0], goal_pos[1], goal_pos[2],
                        self.target_quat[0], self.target_quat[1],
                        self.target_quat[2], self.target_quat[3]]]
         self.state_pub.publish(state)
