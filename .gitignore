@@ -7,6 +7,5 @@ tmp/
 .codex
 .tmp_models/**
 *debug*
-*LOG*
 __pycache__/
 *.pyc
