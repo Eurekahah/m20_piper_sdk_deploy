@@ -111,6 +111,14 @@ private:
     //   * 契约文档第 9 节本来就要求"软启动"。
     // 注意：动作在喂回 `actions` 观测之前缩放，保证观测=实际下发。
     int soft_start_ticks_ = 10;      // 10 tick x 20 ms = 200 ms
+    // 轮子的"无扰交接"（bumpless transfer）：进 RL 前轮子是**位置保持**
+    // （kp=10，见 M20SimInterface/IdleState），进 RL 后是**速度伺服**（kp=0/kd=0.6）。
+    // 直接切换是一次真实的执行器语义跳变，会往入口瞬态里加东西（DEF-018 候选）。
+    // 这里在前 N 个 tick 内把 kp 从 10 线性放到 0，速度目标同时从 0 升到策略值。
+    //   M20_WHEEL_HANDOVER_TICKS=0 关闭（默认，回到直接切换）
+    // 实测（rl 档 12 次/组）：0 时 3/12、25 tick 时 4/12、50 tick 时 2/12 —— 
+    // 在噪声范围内，没有显著改善，所以默认关；留作对照工具（DEF-018）。
+    int wheel_handover_ticks_ = 0;
 
     VecXf joint_pos_obs_, joint_vel_obs_, last_action_obs_, current_action_,
           current_observation_, history_obs_, history_step_, robot_goal_;
@@ -261,6 +269,9 @@ private:
         }
         if (const char *e = std::getenv("M20_SOFT_START_TICKS")) {
             soft_start_ticks_ = std::atoi(e);
+        }
+        if (const char *e = std::getenv("M20_WHEEL_HANDOVER_TICKS")) {
+            wheel_handover_ticks_ = std::atoi(e);
         }
     }
 
@@ -507,6 +518,21 @@ public:
 
         // ---- 安全限幅（默认 = 训练 clip_actions，M20_ACTION_CLIP 可收紧）----
         current_action_ = current_action_.cwiseMin(action_clip_).cwiseMax(-action_clip_);
+
+        // ---- 轮子无扰交接（可选）----
+        if (wheel_handover_ticks_ > 0 && run_cnt_ < wheel_handover_ticks_) {
+            const float a = static_cast<float>(run_cnt_) /
+                            static_cast<float>(wheel_handover_ticks_);
+            for (int r = 0; r < kRobotDof; ++r) {
+                if (robot_order_[r].find("_wheel_joint") != std::string::npos) {
+                    robot_action_.kp(r) = 10.0f * (1.0f - a);   // 交接前的保持增益
+                    robot_action_.kd(r) = 0.6f;
+                }
+            }
+        } else {
+            robot_action_.kp = kp_;
+            robot_action_.kd = kd_;
+        }
 
         // ---- 软启动：从"默认站姿 + 零轮速"线性放开到策略输出 ----
         if (soft_start_ticks_ > 0 && run_cnt_ < soft_start_ticks_) {
