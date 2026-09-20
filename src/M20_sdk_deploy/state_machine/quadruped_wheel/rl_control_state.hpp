@@ -54,7 +54,14 @@ namespace qw {
         // receives back the absolute EE goal (used in the policy obs)
         rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr arm_state_sub_;
         std::mutex ee_mutex_;
-        std::array<float, 7> ee_goal_{0.1092f, 0.0f, 0.3439f,   // pos
+        // Policy obs 里的 `ee_goal` = **root（机体）坐标系**下的 EE 目标位姿
+        // （训练 `HeightInvariantEECommand.command_local`）。默认值取"Piper 默认
+        // 关节姿态下 `gripper_base` 在 root 系的位姿"，由
+        // `scripts/check_mjcf_contract.py` 实测：pos=(0.3492, 0, 0.4326)（与训练值差
+        // 5.7e-5 m）、相对旋转角差 0.000°。
+        // ⚠️ 曾经写的是臂基座坐标系下的同一个位姿 (0.1092, 0, 0.3439)——
+        // 两者差 24 cm，会让策略拿到一个落在机体内部的 EE 目标（DEF-019）。
+        std::array<float, 7> ee_goal_{0.3492f, 0.0f, 0.4327f,   // pos (root frame)
                                       0.7373f, 0.0f, 0.6756f, 0.0f};  // quat wxyz
 
         // VR leg/body teleop (published by vr_teleop_node at 50 Hz)
@@ -332,8 +339,10 @@ namespace qw {
             rbs_ready_.store(false, std::memory_order_release);
             UpdateRobotObservation();
             arm_ri_ptr_->Start();
-            run_policy_thread_ = std::thread(std::bind(&RLControlState::PolicyRunner, this));
+            // 先让 runner 复位（清零 last_action / history / run_cnt_），
+            // 再起策略线程 —— 否则第一拍可能读到上一段或未初始化的状态（DEF-018）
             policy_ptr_->OnEnter();
+            run_policy_thread_ = std::thread(std::bind(&RLControlState::PolicyRunner, this));
             StateBase::msfb_.UpdateCurrentState(RobotMotionState::RLControlMode);
         };
 

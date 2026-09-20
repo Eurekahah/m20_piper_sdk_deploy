@@ -26,23 +26,32 @@
   分支：feat/<topic> / fix/<topic> / docs/<topic> / wip/<topic>（wip 不合并）。
   合并用 `git merge --no-ff`。
 
-【当前状态】main = 40744b5（领先 origin/main 21 个提交，工作区干净）。
-  ⚠️ main 上跑的是**旧 checkpoint**的接口（policy_obs 86 / history 770 / action 23，
-     M20_adjusted 资产）⇒ 这是"部署效果欠佳"的第一嫌疑。
-  最新训练 run：训练仓库 logs/rsl_rl/history_adaptation/2026-09-20_00-50-31，
-     checkpoint model_19999.pt，部署态产物在 <run>/exported_deploy/
-     {policy.pt, policy.onnx, policy_layout.json}，接口是 **83 / 700 / 16**，
-     资产 M20_Piper_own。**还没接进部署侧**。
-  上一轮针对旧 checkpoint 的调试工作已另存到 `wip/old-ckpt-arm-coupling-debug @ 8de683c`
-     （一批 M20_* 调试开关、last_action 三种模式、body-frame ee_goal）——**不要合并**。
-  本轮核对发现 5 条未修缺陷（DEF-005/007/008/009/010）+
-     2 条新发现（DEF-011 armature 无效、DEF-012 初始保持位姿用错机型）。
+【当前状态】main = f92e415 之后（领先 origin/main 30+ 个提交）。
+  接口已经切到新 checkpoint：83 / 700 / 16，**布局驱动**（读 policy_layout.json +
+  ONNX 形状/名字交叉断言），策略目录 policy/m20_piper_history_20260920/。
+  L1（离线）PASS、L3'（MJCF 对照）10 PASS / 0 FAIL。
+  L3 五档 `hold / rl / walk / arm / push` 单档全 PASS：
+    hold  height 0.498 m, tilt 1.4°
+    rl    height 0.515 m, tilt 1.0°
+    walk  +0.576 m/s（命令 +0.7）
+    arm   臂偏差 0.0153 rad, 力矩 4.6 N·m
+    push  800 N 侧推触发 [TAKEOVER!] → joint_damping
+  ⚠️ **DEF-018 未收敛**：连续跑多档时 `rl` 档约 1/6~1/3 概率在进 RL 后 1~2 s 摔倒
+     （单独跑大多正常）。已排除：仿真跑慢（实时因子 1.000）、残留进程、观测门禁、
+     软启动长度（0/10/25/50 对照：0/6、1/6、2/6、2/6，软启动不是解）。
 
-【下个 session 的第一件事】按 TODO_zh.md P0 从 P0-1 开始：
-  把 M20PiperPolicyRunner 改成**布局驱动**（读 policy_layout.json + ONNX 形状），
-  按 83/700/16 重写观测组装（joint_pos/joint_vel 都是 **24 维原生序**、
-  joint_pos 只把 4 个轮子列置零、history 每步 70、动作 16 维、**没有 ee_ik 槽位**），
-  然后按 P0-2 用 sim2sim A/B 判定 24 维原生序到底是"交错序"还是"分组序"。
+【下个 session 的优先级】
+  P0-9 查 DEF-018：正在验证"入口处执行器语义跳变"（idle/standup 的轮子原来是
+    位置保持 kp=10，RL 是速度伺服 kp=0/kd=0.6；standup 腿增益 200 vs RL 的 80）。
+    已改轮子语义并跑了 12 次对照（见 DONE_zh.md 第十二节的数字）。
+    若仍不收敛，按 DEF-018 的候选继续：① 给仿真加固定时延做退化对照；
+    ② dump 进 RL 前 300 tick 的 obs/action 与离线复算逐拍对照；
+    ③ 与训练侧 P1-2（s3 阶段 root_height 终止率 0.09~0.15）对口径 —— 可能是**策略
+    自身在入口的鲁棒性**问题，需要训练侧配合，而不是部署侧的 bug。
+  P1-1 剩下：timestep 取舍（MJCF 0.002 / 仿真 0.0002x5 / 训练 0.005）、执行器延迟、
+    摩擦与恢复系数随机化、`base_link` 显式惯性的来源核对。
+  P2（真机可以随时上手）：P2-1 腿部标定链核对、P2-2 arm_real_adapter 实机验证、
+    P2-3 时延测量。
 
 【测试分层（详见 WORKFLOW_zh.md）】
   L0 编译：容器内 `source /opt/ros/humble/setup.bash && colcon build --packages-up-to

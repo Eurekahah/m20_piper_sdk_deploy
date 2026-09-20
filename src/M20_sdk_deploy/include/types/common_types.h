@@ -108,9 +108,11 @@ struct UserCommand {
     uint8_t ee_reset = 0;                   // 1 = reset EE target to current pose
 
     // ---- filled by RLControlState from arm_controller feedback (obs) ----
-    // Default is the Piper EE pose at the default arm joints
-    // (arm = [0, 0.5, -0.5, 0, 0, 0]) in the arm-base frame.
-    float ee_goal_pos[3]  = {0.1092f, 0.0f, 0.3439f};  // x, y, z
+    // `ee_goal` 是 **root（机体）坐标系**下的 EE 目标位姿 ← 策略观测要求的口径。
+    // 默认 = Piper 默认关节姿态（arm2 0.5 / arm3 -0.5）下 `gripper_base` 在 root 系的位姿
+    // （实测 (0.3492, 0, 0.4326)，见 scripts/check_mjcf_contract.py）。
+    // ⚠️ 别写成臂基座坐标系的值 (0.1092, 0, 0.3439) —— 差 24 cm（DEF-019）。
+    float ee_goal_pos[3]  = {0.3492f, 0.0f, 0.4327f};  // x, y, z (root frame)
     float ee_goal_quat[4] = {0.7373f, 0.0f, 0.6756f, 0.0f};  // w, x, y, z
 };
 
