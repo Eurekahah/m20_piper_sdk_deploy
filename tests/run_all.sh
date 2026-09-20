@@ -16,7 +16,7 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 
 SCRIPTS=src/M20_sdk_deploy/scripts
-MODES=${MODES:-"hold rl walk arm arm_move push"}
+MODES=${MODES:-"hold wheel_step rl walk arm arm_move push"}
 fail=0
 step() { printf '\n=========== %s ===========\n' "$1"; }
 report() { if [ "$1" -eq 0 ]; then echo "  -> OK: $2"; else echo "  -> FAIL: $2"; fail=1; fi }
@@ -41,6 +41,8 @@ for m in $MODES; do
   if [ "$m" = "rl" ]; then
     python3 tests/sim2sim_smoke.py --mode "$m" --duration 20 --repeat 6
   elif [ "$m" = "hold" ]; then
+    python3 tests/sim2sim_smoke.py --mode "$m" --duration 12
+  elif [ "$m" = "wheel_step" ]; then
     python3 tests/sim2sim_smoke.py --mode "$m" --duration 12
   else
     python3 tests/sim2sim_smoke.py --mode "$m" --duration 25

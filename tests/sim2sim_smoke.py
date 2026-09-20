@@ -21,7 +21,9 @@
   --mode push    进 RL 后由仿真施加一次侧向力，验证安全接管会触发并切到 joint_damping
                  （力/时刻/时长用 M20_SIM_PUSH_FORCE / _AT / _DURATION，默认 800 N / 12 s / 0.3 s）
   --mode arm_move 同 arm，额外起 arm_teleop 键盘节点并按住 numpad 8（EE +x）：
-                 验证臂真的动、`ee_goal` 跟着变、底盘不受扰（端到端臂链路）
+                 验证臂真的动、末端位姿跟着走、底盘不受扰（端到端臂链路）
+  --mode wheel_step 轮子速度伺服阶跃（5 rad/s @ t=5 s）：验证四个轮子同向、
+                 稳态 ω ≈ 5 rad/s（速度环 + armature + 力矩限幅这条链）
 
 用法（容器内）::
 
@@ -54,6 +56,7 @@ WHEEL_RADIUS = 0.09
 TILT_LIMIT = 0.8          # rad
 HEIGHT_LIMIT = 0.30       # m
 ARM_DEFAULT = [0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0]   # arm1..6 + gripper1/2
+EE_DEFAULT_X = 0.3492     # 默认关节姿态下 gripper_base 在 root 系的 x（实测）
 ARM_TAU_LIMIT = 100.0     # N·m（训练 effort_limit）
 
 
@@ -152,6 +155,16 @@ def analyse(csv_path: Path):
     j = int(n * 0.6)
     out["vx_tail"] = (float(rows[-1]["base_x"]) - float(rows[j]["base_x"])) / \
                      max(out["t"][-1] - out["t"][j], 1e-6)
+    # 轮子：后半段的平均转速（MJCF 序 3/7/11/15）
+    wheel_dq = [[float(r[f"dq{i}"]) for i in (3, 7, 11, 15)] for r in rows[j:]]
+    out["wheel_mean"] = [sum(w[k] for w in wheel_dq) / max(len(wheel_dq), 1)
+                         for k in range(4)]
+    # 末端位移（root 系）：参考点是**默认关节姿态**下 gripper_base 的 x
+    # （= 0.3492，见 scripts/check_mjcf_contract.py 的实测），而不是"某一时刻的当前位置"
+    # —— 因为按住 numpad 8 之后臂很快就走到工作空间边界，用中间某刻当参考会得到 0。
+    out["ee_x_end"] = float(rows[-1]["ee_x"])
+    out["ee_x0"] = EE_DEFAULT_X
+    out["ee_dx"] = out["ee_x_end"] - EE_DEFAULT_X
     # 机械臂：稳态偏差（相对默认角）与最大力矩；tau 列同样是 MJCF 序（16..23）
     arm_dev = 0.0
     arm_tau = 0.0
@@ -169,7 +182,8 @@ def analyse(csv_path: Path):
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode",
-                    choices=["hold", "stand", "rl", "walk", "arm", "arm_move", "push"],
+                    choices=["hold", "stand", "rl", "walk", "arm", "arm_move",
+                             "wheel_step", "push"],
                     default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
@@ -220,6 +234,9 @@ def main() -> int:
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
     env.setdefault("M20_JVEL_DEBUG", "0")
+    if args.mode == "wheel_step":
+        env.setdefault("M20_SIM_WHEEL_STEP_RAD_S", "5")
+        env.setdefault("M20_SIM_WHEEL_STEP_AT", "5")
     if args.mode == "push":
         env.setdefault("M20_SIM_PUSH_FORCE", "800")
         env.setdefault("M20_SIM_PUSH_AT", "12")
@@ -232,8 +249,9 @@ def main() -> int:
         sim, sim_f = spawn([sys.executable, str(SIM)], env, sim_log)
         time.sleep(2.0)                      # 等仿真节点起来并把姿态稳住
 
-        if args.mode == "hold":
-            # 只观察仿真自己的默认保持（不起 rl_deploy）
+        if args.mode in ("hold", "wheel_step"):
+            # 只观察仿真自己的默认保持（不起 rl_deploy）；wheel_step 由仿真侧
+            # 直接覆盖四个轮子的执行器指令
             t_start = time.time()
             while time.time() - t_start < args.duration:
                 time.sleep(0.2)
@@ -333,6 +351,12 @@ def main() -> int:
     if args.mode in ("arm", "arm_move"):
         print(f"  arm     : 相对默认角最大偏差 {info['arm_dev']:.4f} rad, "
               f"最大关节力矩 {info['arm_tau_max']:.1f} N·m（限幅 {ARM_TAU_LIMIT}）")
+        if args.mode == "arm_move":
+            print(f"  末端    : ee_x {info['ee_x0']:.4f} -> {info['ee_x_end']:.4f} m "
+                  f"(Δ={info['ee_dx']:+.4f})，按住 numpad 8 = EE +x")
+    if args.mode == "wheel_step":
+        print("  轮子稳态: " + " ".join("%+.2f" % v for v in info["wheel_mean"])
+              + " rad/s（阶跃命令 +5.00）")
 
     fails = []
     if args.mode != "hold":
@@ -364,12 +388,26 @@ def main() -> int:
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm 模式的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
     if args.mode == "arm_move":
-        # 端到端：按住 numpad 8 → 臂应当真的动起来（偏差变大）、力矩不超限
+        # 端到端：按住 numpad 8 → 臂应当真的动起来（关节偏差变大）、
+        # 末端应当朝 +x 走（IK 真的把任务空间目标跟踪上了）、力矩不超限
         if info["arm_dev"] < 0.05:
             fails.append(f"arm_move：按住 numpad 8 后臂几乎没动（偏差仅 "
                          f"{info['arm_dev']:.4f} rad）")
+        if info["ee_dx"] < 0.03:
+            fails.append(f"arm_move：末端 x 只动了 {info['ee_dx']:+.4f} m（期望 > +0.03）")
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm_move 的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
+    if args.mode == "wheel_step":
+        # P1-2 的判据：四轮同向、稳态 ω 与命令差 < 10%
+        target = float(env.get("M20_SIM_WHEEL_STEP_RAD_S", "5"))
+        w = info["wheel_mean"]
+        if min(w) * max(w) <= 0:
+            fails.append(f"wheel_step：四个轮子方向不一致（{['%.2f' % v for v in w]}）")
+        elif abs(sum(w) / 4 - target) > 0.1 * abs(target):
+            fails.append(f"wheel_step：稳态平均 {sum(w) / 4:+.3f} rad/s 与命令 "
+                         f"{target:+.3f} 相差超过 10%")
+        elif max(abs(v - target) for v in w) > 0.1 * abs(target):
+            fails.append(f"wheel_step：四轮彼此不一致 {['%.2f' % v for v in w]}")
     if args.mode == "push":
         # 这里**期望**摔（被打倒），要验的是"安全接管触发并切进 joint_damping"
         dep_txt = deploy_log.read_text(errors="ignore") if deploy_log.exists() else ""
