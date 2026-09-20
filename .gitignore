@@ -8,3 +8,5 @@ tmp/
 .tmp_models/**
 *debug*
 *LOG*
+__pycache__/
+*.pyc
