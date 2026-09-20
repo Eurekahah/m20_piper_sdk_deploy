@@ -26,41 +26,36 @@
   分支：feat/<topic> / fix/<topic> / docs/<topic> / wip/<topic>（wip 不合并）。
   合并用 `git merge --no-ff`。
 
-【当前状态】main = f92e415 之后（领先 origin/main 30+ 个提交）。
-  接口已经切到新 checkpoint：83 / 700 / 16，**布局驱动**（读 policy_layout.json +
-  ONNX 形状/名字交叉断言），策略目录 policy/m20_piper_history_20260920/。
-  L1（离线）PASS、L3'（MJCF 对照）10 PASS / 0 FAIL。
-  L3 五档 `hold / rl / walk / arm / push` 单档全 PASS：
-    hold  height 0.498 m, tilt 1.4°
-    rl    height 0.515 m, tilt 1.0°
-    walk  +0.576 m/s（命令 +0.7）
-    arm   臂偏差 0.0153 rad, 力矩 4.6 N·m
-    push  800 N 侧推触发 [TAKEOVER!] → joint_damping
-  ⚠️ **DEF-018 未收敛**：连续跑多档时 `rl` 档约 1/6~1/3 概率在进 RL 后 1~2 s 摔倒
-     （单独跑大多正常）。已排除：仿真跑慢（实时因子 1.000）、残留进程、观测门禁、
-     软启动长度（0/10/25/50 对照：0/6、1/6、2/6、2/6，软启动不是解）。
+【当前状态】main 领先 origin/main 45+ 个提交，工作区干净。
+  ✅ sim2sim 已达标：`bash tests/run_all.sh` 全绿（L0 编译 + L1 离线验收 +
+     L3' MJCF/训练配置对照 + 7 档 L3：hold / wheel_step / rl / walk / arm /
+     arm_move / push）。
+  接口：83 / 700 / 16，布局驱动（读 policy_layout.json + ONNX 形状/名字断言），
+     策略目录 policy/m20_piper_history_20260920/（换策略见 policy/README.md）。
+  典型数字（2026-09-20 实测）：
+     hold    height 0.498 m / tilt 1.4°
+     rl      height 0.515 m / tilt 1.0°（失败率 0~33%，见下）
+     walk    +0.576 m/s（命令 +0.7）
+     arm     臂偏差 0.015 rad / 力矩 4.6 N·m
+     arm_move 末端 x 0.349→0.595 m、IK 残差 **0.18 mm**、底盘 tilt 1.1°
+     push    800 N 侧推 → [TAKEOVER!] → joint_damping
+     wheel_step 四轮稳态 +5.00 rad/s（命令 +5）
+  ⚠️ DEF-018（未修，**已定位为策略侧**）：rl / walk / arm_move 三档在"进 RL 后
+     1~4 s"有 0~35% 概率发散。部署侧 5 组对照实验全部排除（软启动长度、
+     轮子执行器语义、执行器延迟 0~25 ms、站立腿增益、轮子无扰交接），
+     仿真实时因子 1.000。与训练侧 s3 阶段 0.09~0.15/20 s 的终止率同源
+     ⇒ 交接训练侧（训练仓库 TODO P1-2）。
 
-【下个 session 的优先级】
-  P0-9 查 DEF-018：正在验证"入口处执行器语义跳变"（idle/standup 的轮子原来是
-    位置保持 kp=10，RL 是速度伺服 kp=0/kd=0.6；standup 腿增益 200 vs RL 的 80）。
-    已改轮子语义并跑了 12 次对照（见 DONE_zh.md 第十二节的数字）。
-    若仍不收敛，按 DEF-018 的候选继续：① 给仿真加固定时延做退化对照；
-    ② dump 进 RL 前 300 tick 的 obs/action 与离线复算逐拍对照；
-    ③ 与训练侧 P1-2（s3 阶段 root_height 终止率 0.09~0.15）对口径 —— 可能是**策略
-    自身在入口的鲁棒性**问题，需要训练侧配合，而不是部署侧的 bug。
-  P1-1 剩下：timestep 取舍（MJCF 0.002 / 仿真 0.0002x5 / 训练 0.005）、执行器延迟、
-    摩擦与恢复系数随机化、`base_link` 显式惯性的来源核对。
-  P2（真机可以随时上手）：P2-1 腿部标定链核对、P2-2 arm_real_adapter 实机验证、
-    P2-3 时延测量。
+【TODO 现状】P0 全部清空；剩余只有三条**真机**项：
+  P2-1 真机腿部标定链核对  P2-2 arm_real_adapter 实机联调  P2-3 时延/抖动测量。
+  流程与判据见 docs/sim2real_checklist_zh.md（含"没做过"清单，别把没验过的当成验过）。
 
-【测试分层（详见 WORKFLOW_zh.md）】
-  L0 编译：容器内 `source /opt/ros/humble/setup.bash && colcon build --packages-up-to
-           m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON`（~20 s，已验证通过）
-  L1 离线：`python3 src/M20_sdk_deploy/scripts/check_policy_interface.py`（待写）
-  L3' 参数对照：`python3 src/M20_sdk_deploy/scripts/check_mjcf_contract.py`
-           （已可用，当前 8 PASS / 2 FAIL / 3 UNKNOWN；两个 FAIL 是 DEF-011/DEF-012 相关）
-  L3 端到端：`rl_deploy` + `mujoco_simulation_ros2.py` 无头跑 N 秒，按契约文档的
-           数值判据打分（高度/倾角曲线；tests/ 一键脚本待写 = TODO P3-1/P3-2）
+【下个 session 建议】
+  1. 真机可用 ⇒ 按 docs/sim2real_checklist_zh.md 走阶段 A（只上腿）：
+     第一件事是"标定核对"（摆成训练默认姿态读 /JOINTS_DATA，偏差应 < 0.05 rad）。
+  2. 真机首跑务必注意 DEF-018：进 RL 的 1~2 s 别放手，先给小速度命令（vx 0.1~0.2）。
+  3. 训练侧若改了策略，回来跑 `bash tests/run_all.sh`，并把 DEF-018 的失败率
+     （`--repeat 12`）与历史对比（当前 rl 0~33%、walk 17~50%、arm_move 0~17%）。
 
 【运行命令备忘】
   docker start m20_piper_ros && docker exec -it m20_piper_ros bash
