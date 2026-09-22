@@ -20,6 +20,7 @@
 | 2026-09-20 | 新增 DEF-022（键盘增量无限速 → 一按撞边界）；IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
 | 2026-09-20 | 新增 DEF-023（无臂部署口径）+ `arm_stub_node.py` + `--mode no_arm` | `feat/no-arm-stub` |
 | 2026-09-22 | 新增 DEF-024（真机启动自检无限等待 → 卡死在 `joint data update is not finished`）+ DEF-025（CMake 缓存 SIM2SIM） | `fix/real-startup-selfcheck` |
+| 2026-09-22 | 新增 DEF-026（进 RL 时抢 `/ARM_JOINTS_CMD`，把 IK 控制的臂拽一下）；新增『只调臂』（不开策略）配置与用例 | `feat/arm-only` |
 
 ---
 
@@ -62,6 +63,37 @@
 * `--mode rl` 单独连跑 3 次全 PASS（修复前同一序列里约 1/3 概率失败）；
 * **未收敛**：五档**连续**跑时仍偶发失败（`rl` 在 t≈10.0 s），见 `DEF-018`。
   这一条修复是"应该修的真问题"，但显然不是唯一原因。
+
+---
+
+### DEF-026 `2026-09-22` 进 RL 时 rl_deploy 会把正在被 IK 控制的臂拽回默认位姿
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-09-22` |
+| 类型 | 缺陷（多发布者抢话题） |
+| 状态 | `已修` |
+| 影响面 | `sim2real` / `sim2sim`（臂栈与策略合并跑时） |
+| 关联 | `interface/robot/hardware/piper_arm_interface.hpp::Start` |
+
+**1. 现象**：臂栈（`arm_controller` 的 IK）与策略同时跑时，**按 `c` 进 RL 的那一拍**
+臂会被拽回默认位姿一下（一个控制周期后又回到 IK 目标）—— 因为 `/ARM_JOINTS_CMD`
+上有两个发布者：`arm_controller`（50 Hz 的 IK 目标）和 `rl_deploy` 的
+`PiperArmInterface::Start()`（进 RL 时发的一条"保持默认位姿"）。
+
+**2. 根因**：把"默认保持"也算成部署侧的职责；当外部已经在控制臂时，这条就是抢话题。
+
+**3. 修正**：`PiperArmInterface` 也监听 `/ARM_JOINTS_CMD`；`Start()` 时若最近 0.5 s
+内有人在发（典型的：`arm_controller` 在跑），就**跳过**默认保持命令并打印
+`[PiperArmInterface] /ARM_JOINTS_CMD 上已有其它发布者（如 arm_controller），跳过进 RL 时的默认位姿保持命令`。
+没人发时照旧发（无臂/臂静止的场景仍需要）。
+
+**4. 结果（验收）**
+
+| 场景 | 行为 | 实测 |
+|---|---|---|
+| `--mode arm` / `arm_move`（arm_controller 在跑） | 跳过默认保持 | 日志出现上面那句；`arm_move` 仍 PASS（末端 +0.239 m、IK 残差 0.18 mm） |
+| `--mode no_arm`（没人控制臂） | 照旧发默认保持 | 跳过日志出现 **0** 次；`no_arm` PASS |
 
 ---
 

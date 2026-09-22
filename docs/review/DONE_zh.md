@@ -236,3 +236,11 @@
 | 2026-09-22 | **新增 L2 验收 `tests/arm_real_bridge_check.py`**（不需要真臂/Jetson）：假 `/feedback/joint_states` → 检查 `/ARM_JOINTS_DATA`（8 关节逐位一致）；假 `/ARM_JOINTS_CMD` → 检查 `/control/joint_states`（joint2 0.8、夹爪宽度 0.04） | 上行 8 关节最大差 **1.5e-10**；ee_goal 位置差 0.04 mm；下行 joint2=0.8000、gripper=0.0400 ⇒ **PASS** | 同上 |
 | 2026-09-22 | 文档：README 增加"真机 + 真臂：两台机器怎么接线"（拓扑图、两台机器各自的命令、方案 A/B、网络与 DDS 发现要求、验证步骤、安全提示）；`run_all.sh` 增加 L2 桥接检查；真机检查单阶段 B 重写为两台机器流程 | — | 同上 |
 | 2026-09-22 | **"只调臂"（不开策略）**：新增 `run_sim2sim.sh arm` 配置与 L3 用例 `--mode arm_only`（仿真 + IK + 键盘，**不起 rl_deploy**）。确认臂链路与策略解耦；真机上对应"只起 adapter+IK+键盘"的用法（腿由"不进 SDK 模式"或"rl_deploy 停在 idle"撑着） | 轻点 numpad：末端 **+0.20 m**、IK 稳态残差中位数 **0.63 mm**、底盘 tilt 2.4°，连跑 2 次都 PASS | `feat/arm-only` |
+
+## 二十一、"只调臂"（不开策略）+ 进 RL 不抢臂（2026-09-22）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-22 | **`run_sim2sim.sh arm` + `--mode arm_only`**：仿真 + `arm_controller`(IK) + `arm_teleop`(键盘)，**不起 `rl_deploy`** —— 臂链路与策略完全解耦，可以先单独调；真机对应"只起 adapter+IK+键盘" | 轻点 numpad：末端 **+0.20 m**、IK 稳态残差中位数 **0.63 mm**、底盘 tilt 2.4°，连跑 2 次 PASS | `feat/arm-only` |
+| 2026-09-22 | **DEF-026**：`PiperArmInterface` 现在也监听 `/ARM_JOINTS_CMD`；进 RL 时若最近 0.5 s 有别人在发（`arm_controller` 在控制臂），就跳过"保持默认位姿"，不再把臂拽一下 | `--mode arm/arm_move`：出现跳过日志，`arm_move` 仍 PASS（+0.239 m / 残差 0.18 mm）；`--mode no_arm`：跳过日志 0 次（该发还是发），PASS | `f456e0e` |
+| 2026-09-22 | IK 残差判据改成"末尾中位数"（运动瞬态单拍可能撞 20 次迭代上限，属跟踪滞后而非误差） | `arm_only` / `arm_move` 均稳定 PASS | `feat/arm-only` |
