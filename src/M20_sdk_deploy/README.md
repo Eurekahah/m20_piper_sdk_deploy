@@ -247,6 +247,18 @@ M20_ARM_STUB_DEBUG=1                        # 1 Hz 打印收到的 /ARM_JOINTS_C
 仿真里等价场景用 `M20_SIM_NO_ARM_DATA=1`（仿真照常跑，但不发臂反馈），
 一键验证：`python3 tests/sim2sim_smoke.py --mode no_arm`。
 
+### 真机部署前先跑一遍检查
+
+```bash
+python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py            # 容器/真机都行
+python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py --offline  # 不看 ROS 话题
+```
+
+它会回答：策略**要不要机械臂数据**（从观测构成反推）、当前编译产物是不是
+`SIM2SIM`（真机必须**不带** `-DSIM2SIM`）、四个臂相关脚本是否齐全、
+`/JOINTS_DATA` 等话题有没有发布者，最后列出"必须处理"的阻断项与该敲的命令。
+
+### 测试（改任何模块后都要跑）
 
 ```bash
 # 容器内，仓库根目录

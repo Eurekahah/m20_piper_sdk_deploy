@@ -161,8 +161,21 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     + `scripts/run_sim2sim.sh {full|legs|mixed}` 三套配置 + `--mode no_arm` / `--mode arm_mixed` 用例）。
   - 待做：真机上**只装腿**跑一次完整流程（起 `arm_stub_node.py`，进 RL、走、
     急停），确认没有臂时策略行为与"臂装好且静止"一致。
-  - 验收：真机 `--` 无臂行走不触发 `[TAKEOVER!]`；`ros2 topic echo /ARM_TELEOP_STATE`
+  - 验收：真机无臂行走不触发 `[TAKEOVER!]`；`ros2 topic echo /ARM_TELEOP_STATE`
     为默认位姿；对比"有臂静止"跑的日志无差异（除臂话题）。
+  - 工具：先跑 `scripts/preflight_real_deploy.py`（会检查 SIM2SIM 编译选项、
+    策略是否需要臂、话题发布者），再按输出执行。
+
+- [ ] **P2-5 支持"观测里不含机械臂"的策略（待用户提供 layout 再动手）**
+  - 现状：`M20PiperPolicyRunner::LoadLayout()` 硬断言 `obs = 3+3+3+24+24+action+7+3`，
+    所以一个"真·无臂策略"（例如 16 关节、无 `ee_goal`）现在会被直接拒绝加载
+    （报 `Policy dim mismatch`，不会静默算错）。
+  - 要做什么：把关节表/是否含 `ee_goal` 改成**从 `policy_layout.json` 推导**，
+    并让 `RLControlState` 在无臂布局下不创建 `PiperArmInterface`。
+  - 依据/前置：需要那个策略的 `policy_layout.json`（关节表、是否有 `ee_goal`），
+    因为观测构成必须与训练一致。
+  - 验收：用一份合成 ONNX（按无臂布局的维度生成）跑通 L1 + 端到端；现有
+    83/700/16 路径回归不退化。
 
 - [ ] **P2-1 真机腿部标定链核对**
   - 要做什么：核对 `M20Interface`（真机 dir/offset 标定、启动期 ±360° 多圈补偿）

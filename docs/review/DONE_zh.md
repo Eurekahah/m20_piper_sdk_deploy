@@ -213,3 +213,9 @@
 | 2026-09-21 | **假臂节点增加"跟随模式"**（`M20_ARM_STUB_FOLLOW=1`，`M20_ARM_STUB_MAX_VEL=3.0 rad/s`）：把 `/ARM_JOINTS_CMD` 的位置目标一阶跟随出来当反馈 = **假 CAN 驱动**，于是没有真臂也能调 `arm_controller`/`arm_teleop` 这条链路 | 见下 | 同上 |
 | 2026-09-21 | **新增 L3 用例 `--mode arm_mixed`**：sim 不发臂数据 + 假 CAN 驱动 + IK + 键盘，按住 numpad 8 后断言**策略观测里的臂项真的变化** | 变化量 **1.037 rad**（tick0 → tick299），底盘 height 0.511 m / tilt ≤1.1° ⇒ 数据链路通了 | 同上 |
 | 2026-09-21 | `tests/run_all.sh` 扩到 **9 档**（新增 `no_arm`、`arm_mixed`） | 见第十一节表 | 同上 |
+
+## 十八、真机部署前检查工具（2026-09-22）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-22 | **`scripts/preflight_real_deploy.py`**：一次回答"策略要不要臂数据 / 能不能上真机 / 该跑哪些命令"。检查：① 策略目录与观测构成（能否从维度反推 24 关节含臂 / 16 关节不含臂）；② `build/.../flags.make` 里有没有 `-DSIM2SIM`（真机必须没有）；③ 四个臂相关脚本是否齐全；④ `/JOINTS_DATA`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 等话题有没有发布者。给"必须处理"的阻断项并 `exit 1` | 在当前容器（SIM2SIM 构建、无真机）实测：正确报出"策略需要臂数据"、"SIM2SIM 构建不能上真机"、"没有 /JOINTS_DATA"，并提示起 `arm_stub_node.py` | `preflight` |
