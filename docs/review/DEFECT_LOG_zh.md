@@ -19,6 +19,7 @@
 | 2026-09-20 | 新增 DEF-020（`arm_controller` 发布 `ee_goal` 用错坐标系）、DEF-021（`arm_teleop` 非 TTY 崩溃）；新增 `--mode arm_move` | `fix/ee-goal-frame-arm-node` |
 | 2026-09-20 | 新增 DEF-022（键盘增量无限速 → 一按撞边界）；IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
 | 2026-09-20 | 新增 DEF-023（无臂部署口径）+ `arm_stub_node.py` + `--mode no_arm` | `feat/no-arm-stub` |
+| 2026-09-22 | 新增 DEF-024（真机启动自检无限等待 → 卡死在 `joint data update is not finished`）+ DEF-025（CMake 缓存 SIM2SIM） | `fix/real-startup-selfcheck` |
 
 ---
 
@@ -64,7 +65,92 @@
 
 ---
 
-### DEF-023 `2026-09-20` 臂没装时，策略看到的是"臂不在默认姿态"（观测与 ee_goal 自相矛盾）
+### DEF-024 `2026-09-22` 真机启动卡在 `joint data update is not finished`（自检无限等待）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-09-22` |
+| 类型 | 缺陷（**真机阻断**） |
+| 状态 | `已修` |
+| 影响面 | `sim2real` |
+| 关联 | `interface/robot/hardware/m20_interface.hpp::ResetPositionOffset`（原 `DdsInterface` 里也有同样写法） |
++
++**1. 现象**：真机上按 `z` 进站立时，终端反复打印：
++
++```
++0 :0
++1 :0
++...
++15 :0
++joint data update is not finished
++```
++
++每 10 s 一次、永不结束；程序卡在启动阶段（状态机还没起来），而这段时间机器人被
++`SetJointCommand(MatXf::Zero(...))` 发了**零增益** —— 也就是机器人是软的、会塌。
++
++**2. 根因**：`ResetPositionOffset()` 的启动自检要求
++**16 个关节（含 4 个轮子）每一个都"变化过一次"**才退出，而且是 `while` **无限等待**：
++
++* 收不到 `/JOINTS_DATA`（不在 SDK 模式 / ROS domain 不一致 / 话题不通）→ 位置恒 0，永不满足；
++* 收到了但**机器人站着不动**：腿被撑住、**轮子不转** → 也永不满足（轮子几乎不可能主动变化）；
++* 它的本意只是"确认反馈是活的、并据此决定多圈编码器的 ±360° 偏移（只用 hipy/knee 两列）"，
++  要求全部 16 个关节都变化，是过强的条件。
++
++**3. 修正**（`M20Interface::ResetPositionOffset`）
++
++1. 有限等待：`M20_JOINT_UPDATE_TIMEOUT_S`（默认 **5 s**，`=0` 完全跳过），绝不卡住；
++2. 每秒打印进度：`等待关节反馈变化 n/16（未变化: ...）`；
++3. 收到 0 条 → 明确报"完全没有收到 /JOINTS_DATA"并给出三条排查建议；
++4. `hipy/knee` 没有全部变化 → **跳过** ±360° 偏移校正（用未更新的数据修正会毁掉坐标系）；
++5. 结束时打印一次 **16 个实测关节角**（真机最需要的诊断信息）。
++
++**4. 结果（验收）**：在容器里用真机接口（`-DSIM2SIM=OFF`）复现"没有关节反馈"：
++
++```
++[M20Interface] 等待关节反馈变化 0/16（未变化: 0 1 ... 15），已等 1.0s / 3s
++[M20Interface] 等待关节反馈变化 0/16（...），已等 3.0s / 3s
++[M20Interface] ⚠️ 完全没有收到 /JOINTS_DATA（收到 0 条）。
++    请确认：① 机器人已进入 SDK 模式（手柄 + 授权码）；
++              ② ROS_DOMAIN_ID 与机器人服务一致；
++              ③ `ros2 topic hz /JOINTS_DATA` 有数据。
++[M20Interface] ⚠️ hipy/knee 没有全部发生变化 ⇒ **跳过**多圈 ±360° 偏移自检（保持默认 offset 表）。
++[M20Interface] joint pos (rad) = 0.000 ...
++```
++
++不再无限等待；`SIM2SIM` 回归（`--mode hold`）仍 PASS。
++
++---
++
++### DEF-025 `2026-09-22` CMake 会缓存 `SIM2SIM`：编过仿真版之后再编真机版必须显式 `-DSIM2SIM=OFF`
++
++| 项 | 内容 |
++|---|---|
++| 日期 | `2026-09-22` |
++| 类型 | 缺陷（构建陷阱） |
++| 状态 | `已修`（文档 + 预检查） |
++| 影响面 | `sim2real` |
++| 关联 | `CMakeLists.txt`；`scripts/preflight_real_deploy.py` |
++
++**1. 现象**：先按仿真方式编过 `-DSIM2SIM=ON`，之后只写
++`--cmake-args -DBUILD_PLATFORM=x86`（或 `=arm`）再编 —— **拿到的仍是仿真接口**
++（`M20SimInterface`，恒等标定），真机上关节坐标系就错了；而且日志里同样会打
++`M20 is using Ecan Hardware Interface`，不容易看出来。
++
++**2. 根因**：`SIM2SIM` 是 CMake cache 变量，`colcon build` 不会因为你这次没传就把它
++清掉。本次就是这个坑：第一次验证 DEF-024 时用了没带 `-DSIM2SIM` 的编译，实际跑的还是
++仿真接口（所以看不到新日志）。
++
++**3. 修正**：真机构建必须显式写 `-DSIM2SIM=OFF`；`scripts/preflight_real_deploy.py`
++的 `[2] 编译产物` 会读 `build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make`，
++发现 `-DSIM2SIM` 就报**阻断项**。
++
++**4. 结果**：预检查在当前容器（SIM2SIM 构建）正确报
++`[必须] 编译选项 SIM2SIM = True ...
++真机要**不带** -DSIM2SIM 的产物`。
++
++---
++
++### DEF-023 `2026-09-20` 臂没装时，策略看到的是"臂不在默认姿态"（观测与 ee_goal 自相矛盾）
 
 | 项 | 内容 |
 |---|---|

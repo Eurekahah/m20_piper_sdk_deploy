@@ -219,3 +219,10 @@
 | 日期 | 内容 | 关键实测 | commit |
 |---|---|---|---|
 | 2026-09-22 | **`scripts/preflight_real_deploy.py`**：一次回答"策略要不要臂数据 / 能不能上真机 / 该跑哪些命令"。检查：① 策略目录与观测构成（能否从维度反推 24 关节含臂 / 16 关节不含臂）；② `build/.../flags.make` 里有没有 `-DSIM2SIM`（真机必须没有）；③ 四个臂相关脚本是否齐全；④ `/JOINTS_DATA`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 等话题有没有发布者。给"必须处理"的阻断项并 `exit 1` | 在当前容器（SIM2SIM 构建、无真机）实测：正确报出"策略需要臂数据"、"SIM2SIM 构建不能上真机"、"没有 /JOINTS_DATA"，并提示起 `arm_stub_node.py` | `preflight` |
+
+## 十九、真机启动自检不再卡死（2026-09-22）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-22 | **DEF-024**：`M20Interface::ResetPositionOffset()` 原来要求 16 个关节（含 4 轮）全部变化且**无限等待**，真机上站着不动/没有反馈时就是每 10 s 打印一次 `joint data update is not finished` 并卡在启动里（期间机器人是零增益=软的）。改为有限等待 `M20_JOINT_UPDATE_TIMEOUT_S`（默认 5 s，`=0` 跳过）+ 每秒进度 + 收不到数据时的明确诊断 + hipy/knee 未更新则跳过 ±360° 偏移校正 + 结束打印 16 个实测角 | 用真机接口（`-DSIM2SIM=OFF`）复现"无反馈"：3 s 后打印 `完全没有收到 /JOINTS_DATA（收到 0 条）` 与三条排查建议，不再卡住；`--mode hold` 回归 PASS | `fix/real-startup-selfcheck` |
+| 2026-09-22 | **DEF-025**：CMake 缓存 `SIM2SIM` —— 先编仿真版再编真机版必须显式 `-DSIM2SIM=OFF`，否则仍是恒等标定的仿真接口（日志里看不出来） | `preflight_real_deploy.py` 的 `[2]` 会读 `flags.make` 并在发现 `-DSIM2SIM` 时报阻断项 | 同上 |
