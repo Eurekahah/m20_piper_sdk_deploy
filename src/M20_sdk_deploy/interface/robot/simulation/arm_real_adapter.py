@@ -45,6 +45,8 @@ M20 电脑**上最省事（Jetson 上就只需要 agx_arm_ctrl）。agx 的
 """
 
 import os
+import sys
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -57,8 +59,11 @@ from drdds.msg import MetaType
 
 ARM_CMD_TOPIC = '/ARM_JOINTS_CMD'
 ARM_DATA_TOPIC = '/ARM_JOINTS_DATA'
-AGX_CONTROL_TOPIC = '/control/joint_states'
-AGX_FEEDBACK_TOPIC = '/feedback/joint_states'
+# agx 侧的话题名做成可配：不同版本的 agx_arm_ros / 不同 launch 可能带命名空间，
+# 在 Jetson 上用 `ros2 topic list | grep -i joint` 看实际名字，然后用环境变量指过来。
+AGX_CONTROL_TOPIC = os.environ.get('M20_ADAPTER_AGX_CONTROL_TOPIC', '/control/joint_states')
+AGX_FEEDBACK_TOPIC = os.environ.get('M20_ADAPTER_AGX_FEEDBACK_TOPIC', '/feedback/joint_states')
+CHECK_SECONDS = float(os.environ.get('M20_ADAPTER_CHECK_SECONDS', '5'))
 
 ARM_JOINT_COUNT = 6
 TOTAL_JOINT_COUNT = 8  # 6 arm + 2 sim gripper joints
@@ -94,6 +99,7 @@ class ArmRealAdapter(Node):
         self._feedback_warned = False
         self._ee_q = None
         self._ee_log_cnt = 0
+        self.cmd_count = 0
 
         # 是否用 FK 发布 /ARM_TELEOP_STATE（策略观测的 ee_goal）
         self._publish_ee = os.environ.get('M20_ADAPTER_PUBLISH_EE', '1') != '0'
@@ -117,6 +123,7 @@ class ArmRealAdapter(Node):
     # ------------------------------------------------------------------
     def _arm_cmd_cb(self, msg):
         """drdds 8-DOF command (arm_joint1..6 + gripper1/2) -> agx joint_states."""
+        self.cmd_count += 1
         if len(msg.data.joints_data) < TOTAL_JOINT_COUNT:
             return
 
@@ -204,7 +211,45 @@ class ArmRealAdapter(Node):
         self._arm_data_pub.publish(out)
 
 
+def check_mode() -> int:
+    """自检：等几秒看能不能收到 agx 反馈 / 有没有人发 /ARM_JOINTS_CMD，然后退出。
+
+    用法: python3 arm_real_adapter.py --check
+    """
+    rclpy.init()
+    node = ArmRealAdapter()
+    node.get_logger().info(
+        f'[check] 监听 {CHECK_SECONDS:.0f} s：agx 反馈 = {AGX_FEEDBACK_TOPIC}，'
+        f'agx 命令 = {AGX_CONTROL_TOPIC}')
+    t_end = time.time() + CHECK_SECONDS
+    fb_before = 0
+    while time.time() < t_end and rclpy.ok():
+        rclpy.spin_once(node, timeout_sec=0.1)
+    ok_fb = node._last_feedback is not None
+    ok_cmd = node.cmd_count > 0
+    print()
+    print(f'[check] {AGX_FEEDBACK_TOPIC:<28} : '
+          + ('收到数据 ✓' if ok_fb else '**没有数据 ✗**（话题名不对 / 跨机器发现没通 / 机器人没上电）'))
+    print(f'[check] {ARM_CMD_TOPIC:<28} : '
+          + (f'收到 {node.cmd_count} 条 ✓（有人在控制臂）' if ok_cmd
+             else '没有收到（没人发 /ARM_JOINTS_CMD —— 只桥接感知时正常）'))
+    if not ok_fb:
+        print()
+        print('[check] 排查顺序：')
+        print('  1) 在 **Jetson** 上：`ros2 topic list | grep -i joint` 看实际话题名；')
+        print('     若与上面不同，用 M20_ADAPTER_AGX_FEEDBACK_TOPIC=<实际名> 指过来。')
+        print('  2) 两边 `echo $ROS_DOMAIN_ID $RMW_IMPLEMENTATION $ROS_LOCALHOST_ONLY` 必须一致')
+        print('     （ROS_LOCALHOST_ONLY 不能是 1）。')
+        print('  3) 在 M20 上 `ros2 node list` 能否看到 Jetson 的节点：看不到 = DDS 发现没通')
+        print('     （组播被挡时配静态对端：CYCLONEDDS_URI 的 <Peers>，或 Fast DDS 的 profiles）。')
+    node.destroy_node()
+    rclpy.shutdown()
+    return 0 if ok_fb else 1
+
+
 def main(args=None):
+    if '--check' in (args or sys.argv):
+        return check_mode()
     rclpy.init(args=args)
     node = ArmRealAdapter()
     try:
