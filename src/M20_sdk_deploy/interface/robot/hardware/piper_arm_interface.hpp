@@ -23,6 +23,10 @@
 #pragma once
 
 #include "robot_interface.h"
+
+#include <chrono>
+
+#include <atomic>
 #include "dds_types.h"
 
 #include "drdds/msg/joints_data.hpp"
@@ -37,6 +41,11 @@ private:
 
     rclcpp::Publisher<drdds::msg::JointsDataCmd>::SharedPtr arm_cmd_pub_;
     rclcpp::Subscription<drdds::msg::JointsData>::SharedPtr arm_data_sub_;
+    // 也监听 /ARM_JOINTS_CMD：如果最近有别人在发（例如 arm_controller 正在做 IK），
+    // 说明臂有"主人"，rl_deploy 就不要在进 RL 时抢着发一次"回默认位姿"。
+    rclcpp::Subscription<drdds::msg::JointsDataCmd>::SharedPtr arm_cmd_sniff_sub_;
+    std::atomic<double> last_arm_cmd_time_{-1e9};
+    std::chrono::steady_clock::time_point t0_{std::chrono::steady_clock::now()};
 
 public:
     static constexpr int kArmDof = 8;  // arm_joint1..6 + gripper_joint1..2
@@ -53,6 +62,13 @@ public:
         arm_data_sub_ = node_->create_subscription<drdds::msg::JointsData>(
             "/ARM_JOINTS_DATA", 10,
             std::bind(&PiperArmInterface::Handler, this, std::placeholders::_1));
+        arm_cmd_sniff_sub_ = node_->create_subscription<drdds::msg::JointsDataCmd>(
+            "/ARM_JOINTS_CMD", 50,
+            [this](const drdds::msg::JointsDataCmd::SharedPtr) {
+                last_arm_cmd_time_.store(
+                    std::chrono::duration<double>(std::chrono::steady_clock::now() - t0_)
+                        .count(), std::memory_order_relaxed);
+            });
     }
 
     ~PiperArmInterface() override = default;
@@ -60,6 +76,19 @@ public:
     void Start() override {
         // Hold the arm at the default pose (matches the Isaac Lab default
         // joints: arm2 = 0.5, arm3 = -0.5, gripper closed).
+        //
+        // 但如果最近 0.5 s 内有人在发 /ARM_JOINTS_CMD（典型的：arm_controller 正在
+        // 用 IK 控制臂），说明臂已经有主人：此时再发一次"回默认位姿"会把臂拽一下
+        // （一个控制周期后又被 IK 抢回来），所以直接让位。
+        const double now_s = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - t0_).count();
+        const double last = last_arm_cmd_time_.load(std::memory_order_relaxed);
+        if (now_s - last < 0.5) {
+            std::cout << "[PiperArmInterface] /ARM_JOINTS_CMD 上已有其它发布者"
+                         "（如 arm_controller），跳过进 RL 时的默认位姿保持命令"
+                      << std::endl;
+            return;
+        }
         ResetToDefault();
     }
 
