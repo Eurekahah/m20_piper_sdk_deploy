@@ -45,6 +45,7 @@ M20 电脑**上最省事（Jetson 上就只需要 agx_arm_ctrl）。agx 的
 """
 
 import os
+import subprocess
 import sys
 import time
 
@@ -233,6 +234,41 @@ def check_mode() -> int:
     print(f'[check] {ARM_CMD_TOPIC:<28} : '
           + (f'收到 {node.cmd_count} 条 ✓（有人在控制臂）' if ok_cmd
              else '没有收到（没人发 /ARM_JOINTS_CMD —— 只桥接感知时正常）'))
+    # Docker 网络检查：容器里跑节点却没给 --network host 时，DDS 出不了容器，
+    # 表现就是"本机 echo 正常、对端 node list 里看不到"。
+    if os.path.exists('/.dockerenv') or os.path.exists('/run/.containerenv'):
+        print()
+        print('[check] ⚠️ 检测到当前进程在**容器**里：')
+        try:
+            addrs = subprocess.run(['ip', '-brief', 'addr'], capture_output=True,
+                                   text=True, timeout=5).stdout
+        except Exception:
+            addrs = ''
+        # 判断依据：容器里有没有"像局域网"的地址（排除 loopback / docker 桥 / 厂商虚拟网卡）。
+        # 只有 172.17/172.18 + loopback ⇒ 典型的 bridge 网络，DDS 出不去。
+        import re as _re
+        lan = []
+        for line in addrs.splitlines():
+            iface = line.split()[0] if line.split() else ''
+            if iface in ('lo', 'docker0', 'l4tbr0', 'usb0', 'usb1', 'can0', 'can1', 'can2'):
+                continue
+            for m in _re.finditer(r'(\d+\.\d+\.\d+\.\d+)/\d+', line):
+                ip = m.group(1)
+                if ip.startswith(('127.', '172.17.', '172.18.')):
+                    continue
+                lan.append(f'{iface} {ip}')
+        looks_bridge = not lan
+        print('        容器内的网卡：')
+        for line in addrs.splitlines():
+            print('          ' + line)
+        if looks_bridge:
+            print('        看起来是 **bridge 网络**（只有 172.x）：DDS 的组播/端口出不了容器，')
+            print('        对端永远发现不了它 —— 请用 `--network host` 重建容器，')
+            print('        或把 agx_arm_ros 放到 Jetson 宿主机上跑。')
+        else:
+            print('        容器里能看到局域网地址（' + '、'.join(lan) +
+                  '）⇒ 网络这一层没问题（等价于 --network host）。')
+        print('        宿主机上确认：docker inspect -f \'{{.HostConfig.NetworkMode}}\' <容器名>')
     if not ok_fb:
         print()
         print('[check] 排查顺序：')
