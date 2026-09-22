@@ -226,3 +226,12 @@
 |---|---|---|---|
 | 2026-09-22 | **DEF-024**：`M20Interface::ResetPositionOffset()` 原来要求 16 个关节（含 4 轮）全部变化且**无限等待**，真机上站着不动/没有反馈时就是每 10 s 打印一次 `joint data update is not finished` 并卡在启动里（期间机器人是零增益=软的）。改为有限等待 `M20_JOINT_UPDATE_TIMEOUT_S`（默认 5 s，`=0` 跳过）+ 每秒进度 + 收不到数据时的明确诊断 + hipy/knee 未更新则跳过 ±360° 偏移校正 + 结束打印 16 个实测角 | 用真机接口（`-DSIM2SIM=OFF`）复现"无反馈"：3 s 后打印 `完全没有收到 /JOINTS_DATA（收到 0 条）` 与三条排查建议，不再卡住；`--mode hold` 回归 PASS | `fix/real-startup-selfcheck` |
 | 2026-09-22 | **DEF-025**：CMake 缓存 `SIM2SIM` —— 先编仿真版再编真机版必须显式 `-DSIM2SIM=OFF`，否则仍是恒等标定的仿真接口（日志里看不出来） | `preflight_real_deploy.py` 的 `[2]` 会读 `flags.make` 并在发现 `-DSIM2SIM` 时报阻断项 | 同上 |
+
+## 二十、真机臂桥接（两台机器）+ FK 发布 ee_goal（2026-09-22）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-22 | **`arm_real_adapter` 增加 FK 发布 `/ARM_TELEOP_STATE`**（`M20_ADAPTER_PUBLISH_EE`，默认开）：臂动了但没人更新 `ee_goal` 时，策略会一直以为臂在默认位姿（观测分布外）。现在从 `/feedback/joint_states` 的关节角算 FK（复用 `arm_controller` 的 MDH 表），换算到 root 系后以 50 Hz 发布 | 假反馈喂默认姿态 → `/ARM_TELEOP_STATE` = `(0.3492, 0, 0.4327, 0.7373, 0, 0.6756, 0)`，与实测默认位姿差 **0.04 mm / 0.000°** | `feat/real-arm-bridge` |
+| 2026-09-22 | **确定两台机器的拓扑**：Jetson（10.21.31.201）只跑 `agx_arm_ctrl`；M20 电脑（10.21.31.103）跑 `arm_real_adapter` + `arm_controller` + `arm_teleop_node` + `rl_deploy`。adapter 收发 drdds，所以放在 M20 上（Jetson 不用装 drdds） | 见下 | 同上 |
+| 2026-09-22 | **新增 L2 验收 `tests/arm_real_bridge_check.py`**（不需要真臂/Jetson）：假 `/feedback/joint_states` → 检查 `/ARM_JOINTS_DATA`（8 关节逐位一致）；假 `/ARM_JOINTS_CMD` → 检查 `/control/joint_states`（joint2 0.8、夹爪宽度 0.04） | 上行 8 关节最大差 **1.5e-10**；ee_goal 位置差 0.04 mm；下行 joint2=0.8000、gripper=0.0400 ⇒ **PASS** | 同上 |
+| 2026-09-22 | 文档：README 增加"真机 + 真臂：两台机器怎么接线"（拓扑图、两台机器各自的命令、方案 A/B、网络与 DDS 发现要求、验证步骤、安全提示）；`run_all.sh` 增加 L2 桥接检查；真机检查单阶段 B 重写为两台机器流程 | — | 同上 |

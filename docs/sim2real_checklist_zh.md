@@ -112,12 +112,22 @@ ros2 topic list          # 期望: /JOINTS_DATA /IMU_DATA /BATTERY_DATA /JOINTS_
 
 ---
 
-## 3. 阶段 B：接机械臂
+## 3. 阶段 B：接机械臂（两台机器）
 
-1. `[ ]` CAN 与驱动：`agx_arm_ctrl start_single_agx_arm.launch.py
+真机是 **Jetson（臂/CAN）+ M20 电脑（策略）** 两台，桥接节点放在 **M20 电脑**上
+（它收发 drdds；Jetson 只跑 agx 驱动）。完整拓扑与命令见
+`src/M20_sdk_deploy/README.md` 的"真机 + 真臂：两台机器怎么接线"。
+
+1. `[ ]` **Jetson** 起 CAN 驱动：`agx_arm_ctrl start_single_agx_arm.launch.py
    can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true`。
-2. `[ ]` `arm_real_adapter.py` 桥接（映射 `arm_joint1..6 + gripper` ↔
-   `/control/joint_states`；夹爪宽度 = `q6 − q7`）。
+2. `[ ]` **网络/发现**：两边 `ROS_DOMAIN_ID`、`RMW_IMPLEMENTATION` 一致、
+   `ROS_LOCALHOST_ONLY≠1`；在 M20 上 `ros2 topic list | grep feedback/joint_states`
+   能看到对方的话题（看不到就配静态对端，见 README）。
+3. `[ ]` **M20** 起 `arm_real_adapter.py`；或先跑
+   `python3 tests/arm_real_bridge_check.py`（假反馈，验证桥接逻辑）。
+4. `[ ]` **`ee_goal` 必须跟着臂走**：用方案 A（`arm_controller` 发 IK 目标）或
+   方案 B（adapter 用 FK 发 `/ARM_TELEOP_STATE`）。检查
+   `ros2 topic echo --once /ARM_TELEOP_STATE` 随手动臂而变化。
 3. `[ ]` **臂单关节小步进**：`arm_teleop_node` 按住 numpad，看关节是否按预期方向动、
    有没有把底盘带歪（仿真里的判据是 tilt < 2°）。
 4. `[ ]` **力矩与温升**：观察 `/ARM_JOINTS_DATA` 的 `torque` 与两个温度字段；

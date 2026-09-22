@@ -26,11 +26,30 @@ Mapping conventions (kept identical to the sim URDF):
   arm_joint1..6  -> joint1..6          (raw rad)
   gripper_joint1/2 -> gripper width w  (m), w = q6 - q7
   feedback width w -> gripper_joint1 = +w/2, gripper_joint2 = -w/2
+
+新增（2026-09-22）：把臂的**当前末端位姿**用 FK 算出来，发布到 `/ARM_TELEOP_STATE`
+（root/机体坐标系，pos + quat wxyz）。原因：策略观测里有 7 维 `ee_goal`，
+如果臂动了但没人更新它，策略就会一直以为"臂还在默认位姿"，观测与真机不一致
+（分布外）。两种情况都需要它：
+
+  A) 用我们的 arm_controller(IK)+arm_teleop 控制：arm_controller 自己也发
+     `/ARM_TELEOP_STATE`，本节点的这份会被它覆盖（两者一致，无害）；
+  B) 保留 agx 自带的键盘控制（不使用 arm_controller）：**必须**由本节点发
+     `/ARM_TELEOP_STATE`，否则策略看到的 ee_goal 是错的。
+
+开关：M20_ADAPTER_PUBLISH_EE=0 关闭（默认开）。
+
+**在哪台机器上跑**：本节点发布/订阅的都是 drdds 消息，所以放在**已经装好 drdds 的
+M20 电脑**上最省事（Jetson 上就只需要 agx_arm_ctrl）。agx 的
+`/control/joint_states`、`/feedback/joint_states` 是 sensor_msgs，跨机器走 DDS 即可。
 """
+
+import os
 
 import rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
+from std_msgs.msg import Float32MultiArray
 from builtin_interfaces.msg import Time
 from drdds.msg import JointsData, JointsDataCmd, JointData, JointsDataValue
 from drdds.msg import MetaType
@@ -44,6 +63,17 @@ AGX_FEEDBACK_TOPIC = '/feedback/joint_states'
 ARM_JOINT_COUNT = 6
 TOTAL_JOINT_COUNT = 8  # 6 arm + 2 sim gripper joints
 GRIPPER_EFFORT = 1.0
+EE_STATE_TOPIC = '/ARM_TELEOP_STATE'
+
+# 默认姿态下 gripper_base 在 root 系的位置（实测，见 check_mjcf_contract.py）
+DEFAULT_EE_GOAL_BODY = [0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0]
+
+try:  # 同目录的 arm_controller 里有 MDH 表与 FK，优先复用（避免两份定义漂移）
+    from arm_controller import PIPER_MDH, ARM_BASE_OFFSET, fk_pose, mat_to_quat  # noqa: E402
+    _FK_OK = True
+except Exception as _e:  # pragma: no cover - 只在这两个文件不在一起时发生
+    _FK_OK = False
+    _FK_ERR = _e
 
 
 class ArmRealAdapter(Node):
@@ -62,6 +92,20 @@ class ArmRealAdapter(Node):
 
         self._last_feedback = None
         self._feedback_warned = False
+        self._ee_q = None
+        self._ee_log_cnt = 0
+
+        # 是否用 FK 发布 /ARM_TELEOP_STATE（策略观测的 ee_goal）
+        self._publish_ee = os.environ.get('M20_ADAPTER_PUBLISH_EE', '1') != '0'
+        self._ee_pub = None
+        if self._publish_ee:
+            if _FK_OK:
+                self._ee_pub = self.create_publisher(Float32MultiArray, EE_STATE_TOPIC, 10)
+                self.create_timer(0.02, self._publish_ee_state)   # 50 Hz
+            else:
+                self.get_logger().warn(
+                    f'[arm_real_adapter] 无法导入 FK（{_FK_ERR}）⇒ 不发布 {EE_STATE_TOPIC}；'
+                    '策略会一直用默认 ee_goal（臂动起来后观测会不一致）')
 
         # republish the latest agx feedback at 200 Hz (drdds side)
         self.create_timer(0.005, self._publish_feedback)
@@ -94,6 +138,18 @@ class ArmRealAdapter(Node):
     def _agx_fb_cb(self, msg):
         self._last_feedback = msg
 
+    def _publish_ee_state(self):
+        """用 FK 把当前臂关节角换算成 root 系的末端位姿，作为策略观测的 ee_goal。"""
+        if self._last_feedback is None or self._ee_q is None:
+            return
+        pos, R = fk_pose(PIPER_MDH, self._ee_q)
+        pos_body = pos + ARM_BASE_OFFSET          # 臂基座系 -> 机体(root)系
+        quat = mat_to_quat(R)                     # wxyz
+        msg = Float32MultiArray()
+        msg.data = [float(pos_body[0]), float(pos_body[1]), float(pos_body[2]),
+                    float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])]
+        self._ee_pub.publish(msg)
+
     def _publish_feedback(self):
         if self._last_feedback is None:
             if not self._feedback_warned:
@@ -115,6 +171,15 @@ class ArmRealAdapter(Node):
             w = float(positions[name_to_idx["gripper"]])
             q[6] = 0.5 * w
             q[7] = -0.5 * w
+
+        self._ee_q = [q[i] for i in range(ARM_JOINT_COUNT)]
+        self._ee_log_cnt += 1
+        if self._ee_log_cnt == 200:      # ~1 s 后打一次，便于确认链路
+            pos, _ = fk_pose(PIPER_MDH, self._ee_q)
+            pb = pos + ARM_BASE_OFFSET
+            self.get_logger().info(
+                '[arm_real_adapter] 臂反馈已接通：q=%s，末端(root系)=%.3f %.3f %.3f'
+                % (['%.3f' % v for v in self._ee_q], pb[0], pb[1], pb[2]))
 
         out = JointsData()
         out.header = MetaType()

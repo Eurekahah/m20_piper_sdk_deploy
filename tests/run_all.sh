@@ -36,6 +36,10 @@ step "L3' MJCF 与训练配置对照"
 python3 "$SCRIPTS/check_mjcf_contract.py"
 report $? "check_mjcf_contract.py"
 
+step "L2 真机臂桥接（假 agx 反馈）"
+python3 tests/arm_real_bridge_check.py
+report $? "arm_real_bridge_check.py"
+
 for m in $MODES; do
   step "L3 sim2sim --mode $m"
   if [ "$m" = "rl" ] || [ "$m" = "walk" ] || [ "$m" = "arm_move" ] || [ "$m" = "no_arm" ] || [ "$m" = "arm_mixed" ]; then

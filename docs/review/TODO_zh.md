@@ -186,7 +186,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收：出一张"仿真 vs 真机"接口差异表 + 上线检查单。
   - 预估：1 个工作日。
 
-- [ ] **P2-2 机械臂真机传输**
+- [~] **P2-2 机械臂真机传输**（软件侧已完成：adapter 双向 + FK 发布 ee_goal + L2 验收；剩余是**真机联调**）
   - 要做什么：把 `arm_real_adapter.py`（`agx_arm_ros` 的
     `/control/joint_states` ↔ `/ARM_JOINTS_DATA`）跑通并验收：
     关节名映射、夹爪宽度 = `q6 − q7` 的符号、`fast_mode` 下的伺服频率。

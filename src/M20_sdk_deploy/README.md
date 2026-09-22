@@ -391,6 +391,72 @@ the leg/arm command buffers inside the MuJoCo node.
 When VR is active after pressing B, the arm hub follows the VR controller and
 ignores keyboard arm keys, and rl_deploy follows VR for legs/body.
 
+### 真机 + 真臂：两台机器怎么接线（M20 电脑 + Jetson）
+
+真机布局是**两台机器**：
+
+```
+[Jetson AGX Orin  10.21.31.201]                 [M20 电脑  10.21.31.103]
+  agx_arm_ctrl（CAN → Piper 臂）                  rl_deploy（策略）
+       ↑ /control/joint_states  (sensor_msgs)      ↑ /ARM_JOINTS_DATA (drdds)
+       ↓ /feedback/joint_states (sensor_msgs)      ↑ /ARM_TELEOP_STATE (std_msgs)
+             └──────────── 有线网络 / DDS ────────┘
+```
+
+**桥接节点 `arm_real_adapter.py` 放在 M20 电脑上**（不是 Jetson）：它收发的是
+**drdds** 消息，M20 上已经装好；Jetson 只需要跑 agx 驱动，不装 drdds。
+
+```bash
+# ---- Jetson（10.21.31.201）：只起臂驱动 ----
+source /opt/ros/<distro>/setup.bash
+ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py \
+  can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true
+
+# ---- M20（10.21.31.103）：桥接 + IK + 键盘 + 策略（都在同一网络/domain）----
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py   # 桥接通路
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py     # IK（方案 A）
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py    # 键盘（另一个终端）
+ros2 run m20_sdk_deploy rl_deploy
+```
+
+**两种用法**（取决于你还想不想用 agx 自带的那套键盘）：
+
+| 方案 | 谁在下发臂命令 | `ee_goal` 从哪来 | 说明 |
+|---|---|---|---|
+| **A（推荐）** | 我们的 `arm_controller`(IK) + `arm_teleop_node`(键盘) | `arm_controller` 用 IK 目标发布 | 和 sim2sim 的 `mixed` 配置**完全同构**，先在仿真里调好再上真机 |
+| **B（保留你原来的键盘）** | agx 自带的键盘/示教 | `arm_real_adapter` 用 **FK** 从当前关节角算出末端位姿并发布 | 只想让策略"感知"臂、不改控制方式时用；`M20_ADAPTER_PUBLISH_EE=0` 可关掉 |
+
+> ⚠️ 方案 B 里那步 FK **不能不接**：策略观测里有 7 维 `ee_goal`，臂动了而没人更新它，
+> 策略就会一直以为臂在默认位姿 —— 观测与真机不一致（分布外）。
+
+**网络/环境要求**（跨机器最容易卡在这里）：
+
+1. 两边 **`ROS_DOMAIN_ID` 相同**（在你的机器人上就是 `unset` 后的默认值）；
+2. 两边 **`RMW_IMPLEMENTATION` 一致**（都用默认 fastrtps 最省事）；
+3. `ROS_LOCALHOST_ONLY` 不能是 1；
+4. 有线直连/同一交换机时组播默认可用；若发现不了，改用静态对端：
+   * CycloneDDS：`CYCLONEDDS_URI` 里写 `<Peers><Peer address="10.21.31.201"/></Peers>`
+   * Fast DDS：用 `FASTRTPS_DEFAULT_PROFILES_FILE` 指定 initial peers
+5. 在 M20 上确认能看到 agx 的话题：
+
+```bash
+ros2 topic list | grep -E "control/joint_states|feedback/joint_states"
+ros2 topic hz /feedback/joint_states      # 有频率
+```
+
+**验证桥接（不需要真臂也能先跑一遍逻辑）**：
+
+```bash
+python3 tests/arm_real_bridge_check.py    # 假反馈 → 检查 /ARM_JOINTS_DATA 与 ee_goal
+# 真机上再看一遍：
+ros2 topic echo --once /ARM_JOINTS_DATA   # 8 关节 = 当前臂姿态（±0.5 附近是默认）
+ros2 topic echo --once /ARM_TELEOP_STATE  # = 当前末端的 FK（root 系）
+```
+
+**安全**：训练里"臂大幅摆动"本身就有 9~15% 的 20 s 摔倒率（训练侧 s3），
+真机先从**小幅度、慢速**的臂动作开始，手放在急停上；臂一动底盘会被扰动是正常的，
+但出现持续倾斜/触发 `[TAKEOVER!]` 就先停下。
+
 ### M20+Piper real arm (sim2real transport)
 
 On real hardware the same high-level nodes are used; only the arm transport
