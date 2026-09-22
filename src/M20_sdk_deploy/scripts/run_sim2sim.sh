@@ -4,7 +4,9 @@
 #   bash src/M20_sdk_deploy/scripts/run_sim2sim.sh full     # 全仿真（默认）：MuJoCo 同时发腿和臂
 #   bash src/M20_sdk_deploy/scripts/run_sim2sim.sh legs     # 只调腿：MuJoCo 不发臂反馈，
 #                                                          #   臂由 arm_stub_node 保持默认姿态
-#   bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed    # 腿仿真 + 臂走"外部传输"：
+#   bash src/M20_sdk_deploy/scripts/run_sim2sim.sh arm      # **只调臂**：仿真 + IK + 键盘，
++#                                                          #   不起 rl_deploy（策略不在场）
++#   bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed    # 腿仿真 + 臂走"外部传输"：
 #                                                          #   arm_controller(IK) + arm_teleop(键盘)
 #                                                          #   + 假 CAN 驱动（或真机 agx 驱动）
 #
@@ -65,6 +67,16 @@ case "$CONFIG" in
     M20_SIM_NO_ARM_DATA=1 start sim python3 "$SIM"
     start arm_stub python3 "$STUB"
     ;;
+  arm)
+    echo "[run_sim2sim] 配置 arm：只调臂 —— 仿真 + arm_controller(IK) + arm_teleop(键盘)，"
+    echo "              **不起 rl_deploy**（策略不在场）。腿由仿真自己的保持撑着。"
+    start sim python3 "$SIM"
+    start arm_ctrl python3 "$ARM_CTRL"
+    echo "[run_sim2sim] 机械臂键盘请在**另一个终端**运行（需要 TTY）："
+    echo "               python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py"
+    echo "[run_sim2sim] （本配置不需要 rl_deploy；要看策略一起跑就用 mixed）"
+    wait
+    ;;
   mixed)
     echo "[run_sim2sim] 配置 mixed：腿来自 MuJoCo，臂走独立传输。"
     M20_SIM_NO_ARM_DATA=1 start sim python3 "$SIM"
@@ -80,7 +92,7 @@ case "$CONFIG" in
     echo "               python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py"
     ;;
   *)
-    echo "用法: $0 {full|legs|mixed}"
+    echo "用法: $0 {full|legs|arm|mixed}"
     exit 2
     ;;
 esac

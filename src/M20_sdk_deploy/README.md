@@ -457,6 +457,36 @@ ros2 topic echo --once /ARM_TELEOP_STATE  # = 当前末端的 FK（root 系）
 真机先从**小幅度、慢速**的臂动作开始，手放在急停上；臂一动底盘会被扰动是正常的，
 但出现持续倾斜/触发 `[TAKEOVER!]` 就先停下。
 
+### 只调机械臂（不开策略 / 不启动 rl_deploy）
+
+臂这条链路（桥接 + IK + 键盘）**和策略完全解耦**，可以先单独调：
+
+```bash
+# ---- sim2sim ----
+bash src/M20_sdk_deploy/scripts/run_sim2sim.sh arm     # 仿真 + IK + 键盘，不起 rl_deploy
+python3 tests/sim2sim_smoke.py --mode arm_only         # 同一件事的自动化验收
+
+# ---- 真机 ----
+# Jetson：agx_arm_ctrl（不变）
+# M20 电脑：三个节点，**不要**起 rl_deploy
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py   # 桥接
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py     # IK
+python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py    # 键盘（另一个终端）
+```
+
+**谁在发 `/ARM_JOINTS_CMD`**：没有 `rl_deploy` 时，唯一发布者是 `arm_controller` ——
+干净，不存在两个发布者抢话题。`/ARM_JOINTS_DATA` 由 adapter 提供（真机）或 MuJoCo 提供（仿真）。
+
+> ⚠️ **腿谁管**（真机才有的坑）：
+> * **不进 SDK 模式** → M20 自己的控制器撑着腿，臂随便调（**推荐**）；
+> * **进了 SDK 模式又不跑 `rl_deploy`** → 腿是零增益（软的、会塌）：要么把机器人
+>   架起来/放地上，要么就让 `rl_deploy` 起来停在 idle（**不要按 `c`**）——它会用
+>   idle 的保持命令把腿撑住，但不会跑策略。
+
+判据（`--mode arm_only` 已覆盖）：轻点 numpad 后末端跟着走（实测 +0.20 m）、
+IK 稳态残差 **0.63 mm**、底盘不摔。注意：一直按住会让目标顶到工作空间边缘，
+那时 IK 残差是结构性的（`DEF-022`），不适合用来判精度。
+
 ### M20+Piper real arm (sim2real transport)
 
 On real hardware the same high-level nodes are used; only the arm transport

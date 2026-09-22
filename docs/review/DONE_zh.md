@@ -235,3 +235,4 @@
 | 2026-09-22 | **确定两台机器的拓扑**：Jetson（10.21.31.201）只跑 `agx_arm_ctrl`；M20 电脑（10.21.31.103）跑 `arm_real_adapter` + `arm_controller` + `arm_teleop_node` + `rl_deploy`。adapter 收发 drdds，所以放在 M20 上（Jetson 不用装 drdds） | 见下 | 同上 |
 | 2026-09-22 | **新增 L2 验收 `tests/arm_real_bridge_check.py`**（不需要真臂/Jetson）：假 `/feedback/joint_states` → 检查 `/ARM_JOINTS_DATA`（8 关节逐位一致）；假 `/ARM_JOINTS_CMD` → 检查 `/control/joint_states`（joint2 0.8、夹爪宽度 0.04） | 上行 8 关节最大差 **1.5e-10**；ee_goal 位置差 0.04 mm；下行 joint2=0.8000、gripper=0.0400 ⇒ **PASS** | 同上 |
 | 2026-09-22 | 文档：README 增加"真机 + 真臂：两台机器怎么接线"（拓扑图、两台机器各自的命令、方案 A/B、网络与 DDS 发现要求、验证步骤、安全提示）；`run_all.sh` 增加 L2 桥接检查；真机检查单阶段 B 重写为两台机器流程 | — | 同上 |
+| 2026-09-22 | **"只调臂"（不开策略）**：新增 `run_sim2sim.sh arm` 配置与 L3 用例 `--mode arm_only`（仿真 + IK + 键盘，**不起 rl_deploy**）。确认臂链路与策略解耦；真机上对应"只起 adapter+IK+键盘"的用法（腿由"不进 SDK 模式"或"rl_deploy 停在 idle"撑着） | 轻点 numpad：末端 **+0.20 m**、IK 稳态残差中位数 **0.63 mm**、底盘 tilt 2.4°，连跑 2 次都 PASS | `feat/arm-only` |

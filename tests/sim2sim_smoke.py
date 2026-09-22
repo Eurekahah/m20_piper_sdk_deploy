@@ -24,6 +24,9 @@
                  验证臂真的动、末端位姿跟着走、底盘不受扰（端到端臂链路）
   --mode wheel_step 轮子速度伺服阶跃（5 rad/s @ t=5 s）：验证四个轮子同向、
                  稳态 ω ≈ 5 rad/s（速度环 + armature + 力矩限幅这条链）
+  --mode arm_only **只跑臂**：仿真 + arm_controller + arm_teleop，**不起 rl_deploy**。
+                 对应真机上"先不开策略、只用键盘调臂"的用法。断言：动臂后末端跟着走、
+                 IK 稳态残差小、底盘不摔
   --mode arm_mixed  "腿仿真 + 臂走独立传输"（对应 run_sim2sim.sh mixed）：
                   MuJoCo 不发臂反馈，假 CAN 驱动（arm_stub_node --follow）按
                   /ARM_JOINTS_CMD 一阶跟随，arm_controller(IK) + arm_teleop(键盘) 都在跑。
@@ -249,7 +252,7 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode",
                     choices=["hold", "stand", "rl", "walk", "arm", "arm_move",
-                             "wheel_step", "no_arm", "arm_mixed", "push"],
+                             "wheel_step", "no_arm", "arm_mixed", "arm_only", "push"],
                     default="rl")
     ap.add_argument("--duration", type=float, default=25.0, help="总时长（秒）")
     ap.add_argument("--out", default="/tmp/m20_sim2sim", help="日志与遥测的输出前缀")
@@ -317,7 +320,7 @@ def main() -> int:
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
     env.setdefault("M20_JVEL_DEBUG", "0")
-    if args.mode == "arm_move":
+    if args.mode in ("arm_move", "arm_only"):
         env.setdefault("M20_ARM_DEBUG", "1")   # arm_controller 打印 IK 残差
     if args.mode in ("no_arm", "arm_mixed"):
         env["M20_SIM_NO_ARM_DATA"] = "1"        # 仿真不发臂反馈 = 模拟"臂没装"
@@ -339,7 +342,34 @@ def main() -> int:
         sim, sim_f = spawn([sys.executable, str(SIM)], env, sim_log)
         time.sleep(2.0)                      # 等仿真节点起来并把姿态稳住
 
-        if args.mode in ("hold", "wheel_step"):
+        if args.mode == "arm_only":
+            # 只跑臂：不起 rl_deploy。仿真自己的腿保持（80/2，与 idle 相同）撑着机器人，
+            # 真机上对应用法是"不进 SDK 模式 / 或让 rl_deploy 停在 idle"。
+            ctrl_log = out_prefix.with_suffix(".arm.log")
+            arm, arm_f = spawn([sys.executable, str(ARM)], env, ctrl_log)
+            time.sleep(1.0)
+            teleop_log = out_prefix.with_suffix(".arm_teleop.log")
+            teleop, tel_f = spawn([sys.executable, str(ARM_TELEOP)], env,
+                                  teleop_log, stdin=subprocess.PIPE)
+            time.sleep(1.0)
+            t_start = time.time()
+            t_press = None
+            while time.time() - t_start < args.duration:
+                # 等 2 s 让链路稳下来，然后**轻点一次** numpad 8（EE +x）。
+                # 键盘是"按住"语义（松手后还有 0.5 s 保持），所以一次点击大约
+                # 让目标走 ~0.17 m —— 刻意留在可达范围内（一直按住会顶到工作空间边缘，
+                # 那时 IK 残差是结构性的，不适合用来判精度，见 DEF-022）。
+                if 2.0 < time.time() - t_start < 2.2:
+                    if t_press is None:
+                        t_press = time.time() - t_start
+                        print("[smoke] tap numpad 8 (EE +x)")
+                    try:
+                        teleop.stdin.write(b"8")
+                        teleop.stdin.flush()
+                    except (BrokenPipeError, ValueError, AttributeError):
+                        pass
+                time.sleep(0.2)
+        elif args.mode in ("hold", "wheel_step"):
             # 只观察仿真自己的默认保持（不起 rl_deploy）；wheel_step 由仿真侧
             # 直接覆盖四个轮子的执行器指令
             t_start = time.time()
@@ -474,7 +504,27 @@ def main() -> int:
               + " rad/s（阶跃命令 +5.00）")
 
     fails = []
-    if args.mode != "hold":
+    if args.mode == "arm_only":
+        # 只跑臂：末端要跟着键盘走，IK 稳态残差要小
+        if info["ee_dx"] < 0.03:
+            fails.append(f"arm_only：末端 x 只动了 {info['ee_dx']:+.4f} m（期望 > +0.03）")
+        arm_log = out_prefix.with_suffix(".arm.log")
+        res = []
+        if arm_log.exists():
+            for line in arm_log.read_text(errors="ignore").splitlines():
+                if "[arm_ik]" in line and "pos_err=" in line:
+                    try:
+                        res.append(float(line.split("pos_err=")[1].split()[0]))
+                    except (IndexError, ValueError):
+                        pass
+        if len(res) >= 5:
+            med = sorted(res[-5:])[len(res[-5:]) // 2]
+            print(f"  arm_only: IK 残差末尾中位数 {med * 1000:.2f} mm"
+                  f"（末尾 max {max(res[-5:]) * 1000:.2f} mm，采样 {len(res)} 次），"
+                  f"末端 x 位移 {info['ee_dx']:+.4f} m")
+            if med > 0.003:
+                fails.append(f"arm_only：IK 稳态残差（中位数）{med * 1000:.2f} mm >= 3 mm")
+    if args.mode not in ("hold", "wheel_step", "arm_only"):
         need_rows = int(max(args.duration - 4.0, 5.0) * 100)
         if info["n"] < need_rows:
             fails.append(f"遥测行数太少（{info['n']} < {need_rows}）：仿真或 rl_deploy 提前挂了")
@@ -542,8 +592,11 @@ def main() -> int:
         info["ik_res_max"] = max(res) if res else float("nan")
         info["ik_res_tail"] = max(res[-5:]) if len(res) >= 5 else float("nan")
         if res:
+            tail = sorted(res[-5:]) if len(res) >= 5 else res
+            info["ik_res_med"] = tail[len(tail) // 2]
             print(f"  IK 残差 : 采样 {len(res)} 次, 全程 max {info['ik_res_max'] * 1000:.2f} mm, "
-                  f"末尾 5 次 max {info['ik_res_tail'] * 1000:.2f} mm")
+                  f"末尾中位数 {info['ik_res_med'] * 1000:.2f} mm"
+                  f"（末尾 max {info['ik_res_tail'] * 1000:.2f} mm = 运动瞬态）")
     if args.mode == "arm_move":
         # 端到端：短按 numpad 8 → 臂应当真的动起来（关节偏差变大）、
         # 末端应当朝 +x 走（IK 真的把任务空间目标跟踪上了）、力矩不超限
@@ -555,9 +608,10 @@ def main() -> int:
         if info["arm_tau_max"] >= ARM_TAU_LIMIT:
             fails.append(f"arm_move 的臂关节力矩 {info['arm_tau_max']:.1f} N·m 触到限幅")
         # IK 精度（P1-4 的口径）：松开按键后的稳态残差应当很小
-        if info.get("ik_res_n", 0) >= 5 and not (info["ik_res_tail"] < 0.003):
-            fails.append(f"arm_move：末尾 5 次 IK 位置残差 {info['ik_res_tail'] * 1000:.2f} mm "
-                         f">= 3 mm（目标可能撞到工作空间限位，看日志里的 reached limit）")
+        if info.get("ik_res_n", 0) >= 5 and not (info.get("ik_res_med", 1.0) < 0.003):
+            fails.append(f"arm_move：IK 稳态位置残差（末尾中位数）"
+                         f"{info.get('ik_res_med', float('nan')) * 1000:.2f} mm >= 3 mm"
+                         f"（目标可能撞到工作空间限位，看日志里的 reached limit）")
     if args.mode == "wheel_step":
         # P1-2 的判据：四轮同向、稳态 ω 与命令差 < 10%
         target = float(env.get("M20_SIM_WHEEL_STEP_RAD_S", "5"))
