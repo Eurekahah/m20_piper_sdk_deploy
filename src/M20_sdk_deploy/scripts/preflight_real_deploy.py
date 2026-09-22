@@ -166,7 +166,22 @@ def check_topics() -> dict:
         info[t] = True
         say(True, f"{t}: 存在（发布者 {pubs}）")
     if not info.get("/JOINTS_DATA"):
-        blocker("没有 /JOINTS_DATA：腿的反馈没上来（真机上要先进 SDK 模式；仿真里先起 MuJoCo 节点）")
+        # 只看到自己的 /rosout + /parameter_events = 根本没连上机器人的 ROS 图，
+        # 这几乎总是 domain / RMW / 机器人服务的问题，不是我们的代码（DEF-024 的 A 类）
+        if len(have) <= 3:
+            blocker("话题列表几乎是空的（只有 /rosout、/parameter_events）：这个 shell 没看到"
+                    "机器人的 ROS 2 图。\n"
+                    "    依次检查：\n"
+                    "      ① ROS_DOMAIN_ID 是否与机器人服务一致（我们文档里 sim2sim 用 1，"
+                    "机器人服务通常用默认 0 —— 先 `unset ROS_DOMAIN_ID` 再 `ros2 topic list`）；\n"
+                    "      ② RMW 是否一致（看 /opt/robot/scripts/setup_ros2.sh 设了什么，"
+                    "`echo $RMW_IMPLEMENTATION`）；\n"
+                    "      ③ 机器人服务在不在（`ps -ef | grep -i drdds`、"
+                    "`systemctl list-units | grep -i ros`、`ros2 node list`）。\n"
+                    "    期望看到 /JOINTS_DATA /IMU_DATA /BATTERY_DATA /JOINTS_CMD。")
+        else:
+            blocker("没有 /JOINTS_DATA：腿的反馈没上来（真机上要先进 SDK 模式；"
+                    "仿真里先起 MuJoCo 节点）")
     if info.get("/ARM_JOINTS_DATA"):
         say(True, "臂反馈已在发布（真臂或假臂节点在跑）")
     else:

@@ -64,9 +64,33 @@ sim2sim 已经能站、能按命令走、能带臂遥操作（见 `review/DONE_z
 
 ## 2. 阶段 A：只上腿（臂固定）
 
-前提：`colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm`
-（**不要**带 `-DSIM2SIM=ON`），scp 到机器人，按 `src/M20_sdk_deploy/README.md`
-的"Sim-to-Real"一节启动 SDK 模式。
+前提：`colcon build --packages-select m20_sdk_deploy
+--cmake-args -DBUILD_PLATFORM=arm -DSIM2SIM=OFF`
+（**必须显式 OFF**：CMake 会缓存上一次的 `SIM2SIM`，见 `DEF-025`），
+scp 到机器人，按 `src/M20_sdk_deploy/README.md` 的"Sim-to-Real"一节启动 SDK 模式。
+
+**第 0 步（最容易卡住的一步）：确认能看到机器人的 ROS 图**
+
+```bash
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+echo "domain=$ROS_DOMAIN_ID rmw=$RMW_IMPLEMENTATION"
+ros2 topic list          # 期望: /JOINTS_DATA /IMU_DATA /BATTERY_DATA /JOINTS_CMD ...
+```
+
+若只看到 `/parameter_events`、`/rosout`（= 只看到自己这个进程），按顺序查：
+
+1. **ROS_DOMAIN_ID 不一致**（最常见）：我们文档里 sim2sim 用 `1`，机器人自带服务通常
+   跑在**默认 0**。先 `unset ROS_DOMAIN_ID` 再看；能看到了就把这个值固定下来，
+   `rl_deploy` / `arm_stub_node` / 所有 `ros2` 命令都用同一个值。
+2. **RMW 不一致**：`cat /opt/robot/scripts/setup_ros2.sh` 看它设置的是哪个
+   （cyclonedds / fastrtps），shell 里 `echo $RMW_IMPLEMENTATION` 要一致。
+3. **机器人服务没起**：`ps -ef | grep -i drdds`、`ros2 node list`；
+   服务没跑就没有任何话题，SDK 模式（手柄 + 授权码）也进不去。
+4. 还不行：`ros2 doctor` 看 DDS 发现是否正常；`ros2 daemon stop` 后再 `ros2 topic list`。
+
+> 判据：`ros2 topic hz /JOINTS_DATA` 应约 200 Hz。没有数据时**不要**继续往下走 ——
+> `rl_deploy` 会（修复后）打印 `完全没有收到 /JOINTS_DATA（收到 0 条）` 并跳过标定自检。
 
 1. `[ ]` **标定核对（最关键）**：把机器人摆成与训练默认姿态一致的姿势
    （hipy ∓0.6、knee ±1.0、wheels 0），读 `/JOINTS_DATA`：
