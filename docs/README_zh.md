@@ -21,6 +21,8 @@
 | 文件 | 管什么 |
 |---|---|
 | [`sim2sim_layout_contract_zh.md`](sim2sim_layout_contract_zh.md) | **接口契约**：观测/动作布局、关节顺序、坐标系、增益、命令语义、MuJoCo 参数，以及每条说法的核对状态（✅/⚠️/❓/❌） |
+| [`../src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md`](../src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md) | **sim2sim 命令速查**：全仿真 / 只调腿 / 只调臂 / 腿仿真+臂独立传输 / VR / 一键验收 / 换策略（每个场景一张终端表） |
+| [`../src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md`](../src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md) | **sim2real 命令速查**：只部署 M20 / 只调臂 / 只感知真臂 / IK+键盘合并 / DDS 不通的两种修法 / 排障 |
 | [`sim2real_checklist_zh.md`](sim2real_checklist_zh.md) | **真机上线检查单**：仿真↔真机接口差异表、分阶段步骤（只上腿 → 接臂 → 测量回填）、回滚顺序、"没做过"清单 |
 
 ## 3. 历史归档

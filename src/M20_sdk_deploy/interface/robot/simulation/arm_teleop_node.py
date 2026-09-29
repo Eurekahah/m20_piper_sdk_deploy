@@ -107,12 +107,16 @@ class ArmTeleopNode(Node):
         # 非 TTY 时跳过 raw 模式，仍然能按行/按字节读键盘输入。
         try:
             self._old_attr = termios.tcgetattr(sys.stdin.fileno())
-            tty.setraw(sys.stdin.fileno())
+            # 用 **cbreak** 而不是 raw：两者都关掉行缓冲/回显（所以按键能逐字节读到），
+            # 但 cbreak 保留 ISIG —— 也就是说 **Ctrl+C 仍然会产生 SIGINT**。
+            # 之前用 raw 时 ISIG 被关掉，Ctrl+C 变成一个普通字节 \x03 被读走丢掉，
+            # 节点就"关不掉"了（只能按 ESC）。
+            tty.setcbreak(sys.stdin.fileno())
             self._tty = True
         except termios.error:
             self._old_attr = None
             self._tty = False
-            print("[arm_teleop] stdin 不是终端，跳过 raw 模式"
+            print("[arm_teleop] stdin 不是终端，跳过 cbreak 模式"
                   "（管道/重定向下仍可读按键）")
 
     def _restore_stdin(self):
@@ -126,7 +130,7 @@ class ArmTeleopNode(Node):
         print("  EE position:  Num8/Num2 x, Num4/Num6 y, Num7/Num9 z")
         print("  EE rotation:  Num1/Num3 roll, Num0/Num. pitch, Num+/Num- yaw")
         print("  G gripper toggle, L reset arm target + open gripper")
-        print("  ESC to stop this node")
+        print("  ESC or Ctrl+C to stop this node")
         print("  (NumLock ON; mode keys R/Z/C/X belong to rl_deploy)")
         print("  (VR active after pressing B overrides the keyboard arm keys)")
         print("=" * 52 + "\n")
@@ -180,8 +184,10 @@ class ArmTeleopNode(Node):
             k = ch.lower()
             now = _now_ms()
 
-            if k == '\x1b':  # ESC
-                self.get_logger().info("ESC pressed, stopping")
+            if k in ('\x1b', '\x03'):   # ESC / Ctrl+C（cbreak 下 Ctrl+C 走 SIGINT，
+                                          # 但万一是 raw/其它终端状态，这里也兜住）
+                self.get_logger().info(
+                    "ESC pressed, stopping" if k == '\x1b' else "Ctrl+C pressed, stopping")
                 self._restore_stdin()
                 raise SystemExit(0)
             elif self.vr_active:
@@ -250,12 +256,14 @@ def main(args=None):
     node = ArmTeleopNode()
     try:
         rclpy.spin(node)
-    except SystemExit:
-        pass
+    except (SystemExit, KeyboardInterrupt):
+        print("\n[arm_teleop] stopping ...")
     finally:
         node._restore_stdin()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():            # Ctrl+C 时 rclpy 可能已经自己 shutdown 过
+            rclpy.shutdown()
+    print("[arm_teleop] stopped (terminal restored)")
 
 
 if __name__ == '__main__':

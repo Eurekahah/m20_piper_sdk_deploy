@@ -1,5 +1,9 @@
 # M20 SDK Deploy
 
+> **命令速查（推荐先看这两个）**：
+> [sim2sim 运行命令](COMMANDS_SIM2SIM_zh.md) ｜ [sim2real 运行命令](COMMANDS_SIM2REAL_zh.md)
+> —— 每个场景一张"哪个终端敲什么"的表。
+>
 > **文档索引（M20 + Piper 部署）**：状态看 [`docs/review/`](../../docs/README_zh.md)——
 > 待办 `review/TODO_zh.md`、已完成 `review/DONE_zh.md`、缺陷记录 `review/DEFECT_LOG_zh.md`、
 > 开发/测试规范 `review/WORKFLOW_zh.md`；

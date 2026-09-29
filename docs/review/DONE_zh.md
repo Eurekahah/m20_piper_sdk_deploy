@@ -244,3 +244,10 @@
 | 2026-09-22 | **`run_sim2sim.sh arm` + `--mode arm_only`**：仿真 + `arm_controller`(IK) + `arm_teleop`(键盘)，**不起 `rl_deploy`** —— 臂链路与策略完全解耦，可以先单独调；真机对应"只起 adapter+IK+键盘" | 轻点 numpad：末端 **+0.20 m**、IK 稳态残差中位数 **0.63 mm**、底盘 tilt 2.4°，连跑 2 次 PASS | `feat/arm-only` |
 | 2026-09-22 | **DEF-026**：`PiperArmInterface` 现在也监听 `/ARM_JOINTS_CMD`；进 RL 时若最近 0.5 s 有别人在发（`arm_controller` 在控制臂），就跳过"保持默认位姿"，不再把臂拽一下 | `--mode arm/arm_move`：出现跳过日志，`arm_move` 仍 PASS（+0.239 m / 残差 0.18 mm）；`--mode no_arm`：跳过日志 0 次（该发还是发），PASS | `f456e0e` |
 | 2026-09-22 | IK 残差判据改成"末尾中位数"（运动瞬态单拍可能撞 20 次迭代上限，属跟踪滞后而非误差） | `arm_only` / `arm_move` 均稳定 PASS | `feat/arm-only` |
+
+## 二十二、命令速查文档 + 臂键盘退出修复（2026-09-29）
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-09-29 | **DEF-028**：`arm_teleop_node` 的 `Ctrl+C` 关不掉（`tty.setraw` 清掉 ISIG，`0x03` 被当普通按键丢掉）。改用 `setcbreak` + 显式处理 `0x03` + `main` 捕获 `KeyboardInterrupt` | 真 TTY 实测：`Ctrl+C` → `[arm_teleop] stopping ... / stopped (terminal restored)`；`ESC` 仍然可用 | `fix/arm-teleop-exit` |
+| 2026-09-29 | **两份命令速查**：`src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md`（全仿真/只调腿/只调臂/腿仿真+臂独立传输/VR/一键验收/换策略）与 `COMMANDS_SIM2REAL_zh.md`（只部署 M20/只调臂/只感知真臂/IK+键盘合并/DDS 两种修法/排障），每个场景一张"哪个终端敲什么"的表；README 顶部与 `docs/README_zh.md` 都已挂索引 | — | 同上 |

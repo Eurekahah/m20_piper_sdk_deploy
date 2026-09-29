@@ -21,6 +21,7 @@
 | 2026-09-20 | 新增 DEF-023（无臂部署口径）+ `arm_stub_node.py` + `--mode no_arm` | `feat/no-arm-stub` |
 | 2026-09-22 | 新增 DEF-024（真机启动自检无限等待 → 卡死在 `joint data update is not finished`）+ DEF-025（CMake 缓存 SIM2SIM） | `fix/real-startup-selfcheck` |
 | 2026-09-22 | 新增 DEF-026（进 RL 时抢 `/ARM_JOINTS_CMD`，把 IK 控制的臂拽一下）；新增『只调臂』（不开策略）配置与用例 | `feat/arm-only` |
+| 2026-09-29 | 新增 DEF-028（`arm_teleop_node` Ctrl+C 关不掉）；新增两份命令速查（sim2sim / sim2real） | `fix/arm-teleop-exit` |
 
 ---
 
@@ -63,6 +64,31 @@
 * `--mode rl` 单独连跑 3 次全 PASS（修复前同一序列里约 1/3 概率失败）；
 * **未收敛**：五档**连续**跑时仍偶发失败（`rl` 在 t≈10.0 s），见 `DEF-018`。
   这一条修复是"应该修的真问题"，但显然不是唯一原因。
+
+---
+
+### DEF-028 `2026-09-29` `arm_teleop_node` 按 Ctrl+C 关不掉（raw 模式吃掉了 SIGINT）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-09-29` |
+| 类型 | 缺陷（可用性） |
+| 状态 | `已修` |
+| 影响面 | 二者 |
+| 关联 | `interface/robot/simulation/arm_teleop_node.py::_setup_stdin` |
+
+**1. 现象**：真机上按 `Ctrl+C` 关不掉臂键盘节点（只有 `ESC` 能退），只能 `kill`。
+
+**2. 根因**：`_setup_stdin()` 用 `tty.setraw()`。raw 模式会**清掉 ISIG**，
+终端不再因为 `Ctrl+C` 产生 SIGINT —— 它变成普通字节 `0x03` 被按键循环读走；
+而循环里只处理 `ESC(0x1b)`，`0x03` 落到"未识别按键"被忽略。
+
+**3. 修正**：改用 `tty.setcbreak()`（同样关行缓冲/回显，逐字节读键，但**保留 ISIG**），
+并在按键循环里把 `0x03` 也当作退出（兜住非标准终端状态）；`main()` 捕获
+`KeyboardInterrupt` 并保证"终端恢复 + 不重复 `rclpy.shutdown()`"。
+
+**4. 结果（验收）**：在真 TTY 下实测——`Ctrl+C` 打印
+`[arm_teleop] stopping ... / stopped (terminal restored)` 并退出；`ESC` 路径不变仍可用。
 
 ---
 
