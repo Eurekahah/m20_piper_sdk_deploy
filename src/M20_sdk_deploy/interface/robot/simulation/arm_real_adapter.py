@@ -51,6 +51,7 @@ import time
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSReliabilityPolicy
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32MultiArray
 from builtin_interfaces.msg import Time
@@ -91,8 +92,14 @@ class ArmRealAdapter(Node):
         self._agx_ctrl_pub = self.create_publisher(
             JointState, AGX_CONTROL_TOPIC, 10)
 
+        # QoS：agx 反馈是 200 Hz 的传感器流，用 **BEST_EFFORT** 订阅。
+        # 这一步很关键 —— DDS 的兼容规则是"发布者提供的 >= 订阅者要求的"：
+        #   BEST_EFFORT 订阅 能匹配 RELIABLE 发布，也能匹配 BEST_EFFORT 发布；
+        #   而 RELIABLE 订阅 **匹配不上** BEST_EFFORT 发布（静默收不到数据）。
+        # 真机上就出现过"ros2 topic echo 能看到、这个脚本收不到"的情况，一半是它。
         self._agx_fb_sub = self.create_subscription(
-            JointState, AGX_FEEDBACK_TOPIC, self._agx_fb_cb, 10)
+            JointState, AGX_FEEDBACK_TOPIC, self._agx_fb_cb,
+            QoSProfile(depth=10, reliability=QoSReliabilityPolicy.BEST_EFFORT))
         self._arm_data_pub = self.create_publisher(
             JointsData, ARM_DATA_TOPIC, 10)
 
@@ -120,6 +127,18 @@ class ArmRealAdapter(Node):
         self.get_logger().info(
             "[arm_real_adapter] started: /ARM_JOINTS_CMD -> "
             f"{AGX_CONTROL_TOPIC}, {AGX_FEEDBACK_TOPIC} -> /ARM_JOINTS_DATA")
+        # 把自己这一侧的 ROS 环境打出来：跨机器/多终端调试时，"一个终端能 echo、
+        # 另一个终端里的节点收不到"最常见的两个原因就是 domain/RMW 不一致，
+        # 或者只在一个终端里设了 FASTRTPS_DEFAULT_PROFILES_FILE。
+        self.get_logger().info(
+            "[arm_real_adapter] 本进程 ROS 环境: ROS_DOMAIN_ID=%s  RMW=%s  "
+            "ROS_LOCALHOST_ONLY=%s  FASTRTPS_PROFILES=%s"
+            % (os.environ.get('ROS_DOMAIN_ID', '<空=默认0>'),
+               os.environ.get('RMW_IMPLEMENTATION', '<默认fastrtps>'),
+               os.environ.get('ROS_LOCALHOST_ONLY', '<未设>'),
+               os.environ.get('FASTRTPS_DEFAULT_PROFILES_FILE', '<未设>')))
+        self.get_logger().info(
+            f"            ↑ 请与『能 ros2 topic echo {AGX_FEEDBACK_TOPIC} 』的那个终端逐项比对")
 
     # ------------------------------------------------------------------
     def _arm_cmd_cb(self, msg):
