@@ -105,6 +105,8 @@ class ArmRealAdapter(Node):
 
         self._last_feedback = None
         self._feedback_warned = False
+        self._t_start = time.time()
+        self._t_first_fb = None
         self._ee_q = None
         self._ee_log_cnt = 0
         self.cmd_count = 0
@@ -163,6 +165,11 @@ class ArmRealAdapter(Node):
 
     # ------------------------------------------------------------------
     def _agx_fb_cb(self, msg):
+        if self._last_feedback is None:
+            self._t_first_fb = time.time()
+            self.get_logger().info(
+                '[arm_real_adapter] 收到第一帧 %s（启动后 %.1f s）'
+                % (AGX_FEEDBACK_TOPIC, self._t_first_fb - self._t_start))
         self._last_feedback = msg
 
     def _publish_ee_state(self):
@@ -179,9 +186,12 @@ class ArmRealAdapter(Node):
 
     def _publish_feedback(self):
         if self._last_feedback is None:
-            if not self._feedback_warned:
+            waited = time.time() - self._t_start
+            if not self._feedback_warned and waited > 2.0:
                 self.get_logger().warn(
-                    f"[arm_real_adapter] no data on {AGX_FEEDBACK_TOPIC} yet")
+                    f'[arm_real_adapter] 启动 {waited:.1f}s 仍没收到 {AGX_FEEDBACK_TOPIC}'
+                    ' 的第一帧（DDS 发现通常要 1~2 s；一直这样的话：话题名/domain/RMW/'
+                    '网络发现，或对端没在发。用 --check 看结论）')
                 self._feedback_warned = True
             return
 
