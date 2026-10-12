@@ -49,6 +49,15 @@ step "L2 真机臂桥接（假 agx 反馈）"
 python3 tests/arm_real_bridge_check.py
 report $? "arm_real_bridge_check.py"
 
+step "L3 VR→臂链路（假头显：侧移 + 前伸 + 手腕三轴转动，DEF-044）"
+# 25 s：断言 IK 残差 ≤5 mm、不下发未收敛解、不撞关节限位、|dq| ≤4 rad/s、
+# 力矩 ≤40 N·m、跟手误差 p95 ≤40 mm。对 2026-10-12 之前的映射会 FAIL（见 DEF-044）。
+# VRA=0 可跳过。
+if [ "${VRA:-1}" = "1" ]; then
+  python3 tests/vr_arm_chain_check.py --out /tmp/m20_vr_arm_check
+  report $? "vr_arm_chain_check.py"
+fi
+
 for m in $MODES; do
   step "L3 sim2sim --mode $m"
   if [ "$m" = "rl" ] || [ "$m" = "walk" ] || [ "$m" = "arm_move" ] || [ "$m" = "no_arm" ] || [ "$m" = "arm_mixed" ]; then
