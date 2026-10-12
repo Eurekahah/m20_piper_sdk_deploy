@@ -27,7 +27,7 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[3]          # 仓库根目录
 PKG = REPO / "src/M20_sdk_deploy"
-DEFAULT_POLICY = PKG / "policy/m20_piper_history_20260920"
+DEFAULT_POLICY = PKG / "policy/m20_piper_flat_20260930"
 BUILD_FLAGS = REPO / "build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make"
 RL_DEPLOY_BIN = REPO / "install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy"
 

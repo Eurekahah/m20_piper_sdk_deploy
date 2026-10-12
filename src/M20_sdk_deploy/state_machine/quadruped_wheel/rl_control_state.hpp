@@ -258,10 +258,21 @@ namespace qw {
                 namespace fs = std::filesystem;
                 fs::path base = fs::path(__FILE__).parent_path();
                 // 策略目录（含 policy.onnx + policy_layout.json）；环境变量可覆盖
-                fs::path policy_dir = base / ".." / ".." / "policy" / "m20_piper_history_20260920";
+                // 当前默认 = 2026-09-30_19-36-00_cloud_cap12_20k 的导出（**平地**；
+                // 训练侧 docs/deploy_code_delta_2026-10-09_zh.md §5.4 指定平地用这个）。
+                // 另有多地形 m20_piper_rough_20261002（2026-10-02 cloud_slowvx20k）与
+                // 更早的平地 m20_piper_history_20260920，接口与它逐字段相同。
+                fs::path policy_dir = base / ".." / ".." / "policy" / "m20_piper_flat_20260930";
                 if (const char *e = std::getenv("M20_POLICY_DIR")) policy_dir = e;
                 if (!fs::exists(policy_dir / "policy.onnx")) {
-                    std::cerr << "[RLControlState] policy not found in " << policy_dir
+                    // 把**解析后的绝对路径**和当前 cwd 都打出来：M20_POLICY_DIR 是相对
+                    // 进程 cwd 解析的，而默认目录是按 __FILE__ 解析的 —— 写相对路径
+                    // （例如 policy/xxx 而不是 src/M20_sdk_deploy/policy/xxx）时，
+                    // 只看原始字符串会完全猜不到问题在哪（2026-10-09 实测踩过）。
+                    std::error_code ec;
+                    std::cerr << "[RLControlState] policy not found in "
+                              << fs::absolute(policy_dir, ec).string()
+                              << "（cwd=" << fs::current_path(ec).string() << "）"
                               << "\n把训练侧 <run>/exported_deploy/ 整个目录放到 "
                                  "src/M20_sdk_deploy/policy/<run 名>/（需要 policy.onnx + "
                                  "policy_layout.json），或用 M20_POLICY_DIR 指定目录。"

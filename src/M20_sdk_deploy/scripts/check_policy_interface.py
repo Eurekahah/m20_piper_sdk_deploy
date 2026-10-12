@@ -13,7 +13,7 @@
 用法::
 
   python3 src/M20_sdk_deploy/scripts/check_policy_interface.py \
-      src/M20_sdk_deploy/policy/m20_piper_history_20260920
+      src/M20_sdk_deploy/policy/m20_piper_flat_20260930
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ import numpy as np
 import onnxruntime as ort
 
 DEFAULT_DIR = (Path(__file__).resolve().parent / ".." / "policy"
-               / "m20_piper_history_20260920")
+               / "m20_piper_flat_20260930")
 
 # runner 里写死的原生序（M20PiperPolicyRunner::NativeOrder），必须与布局文件一致
 RUNNER_NATIVE_ORDER = [
