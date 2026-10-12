@@ -20,6 +20,10 @@ New message length: 9 floats
               [7]     gripper: same semantics as mode 0
               [8]     ee_recalibrate: 1 -> re-anchor to current robot pose
                       and keep applying the current offsets
+              2 -> **重置到默认末端位姿**（anchor = 默认关节角对应的 FK 位姿，
+                   偏移按 0 处理）。用于"复位仿真 / 左 X/Y 复位"：不依赖
+                   "复位完成后再采当前位姿"的时序，臂会干净地回默认姿态、
+                   且不会因为旧目标还在而被拽走（2026-10-10 实测的瞬态根因）。
 
 For backwards compatibility arm_controller still accepts the old 8-float
 message (no mode field), which is interpreted as mode 0.
@@ -35,6 +39,11 @@ ARM_TELEOP_POS_START = 1
 ARM_TELEOP_EULER_START = 4
 ARM_TELEOP_GRIPPER_IDX = 7
 ARM_TELEOP_FLAG_IDX = 8
+
+# flag 的取值（只有 mode 1 用；mode 0 里 [8] 是 0/1 布尔）
+ARM_TELEOP_FLAG_NONE = 0.0
+ARM_TELEOP_FLAG_REANCHOR = 1.0        # 锚到当前位姿
+ARM_TELEOP_FLAG_RESET_DEFAULT = 2.0   # 锚到"默认末端位姿"（= 复位语义）
 
 
 def make_incremental(dx=0.0, dy=0.0, dz=0.0,
@@ -57,5 +66,7 @@ def make_absolute_offset(dx=0.0, dy=0.0, dz=0.0,
     msg[ARM_TELEOP_POS_START:ARM_TELEOP_POS_START + 3] = [dx, dy, dz]
     msg[ARM_TELEOP_EULER_START:ARM_TELEOP_EULER_START + 3] = [droll, dpitch, dyaw]
     msg[ARM_TELEOP_GRIPPER_IDX] = gripper
-    msg[ARM_TELEOP_FLAG_IDX] = 1.0 if ee_recalibrate else 0.0
+    # ⚠️ 原样透传（不再 `1.0 if flag else 0.0`）：flag 不只 0/1，
+    # ARM_TELEOP_FLAG_RESET_DEFAULT=2.0 会被那个写法压成 1.0，语义就丢了。
+    msg[ARM_TELEOP_FLAG_IDX] = float(ee_recalibrate)
     return msg

@@ -41,6 +41,7 @@ from std_srvs.srv import Empty
 from arm_teleop_protocol import (
     make_incremental,
     make_absolute_offset,
+    ARM_TELEOP_FLAG_RESET_DEFAULT,
 )
 from vr_teleop_protocol import (
     VR_ACTIVE_IDX,
@@ -83,6 +84,8 @@ class ArmTeleopNode(Node):
         self.gripper_cmd = -1.0
         self.gripper_closed = False
         self.ee_reset_pending = 0.0
+        # 复位（VR 的 X/Y）后要发一帧"重置到默认末端位姿"的绝对偏移命令
+        self.reset_home_pending = False
 
         # latest VR arm snapshot (mode 1 absolute-offset)
         self.vr_active = False
@@ -153,13 +156,19 @@ class ArmTeleopNode(Node):
 
         reset = msg.data[VR_RESET_IDX] > 0.5
         if reset and not self.vr_reset_prev:
-            # sim reset will restore the arm; tell arm_controller to re-anchor
-            # to the fresh pose on the next absolute-offset command
-            self.vr_calibrate_pulse = True
+            # X/Y 复位：① 复位仿真（腿+臂都回默认位姿）；② **等复位完成后**把
+            # arm_controller 的末端目标重新锚到当前位姿（= 复位后的默认位姿）。
+            # ②的时序由 `_request_sim_reset()` 里的 done 回调负责（见那里的注释：
+            # 锚点必须在复位**之后**采，否则会记在旧位姿上，臂接着又飞回去）。
             self._request_sim_reset()
         self.vr_reset_prev = reset
 
     def _request_sim_reset(self):
+        # 复位语义：让 arm_controller 把目标**直接**重置到默认末端位姿
+        # （ARM_TELEOP_FLAG_RESET_DEFAULT，见 arm_teleop_protocol.py）。
+        # 这样不依赖"复位完成后再采当前位姿"的时序 —— 之前那种做法在复位落地前
+        # arm_controller 还抱着旧目标，会把臂从默认位姿拽走、锚点也采到半路位姿。
+        self.reset_home_pending = True
         if not self.sim_reset_client.service_is_ready():
             if not self.reset_warned:
                 self.get_logger().warn(
@@ -171,7 +180,8 @@ class ArmTeleopNode(Node):
         req = Empty.Request()
         future = self.sim_reset_client.call_async(req)
         future.add_done_callback(
-            lambda f: self.get_logger().info("[reset] /reset_sim completed"))
+            lambda _f: self.get_logger().info(
+                "[reset] /reset_sim 完成；EE 目标已重置到默认位姿"))
 
     def _read_keys(self):
         while select.select([sys.stdin], [], [], 0.0)[0]:
@@ -227,7 +237,14 @@ class ArmTeleopNode(Node):
     def _tick(self):
         self._read_keys()
 
-        if self.vr_active:
+        if self.reset_home_pending:
+            # 一帧"重置到默认末端位姿"（mode 1 + flag=2）：VR 在不在都发，
+            # 因为 X/Y 复位后 VR 会变 inactive、键盘分支表达不了这个语义。
+            self.reset_home_pending = False
+            data = make_absolute_offset(
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0,
+                self.gripper_cmd, ARM_TELEOP_FLAG_RESET_DEFAULT)
+        elif self.vr_active:
             data = make_absolute_offset(
                 self.vr_ee_off[0], self.vr_ee_off[1], self.vr_ee_off[2],
                 self.vr_ee_off[3], self.vr_ee_off[4], self.vr_ee_off[5],

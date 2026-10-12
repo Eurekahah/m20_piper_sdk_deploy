@@ -126,8 +126,11 @@ EE_GOAL_IN_BODY_FRAME = os.environ.get("M20_EE_GOAL_BODY_FRAME", "1") != "0"
 # VR 的绝对偏移路径另有更松的限速（M20_VR_MAX_LIN_SPEED / _ANG_SPEED）。
 EE_MAX_LIN_SPEED = float(os.environ.get("M20_EE_MAX_LIN_SPEED", "0.35"))
 EE_MAX_ANG_SPEED = float(os.environ.get("M20_EE_MAX_ANG_SPEED", "0.8"))
-VR_MAX_LIN_SPEED = float(os.environ.get("M20_VR_MAX_LIN_SPEED", "2.0"))
-VR_MAX_ANG_SPEED = float(os.environ.get("M20_VR_MAX_ANG_SPEED", "5.0"))
+# VR 的绝对偏移路径：默认值 = 2026-10-10 操作员实测后确认的"手感合适"的一组
+# （原来分别是 2.0 m/s / 5.0 rad/s，操作员反馈"太快"，实测每拍要走 4 cm）。
+# 注意这是**被跟踪目标**的限速，不限制关节；关节侧由真机驱动器的 3 rad/s 兜底。
+VR_MAX_LIN_SPEED = float(os.environ.get("M20_VR_MAX_LIN_SPEED", "0.4"))
+VR_MAX_ANG_SPEED = float(os.environ.get("M20_VR_MAX_ANG_SPEED", "1.0"))
 # 夹爪目标限速 [stroke/s]：0 = 不限速（直接阶跃到 ±0.035，仿真里 ~10 ms 就到底，
 # 看着"瞬间开合"）。真机夹爪走完一个行程大约 0.3~0.5 s ⇒ 建议 0.15~0.2。
 GRIPPER_SLEW = float(os.environ.get("M20_GRIPPER_SLEW", "0.0"))
@@ -434,8 +437,21 @@ class ArmController(Node):
         message or whenever the operator presses recalibrate (B). Between
         recalibrations a stationary controller therefore keeps the target
         still, and hand drift is not integrated into the target.
+
+        `recalibrate >= 1.5`（ARM_TELEOP_FLAG_RESET_DEFAULT）是**重置语义**：
+        锚点直接取"默认关节姿态"对应的 FK 位姿、偏移按 0 处理 ⇒ 目标就是默认
+        末端位姿。为什么不"锚到当前位姿"：复位后 arm_controller 手里还有旧目标，
+        在它被换掉之前就会把臂从默认位姿拽走，这时采到的"当前位姿"是半路的
+        （2026-10-10 实测：臂停在 j2=0.9 这种既非默认也非旧目标的位姿）。
         """
-        if recalibrate > 0.5 or not self.abs_anchor_initialized:
+        if recalibrate >= 1.5:
+            pos, R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
+            self.anchor_pos = pos
+            self.anchor_R = R
+            self.anchor_quat = mat_to_quat(R)
+            self.abs_anchor_initialized = True
+            dx = dy = dz = droll = dpitch = dyaw = 0.0
+        elif recalibrate > 0.5 or not self.abs_anchor_initialized:
             pos, R = fk_pose(PIPER_MDH, self.cur_joints)
             self.anchor_pos = pos
             self.anchor_R = R

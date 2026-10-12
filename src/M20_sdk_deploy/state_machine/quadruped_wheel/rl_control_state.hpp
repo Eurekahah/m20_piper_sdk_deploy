@@ -76,6 +76,12 @@ namespace qw {
         rclcpp::Subscription<std_msgs::msg::Float32MultiArray>::SharedPtr vr_teleop_sub_;
         std::atomic<bool> vr_active_{false};
         bool vr_calibrate_ = false;
+        // VR 速度上限（**必须**有：VR 的速度是摇杆/手柄连续量，不加限幅可以直接给到
+        // 训练分布外的值）。默认按部署键盘的口径：vx 1.0（2026-10-10 操作员要求）、
+        // vy 0.5、wz 0.7。环境变量可覆盖：M20_VR_MAX_VX / _VY / _WZ。
+        float vr_max_vx_ = 1.0f;
+        float vr_max_vy_ = 0.5f;
+        float vr_max_wz_ = 0.7f;
         bool vr_calib_prev_ = false;
         bool vr_anchor_valid_ = false;
         bool vr_reset_prev_ = false;
@@ -183,9 +189,10 @@ namespace qw {
                           << vr_vel_[2] << std::endl;
             }
 
-            uc->forward_vel_scale = vr_vel_[0];
-            uc->side_vel_scale = vr_vel_[1];
-            uc->turnning_vel_scale = vr_vel_[2];
+            // 限幅：VR 通道是连续量，不夹的话可以直接超出部署包线
+            uc->forward_vel_scale = std::clamp(vr_vel_[0], -vr_max_vx_, vr_max_vx_);
+            uc->side_vel_scale = std::clamp(vr_vel_[1], -vr_max_vy_, vr_max_vy_);
+            uc->turnning_vel_scale = std::clamp(vr_vel_[2], -vr_max_wz_, vr_max_wz_);
 
             // 训练终值区间 (0.33, 0.55)，见 keyboard_interface.hpp 的说明（DEF-009）
             uc->body_height = std::clamp(vr_body_anchor_[0] + vr_body_off_[0],
@@ -325,6 +332,18 @@ namespace qw {
             if (const char *e = std::getenv("M20_LEG_FOLD_TAKEOVER")) {
                 leg_fold_takeover_ = std::atof(e);
             }
+            if (const char *e = std::getenv("M20_VR_MAX_VX")) {
+                vr_max_vx_ = std::atof(e);
+            }
+            if (const char *e = std::getenv("M20_VR_MAX_VY")) {
+                vr_max_vy_ = std::atof(e);
+            }
+            if (const char *e = std::getenv("M20_VR_MAX_WZ")) {
+                vr_max_wz_ = std::atof(e);
+            }
+            std::cout << "[VR] 速度限幅: vx ±" << vr_max_vx_ << ", vy ±" << vr_max_vy_
+                      << ", wz ±" << vr_max_wz_
+                      << " (M20_VR_MAX_VX / _VY / _WZ 可覆盖)" << std::endl;
             std::cout << "[TAKEOVER] thresholds: tilt > " << tilt_takeover_
                       << " rad (" << tilt_takeover_ * 180.0 / M_PI << " deg), |q-q_default| > "
                       << leg_fold_takeover_ << " rad"

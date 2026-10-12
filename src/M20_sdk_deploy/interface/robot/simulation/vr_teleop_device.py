@@ -47,6 +47,33 @@ def _xyzw_to_wxyz(q):
     """Convert [x,y,z,w] -> [w,x,y,z]."""
     return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
 
+# 灵敏度可以用环境变量覆盖（默认值与训练侧一致，见 Se2VRExtendedCfg）。
+# 为什么要能调：VR 的手臂跟随是**1:1** 的（手柄动多少、EE 目标就走多少），
+# 所以"手快 → 臂快"。压速度有两种手段，含义不同：
+#   * 限速（arm_controller 的 M20_VR_MAX_LIN_SPEED / _ANG_SPEED）：削峰，手感更"钝"；
+#   * 灵敏度（这里）：整体缩放，手移动 10 cm 只走 5 cm（更细腻）。
+# 2026-10-10 操作员反馈"VR 动得太快"，先调这两个就行。
+SENS_ENV = {
+    "v_x_sensitivity": "M20_VR_VX_SENS",
+    "v_y_sensitivity": "M20_VR_VY_SENS",
+    "omega_z_sensitivity": "M20_VR_WZ_SENS",
+    "height_sensitivity": "M20_VR_HEIGHT_SENS",
+    "pitch_sensitivity": "M20_VR_PITCH_SENS",
+    "roll_sensitivity": "M20_VR_ROLL_SENS",
+    "arm_pos_sensitivity": "M20_VR_ARM_POS_SENS",
+    "arm_rot_sensitivity": "M20_VR_ARM_ROT_SENS",
+}
+
+# 左 X/Y（复位）之后是否**保持 VR 激活**：
+#   1（默认）= 保持激活 + 把校准原点重锚到"按下去那一刻的手柄位姿" ⇒ 复位完
+#               可以直接接着用手柄操控（不用再按 B）。这是操作员 2026-10-10 的要求。
+#   0       = 训练侧原语义：置 `_started=False`（VR 变 inactive，腿/臂都不听 VR），
+#               要接着用必须再按一次 B。
+# 注意保持激活时**不发** `_calibrate_pulse`：令 arm_controller 重新锚定的是
+# arm_teleop 那条"重置到默认末端位姿"的一次性命令（flag=2，确定语义），
+# 这里只负责把**设备的**校准原点重采一次，两条链路各管各的、不会互相打架。
+RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "1") != "0"
+
 
 # 90-degree rotation around X: VR wrist frame -> sim frame (training-tuned)
 _R_ALIGN = R.from_euler("x", 90, degrees=True)
@@ -54,15 +81,23 @@ _R_ALIGN = R.from_euler("x", 90, degrees=True)
 
 @dataclass
 class Se2VRExtendedCfg:
-    """Sensitivity/axis-map configuration (initial values copied verbatim)."""
-    v_x_sensitivity: float = 5.0
+    """Sensitivity/axis-map configuration.
+
+    ⚠️ 2026-10-10：默认值按**操作员实测手感**调过一轮（原来是训练侧原值
+    vx 5.0 / arm 1.0/1.0）。操作员反馈"手快臂就快、太快"⇒ 前向油门 5.0→2.0
+    （这样摇杆满量程 ≈ 2 m/s，配合 `M20_VR_MAX_VX=1.0` 不再"推 20% 就吃满"），
+    臂的位置/姿态灵敏度 1.0→0.5（手移动 10 cm ⇒ 末端走 5 cm，更细腻）。
+    全部可用环境变量覆盖（见 `SENS_ENV`），要回训练侧原值就设
+    `M20_VR_VX_SENS=5 M20_VR_ARM_POS_SENS=1 M20_VR_ARM_ROT_SENS=1`。
+    """
+    v_x_sensitivity: float = 2.0
     v_y_sensitivity: float = 1.0
     omega_z_sensitivity: float = 1.0
     height_sensitivity: float = 0.5
     pitch_sensitivity: float = 0.35
     roll_sensitivity: float = 0.25
-    arm_pos_sensitivity: float = 1.0
-    arm_rot_sensitivity: float = 1.0
+    arm_pos_sensitivity: float = 0.5
+    arm_rot_sensitivity: float = 0.5
     arm_rot_axis_map: tuple = (
         (1, +1.0),
         (0, -1.0),
@@ -95,9 +130,17 @@ class Se2VRExtendedDevice:
         self.rot_deadzone = self._cfg.rot_deadzone
         self.arm_rot_axis_map = self._cfg.arm_rot_axis_map
         self.arm_pos_axis_map = self._cfg.arm_pos_axis_map
+        # 环境变量覆盖灵敏度（默认值 = 训练侧值，不设变量时行为完全不变）
+        for attr, env in SENS_ENV.items():
+            v = os.environ.get(env)
+            if v is not None and v != "":
+                try:
+                    setattr(self, attr, float(v))
+                except ValueError:
+                    print(f"[vr_teleop] {env}={v!r} 不是数字，忽略（用默认 "
+                          f"{getattr(self, attr)}）")
 
         self._started = False
-        self._reset_state = False
         self._calibrate_pulse = False
         self._reset_event = None
 
@@ -200,6 +243,14 @@ class Se2VRExtendedDevice:
         print("\n" + "=" * 50)
         print("VR teleop ready")
         print(f"  Open in your headset browser:  https://{ip}:8443")
+        print("  灵敏度（可用 M20_VR_*_SENS 覆盖）: "
+              f"chassis vx {self.v_x_sensitivity:g} / vy {self.v_y_sensitivity:g}"
+              f" / wz {self.omega_z_sensitivity:g}; "
+              f"body h {self.height_sensitivity:g} / p {self.pitch_sensitivity:g}"
+              f" / r {self.roll_sensitivity:g}; "
+              f"arm pos {self.arm_pos_sensitivity:g} / rot {self.arm_rot_sensitivity:g}")
+        print("  提示：手快臂就快（1:1 跟随）。嫌快就压 arm 的限速与灵敏度，"
+              "见 COMMANDS_SIM2SIM_zh.md §5")
         print("=" * 50 + "\n")
 
     # ------------------------------------------------------------------
@@ -265,7 +316,15 @@ class Se2VRExtendedDevice:
 
     @staticmethod
     def _apply_deadzone(v, threshold):
-        return 0.0 if abs(v) < threshold else float(v)
+        """软死区：|v| < 阈值 → 0；否则**减掉阈值**（连续，跨阈值不跳变）。
+
+        原来是硬阈值（`|v|<阈值 → 0，否则原值`）：指令会在阈值处从 0 直接跳到
+        4 mm，手慢慢移动时看到的就是"台阶/瞬态"（2026-10-10 操作员反馈）。
+        """
+        a = abs(float(v))
+        if a < threshold:
+            return 0.0
+        return float(np.sign(v) * (a - threshold))
 
     def _update_arm(self, delta_pos, r_diff_local, trigger):
         for i, (src, sgn) in enumerate(self.arm_pos_axis_map):
@@ -343,24 +402,33 @@ class Se2VRExtendedDevice:
         if btn == "b":
             print("[VR] Button B -> START + calibrate")
             self._started = True
-            self._reset_state = False
             self._command[:] = 0.0
             self._body_height_offset = 0.0
             self._calibration_triggered["left"] = True
             self._calibration_triggered["right"] = True
             self._calibrate_pulse = True
         elif btn == "x":
-            print("[VR] Button X -> RESET (fail)")
-            self._started = False
-            self._reset_state = True
-            self.reset()
-            self._reset_event = "fail"
+            self._on_reset("fail")
         elif btn == "y":
-            print("[VR] Button Y -> RESET (success)")
+            self._on_reset("success")
+
+    def _on_reset(self, kind):
+        """X/Y 复位。默认**保持 VR 激活**，复位完可以直接接着操控。"""
+        print("[VR] Button %s -> RESET (%s)%s"
+              % ("X" if kind == "fail" else "Y", kind,
+                 "" if RESET_KEEPS_ACTIVE else "  [VR 变为 inactive，需再按 B]"))
+        self._reset_event = kind
+        if RESET_KEEPS_ACTIVE:
+            # 保持激活：把设备的校准原点重采（下一次手柄包会更新），并把指令清零。
+            # 不发 `_calibrate_pulse` —— arm_controller 的目标由 arm_teleop 那条
+            # "重置到默认末端位姿"（flag=2）负责，避免两条链路互相覆盖。
+            self._command[:] = 0.0
+            self._body_height_offset = 0.0
+            self._calibration_triggered["left"] = True
+            self._calibration_triggered["right"] = True
+        else:
             self._started = False
-            self._reset_state = True
             self.reset()
-            self._reset_event = "success"
 
 
 class _SimpleFileHandler(http.server.SimpleHTTPRequestHandler):
