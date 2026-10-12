@@ -19,7 +19,10 @@
   --mode walk    走到 RL 后按住 w 前进（vx = +0.7 m/s，键盘上限）
   --mode arm     额外起 arm_controller（IK），验证机械臂保持在默认位姿且不扰动底盘
   --mode push    进 RL 后由仿真施加一次侧向力，验证安全接管会触发并切到 joint_damping
-                 （力/时刻/时长用 M20_SIM_PUSH_FORCE / _AT / _DURATION，默认 800 N / 12 s / 0.3 s）
+                 （力/时刻/时长用 M20_SIM_PUSH_FORCE / _AT / _DURATION，默认 1500 N / 12 s / 0.3 s）
+                 注：默认值随策略迭代调过 —— 800 N 在 2026-09 的模型上够把人打倒，
+                 但 2026-09-30 的**平地模型**扛住了 800 N（高度 0.511→0.441 m、倾角 3.9°、
+                 1.5 s 自恢复），1500 N 才稳定触发接管（实测 3/3）。
   --mode arm_move 同 arm，额外起 arm_teleop 键盘节点并按住 numpad 8（EE +x）：
                  验证臂真的动、末端位姿跟着走、底盘不受扰（端到端臂链路）
   --mode wheel_step 轮子速度伺服阶跃（5 rad/s @ t=5 s）：验证四个轮子同向、
@@ -331,7 +334,9 @@ def main() -> int:
         env.setdefault("M20_SIM_WHEEL_STEP_RAD_S", "5")
         env.setdefault("M20_SIM_WHEEL_STEP_AT", "5")
     if args.mode == "push":
-        env.setdefault("M20_SIM_PUSH_FORCE", "800")
+        # 1500 N：800 N 已被 2026-09-30 的平地模型扛住（打不倒就不触发接管，
+        # 用例会误判成 FAIL）。见文件头的说明。
+        env.setdefault("M20_SIM_PUSH_FORCE", "1500")
         env.setdefault("M20_SIM_PUSH_AT", "12")
         env.setdefault("M20_SIM_PUSH_DURATION", "0.3")
 

@@ -36,6 +36,15 @@ step "L3' MJCF 与训练配置对照"
 python3 "$SCRIPTS/check_mjcf_contract.py"
 report $? "check_mjcf_contract.py"
 
+step "L3 命令组合扫描 command_sweep${SWEEP_ARGS:+ $SWEEP_ARGS}"
+# 22 个命令阶段（vx 0.2~1.5 / vy / wz / 组合 / 机身姿态）连起来跑一遍，逐段判"有没有摔 + 跟不跟"。
+# 比逐档 smoke 覆盖广得多，代价约 2.5 min。SWEEP=0 可跳过；SWEEP_ARGS 可传额外参数
+# （例如 SWEEP_ARGS="--only 'vx +1.5'" 或 "--repeat 3"）。
+if [ "${SWEEP:-1}" = "1" ]; then
+  python3 tests/command_sweep.py --repeat 1 ${SWEEP_ARGS:-}
+  report $? "command_sweep.py"
+fi
+
 step "L2 真机臂桥接（假 agx 反馈）"
 python3 tests/arm_real_bridge_check.py
 report $? "arm_real_bridge_check.py"
