@@ -337,6 +337,9 @@ class ArmController(Node):
         self.gripper_goal = GRIPPER_CLOSED.copy()
         # 上一拍真正下发的关节指令（M20_ARM_MAX_JOINT_VEL 限速用）
         self.q_cmd = DEFAULT_ARM_JOINTS.copy()
+        self._bad_fb_warned = False
+        self._ik_fail_warned = False
+        self._tick_fail_warned = False
 
         # absolute EE target, initialised at the default arm pose
         self.target_pos, self.target_R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
@@ -376,6 +379,16 @@ class ArmController(Node):
     def _data_cb(self, msg):
         if len(msg.data.joints_data) >= 8:
             q = np.array([msg.data.joints_data[i].position for i in range(8)])
+            # 只接受**有限**的反馈：臂侧（或驱动器）在异常/复位瞬间可能给 NaN/Inf，
+            # 一旦进到 IK 里会让 np.linalg.solve 抛 LinAlgError ⇒ spin() 退出 ⇒
+            # 整个节点"掉了"（表现为终端里一条 traceback 就没了）。这里直接丢弃坏帧。
+            if not np.all(np.isfinite(q)):
+                if not self._bad_fb_warned:
+                    self._bad_fb_warned = True
+                    self.get_logger().warn(
+                        "[arm_controller] 收到非有限的关节反馈（NaN/Inf），已丢弃该帧；"
+                        "后续再出现不会重复提示")
+                return
             self.cur_joints = q[:6]
             self.cur_gripper = q[6:]
 
@@ -503,6 +516,19 @@ class ArmController(Node):
                 self.gripper_target = self.gripper_goal.copy()
 
     def _tick(self):
+        # 最后一道防线：单拍里任何未预料的异常都不许把节点带走。
+        # 在 rclpy 里，定时器回调抛异常会直接从 spin() 冒出来 ⇒ 进程带着一条 traceback
+        # 退出（操作员看到的就是"IK 那个终端掉了"）。这里吞掉并限频报错。
+        try:
+            self._tick_impl()
+        except Exception as exc:   # noqa: BLE001
+            if not self._tick_fail_warned:
+                self._tick_fail_warned = True
+                self.get_logger().error(
+                    "[arm_controller] 控制拍异常（%s: %s），已跳过本拍且**不会退出**；"
+                    "后续再出现不会重复提示" % (type(exc).__name__, exc))
+
+    def _tick_impl(self):
         # solve IK from the current (feedback) joint angles
         # 先把"被跟踪目标"往请求位姿限速逼近（DEF-022）：键盘的增量是 200 Hz 累加的，
         # 不限速的话按一下就把目标甩到工作空间边界；VR 的绝对偏移路径用更松的限速。
@@ -534,11 +560,22 @@ class ArmController(Node):
         q = self.cur_joints.copy()
         err = 1e9
         ik_iters = 0
-        for _ in range(IK_ITERATIONS):
-            ik_iters += 1
-            q, err = ik_step(PIPER_MDH, q, self.target_pos, self.target_R)
-            if err < IK_ERROR_TOL:
-                break
+        try:
+            for _ in range(IK_ITERATIONS):
+                ik_iters += 1
+                q, err = ik_step(PIPER_MDH, q, self.target_pos, self.target_R)
+                if err < IK_ERROR_TOL:
+                    break
+        except Exception as exc:   # noqa: BLE001
+            # 兜底：IK 内部任何异常都**不能**把节点带走（回调里抛异常会让 rclpy.spin
+            # 直接退出，终端"啪"一下没了 —— 真机部署里这是最糟的失败模式）。
+            # 这一拍沿用上一拍的好指令保持住，并限频提示。
+            if not self._ik_fail_warned:
+                self._ik_fail_warned = True
+                self.get_logger().error(
+                    "[arm_controller] IK 异常（%s: %s），本拍沿用上一拍指令保持；"
+                    "后续再出现不会重复提示" % (type(exc).__name__, exc))
+            q = self.q_cmd.copy()
 
         # IK 残差（目标 vs 用解出的关节角做 FK），用于 P1-4 的精度验收：
         # 位置残差用米、姿态残差用度。被工作空间/关节限位钳住时残差会变大，

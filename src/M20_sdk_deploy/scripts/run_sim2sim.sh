@@ -47,10 +47,17 @@ cleanup() {
   for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null || true; done
   sleep 1
   for p in "${PIDS[@]}"; do kill -9 "$p" 2>/dev/null || true; done
-  # 兜底：按"本仓库的这几个仿真脚本"再扫一遍（避免 rclpy 节点没退出干净）
+  # 兜底：只再扫**本脚本一定会自己启动的那个**（MuJoCo 仿真节点），避免 rclpy 没退干净。
+  # ⚠️ 不要按名字去 pkill arm_controller.py / arm_stub_node.py：
+  #   按用法文档，arm_controller(IK) 是操作员**在另一个终端自己起的**，这里一刀切会把
+  #   他的终端进程杀掉（表现就是"我在 T1 按了 Ctrl+C，IK 那个终端没了"）。
+  #   本脚本自己起的那几个已经在上面的 PIDS 循环里收掉了。
+  #   需要恢复"全清"的老行为：M20_SIM2SIM_CLEANUP_ALL=1
   pkill -9 -f "M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py" 2>/dev/null || true
-  pkill -9 -f "M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py" 2>/dev/null || true
-  pkill -9 -f "M20_sdk_deploy/interface/robot/simulation/arm_controller.py" 2>/dev/null || true
+  if [ "${M20_SIM2SIM_CLEANUP_ALL:-0}" = "1" ]; then
+    pkill -9 -f "M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py" 2>/dev/null || true
+    pkill -9 -f "M20_sdk_deploy/interface/robot/simulation/arm_controller.py" 2>/dev/null || true
+  fi
   wait 2>/dev/null || true
   exit 0
 }
