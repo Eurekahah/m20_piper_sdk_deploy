@@ -158,9 +158,12 @@ so the same build stays compatible with the real M20 SDK path.
 ### Prerequisites
 
 **策略是"一个目录"**，`M20PiperPolicyRunner` 从目录里的 `policy_layout.json`
-读接口维度，并与 ONNX 的形状/名字交叉断言（不再写死任何维度）。当前目录是
-`policy/m20_piper_history_20260920/`（run `2026-09-20_00-50-31`，
-checkpoint `model_19999.pt`，rsl_rl `ActorCriticHistory`）：
+读接口维度，并与 ONNX 的形状/名字交叉断言（不再写死任何维度）。当前默认目录是
+`policy/m20_piper_flat_20260930/`（**平地** run `2026-09-30_19-36-00_cloud_cap12_20k`，
+checkpoint `model_19999.pt`，rsl_rl `ActorCriticHistory`）；多地形用
+`policy/m20_piper_rough_20261002/`（run `2026-10-02_00-44-42_cloud_slowvx20k`），
+更早的 `policy/m20_piper_history_20260920/`（run `2026-09-20_00-50-31`）也保留着。
+三者接口逐字段相同、只是权重不同：
 
 - `policy.onnx`：输入 `policy_obs (batch,83)` + `history_flat (batch,700)`，
   输出 `action (batch,16)`（12 腿位置 + 4 轮速度；**没有机械臂动作**）
@@ -240,7 +243,7 @@ ros2 run m20_sdk_deploy rl_deploy                                        # 正�
 
 ```bash
 M20_ARM_STUB_POSE="0,0.5,-0.5,0,0,0,0,0"   # 8 关节角（rad）
-M20_ARM_STUB_EE="0.3492,0,0.4327,0.7373,0,0.6756,0"   # ee_goal（root 系 pos+quat wxyz）
+M20_ARM_STUB_EE="0.3492,0,0.4327,-0.7373,0,-0.6756,0"   # ee_goal（root 系 pos+quat wxyz；四元数用训练/链式 FK 的符号分支，见 DEF-039）
 M20_ARM_STUB_DEBUG=1                        # 1 Hz 打印收到的 /ARM_JOINTS_CMD（丢弃）
 ```
 

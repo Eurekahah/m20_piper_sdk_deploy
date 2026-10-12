@@ -8,11 +8,15 @@
 **维护约定**：见 `docs/review/templates/DOC_TEMPLATE_zh.md`。每条实测都要写
 **命令 + 数字 + 日期**；没做过的标 `[ ]`。
 
+> 想要"照着敲一遍就能上机"的执行流程（含 **VR** 那条链路），看
+> [`DEPLOY_REAL_VR_zh.md`](DEPLOY_REAL_VR_zh.md)；本文是逐条打勾版与判据来源。
+
 ## 更新记录
 
 | 日期 | 更新内容 | 相关 commit / 分支 |
 |---|---|---|
 | 2026-09-20 | 初版：接口差异表（sim vs real）+ 分阶段上线步骤 + 判据 | `main @ 0990850` |
+| 2026-10-09 | 接口差异表补三行：臂 PD 300/8、夹爪 286/5、臂速度上限 3 rad/s、IK 输出限位 | `sync/2026-10-09-sim-delta` |
 
 ---
 
@@ -36,6 +40,9 @@ sim2sim 已经能站、能按命令走、能带臂遥操作（见 `review/DONE_z
 | 关节反馈坐标系 | MJCF 原始帧 = 策略帧 | **经过 dir/offset 标定**，与仿真不同 | `[ ]` 重点 |
 | 轮子执行器 | kp=0 / kd=0.6 速度伺服（力矩限幅 21.6 N·m） | 由固件/驱动器实现速度环，力矩限幅在硬件 | `[ ]` 核对符号与量纲 |
 | 臂传输 | `arm_controller` → `/ARM_JOINTS_CMD` → MuJoCo | `arm_real_adapter.py` → `agx_arm_ros` 的 `/control/joint_states`（`fast_mode`） | `[ ]` 见第 3 节 |
+| 臂 PD 增益 | **300/8**（夹爪 **286/5**，2026-10-08 起） | 同左（`arm_controller` 发 `kp/kd`，驱动器执行） | `[ ]` 核对三处常量（`arm_controller.py` / `mujoco_simulation_ros2.py` / `piper_arm_interface.hpp`） |
+| 臂关节速度上限 | 仿真由启动事件 `align_joint_velocity_limits` 设 **3 rad/s**（DEF-065） | 由 `agx_arm_ctrl` / 驱动器设 **3 rad/s**（joint6 本来就是 3） | `[ ]` **别按 5 放开**，见 §1/§2 of `deploy_code_delta_2026-10-09_zh.md` |
+| IK 输出限位 | `arm_controller.ik_step` 每步 `np.clip(q+dq, 关节限位)`（DEF-054） | 同一份代码 | ✅ 已一致 |
 | `ee_goal` 坐标系 | root 系（`DEFECT_LOG_zh.md` DEF-019/020 已修） | 同左（同一份代码） | ✅ 已一致 |
 | 仿真独有的东西 | `/reset_sim`、遥测 CSV、扰动注入、执行器延迟开关 | 无 | — 不影响 |
 
@@ -55,7 +62,7 @@ sim2sim 已经能站、能按命令走、能带臂遥操作（见 `review/DONE_z
 2. `[ ]` 确认 `ros2 topic echo --once /ARM_JOINTS_DATA` 的 8 个 `position`
    是 `0 / 0.5 / -0.5 / 0 / 0 / 0 / 0 / 0`；
 3. `[ ]` 确认 `ros2 topic echo --once /ARM_TELEOP_STATE` 是
-   `(0.3492, 0, 0.4327, 0.7373, 0, 0.6756, 0)`；
+   `(0.3492, 0, 0.4327, -0.7373, 0, -0.6756, 0)`（四元数用训练/链式 FK 的符号分支，DEF-039）；
 4. `[ ]` `rl_deploy` 启动日志里**不该**出现 `[ARM] 没有收到 /ARM_JOINTS_DATA`
    （出现了说明假臂节点没起或话题不通）；
 5. `[ ]` 之后按阶段 A 的步骤走。

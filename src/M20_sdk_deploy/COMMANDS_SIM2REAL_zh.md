@@ -5,6 +5,9 @@
 
 > 每个场景都是"**一个标题 + 一张终端表 + 检查点**"，照抄即可。
 > 原理/接口/排障细节见 [`docs/sim2real_checklist_zh.md`](../../docs/sim2real_checklist_zh.md)。
+>
+> **用 VR 操作真机**（腿 + 臂）请走这条完整流程：
+> [`docs/DEPLOY_REAL_VR_zh.md`](../../docs/DEPLOY_REAL_VR_zh.md)。
 
 ## 0. 硬件拓扑与通用约定
 
@@ -81,7 +84,7 @@ RMW 不一致、或机器人服务没起。
 
 ```bash
 ros2 topic echo --once /ARM_JOINTS_DATA     # 8 个 position = 0/0.5/-0.5/0/0/0/0/0
-ros2 topic echo --once /ARM_TELEOP_STATE    # (0.3492,0,0.4327,0.7373,0,0.6756,0)
+ros2 topic echo --once /ARM_TELEOP_STATE    # (0.3492,0,0.4327,-0.7373,0,-0.6756,0)  ← 四元数=训练/链式 FK 符号分支（DEF-039）
 # rl_deploy 启动日志里【不该】出现 "[ARM] 没有收到 /ARM_JOINTS_DATA"
 ```
 

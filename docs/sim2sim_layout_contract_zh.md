@@ -14,6 +14,7 @@
 | 日期 | 更新内容 | 相关 commit / 分支 |
 |---|---|---|
 | 2026-09-20 | 初版：核对训练侧 `docs/deploy_sim2sim_sim2real_zh.md` 的每一条；加入新 checkpoint（83/700/16）的布局 | `docs/review-spec` |
+| 2026-10-12 | §2.1 补 **`ee_goal` 四元数必须用"训练/链式 FK"的符号分支**（反号 = 4 维分布外输入 ⇒ 零速度命令下持续前向漂移）；相关缺陷与实测见 `DEFECT_LOG_zh.md` DEF-039 | 工作区（`fix/ee-goal-quat-sign`） |
 
 ---
 
@@ -21,8 +22,8 @@
 
 | 量 | 值 | 状态 |
 |---|---|---|
-| 策略 run | `logs/rsl_rl/history_adaptation/2026-09-20_00-50-31`，checkpoint `model_19999.pt` | ✅ |
-| 部署产物 | `<run>/exported_deploy/{policy.pt, policy.onnx, policy_layout.json}`；本仓库镜像在 `src/M20_sdk_deploy/policy/m20_piper_history_20260920/` | ✅ |
+| 策略 run | **当前默认** `logs/rsl_rl/history_adaptation/2026-09-30_19-36-00_cloud_cap12_20k`（平地），checkpoint `model_19999.pt` | ✅ |
+| 部署产物 | `<run>/exported_deploy/{policy.pt, policy.onnx, policy_layout.json}`；本仓库镜像：平地 `policy/m20_piper_flat_20260930/`（默认）、多地形 `policy/m20_piper_rough_20261002/`（更早的平地 `policy/m20_piper_history_20260920/` 也保留），三者接口逐字段相同 | ✅ |
 | 资产 | `deep_robotics_model/M20_Piper_own/usd/M20_Piper_own.usd`（= 本仓库 MJCF 的同一份 URDF） | ✅ |
 | 策略频率 | **50 Hz**（`sim.dt=0.005` × `decimation=4`） | ✅ |
 | 输入 | `policy_obs (batch,83)` + `history_flat (batch,700)` | ✅ |
@@ -72,16 +73,18 @@
 | 14 | `body_pose.height` = `root_z − mean(4 轮 z) + 0.09` | ✅ **且本仓库实测复核过** | `check_mjcf_contract.py`：默认姿态着地后 `rel_height = 0.5266`，与文档给的 0.5266 完全一致 |
 | 15 | `ee_pose` 球坐标范围 l (0.30,0.52)、pitch (−0.785,0.628)、yaw ±1.257、o_roll/o_pitch ±0.3927、o_yaw ±π | ✅ | `WBCCurriculumCfg.ee_goal_stages` 的 s3 = 原分布 |
 | 16 | "锁在举臂默认位姿比放开更差；起步建议低位锚点 l=0.41,pitch=−0.08,姿态 0" | ✅（引用训练侧实测） | `flat_env_wbc_cfg.py` 注释里的 1.0% / 55.5% / 25.8% 对照 |
-| 17 | IK：DLS `lambda=0.01`、绝对位姿、`arm_joint1..6`、末端 `gripper_base`、root 系、50 Hz | ✅ | `CommandDrivenIKAction.process_actions` 读 `command_manager` 的 root 系目标；`command_local = pose_command_b` |
+| 17 | IK：DLS `lambda=0.01`、绝对位姿、`arm_joint1..6`、末端 `gripper_base`、root 系、50 Hz；**解出的关节目标必须夹进关节限位**（DEF-054，2026-10-08 新增保护） | ✅ | 训练：`CommandDrivenIKAction.apply_actions()` 按 `joint_pos_limits`（`protect_joint_pos=True`、`joint_limit_margin=0.0`）夹；部署：`arm_controller.ik_step()` 每步 `np.clip(q+dq, ARM_JOINT_LIMITS)`，限位表与 URDF/MJCF 一致 |
 | 18 | MuJoCo 模型：默认姿态 `gripper_base` 相对 `base_link` = `(0.3492,0,0.4327)`，四元数 `(−0.7373,0,−0.6756,0)` | ✅ **本仓库实测** | `check_mjcf_contract.py`：`pos=[0.3492,0,0.4326]`（差 5.7e−05 m）、旋转角差 **0.000°** |
 | 19 | MJCF `timestep=0.002` vs 训练 `0.005` | ✅ | `model.opt.timestep = 0.002`（实测） |
 | 20 | 关节轴与 URDF 一致、无符号翻转 | ✅ **本仓库实测** | MJCF 的 `axis` 与 URDF 逐条相同（hipx `-1 0 0`；hipy/knee/wheel `0 -1 0`；arm `0 0 1`） |
 | 21 | 关节限位表：`hipx` 前腿 [−0.436,0.611]／后腿 [−0.611,0.436] | ❌ **写错了** | URDF 与 MJCF 都是 **左右镜像**：`fl/hl` = [−0.436,0.611]、`fr/hr` = [−0.611,0.436]。hipy/knee 那两行是对的（前后镜像） |
-| 22 | 执行器：腿 80/2、轮 0/0.6、臂 **300/20**、夹爪 4000/200；armature 轮 0.00243216、臂/夹爪 0.01 | ✅（训练值本身） | `env.yaml` `actuators` 四组 |
+| 22 | 执行器：腿 80/2、轮 0/0.6、臂 **300/8**（DEF-064，原 300/20）、夹爪 **286/5**（DEF-058，原 4000/200）；armature 轮 0.00243216、臂/夹爪 0.01 | ✅（训练值本身） | 2026-10-08 训练侧 `deeprobotics.py` 的 `piper_arm`（stiffness 300 / damping 8）、`piper_gripper`（286 / 5）；本仓库三处常量已同步 |
 | 23 | 训练侧文档没有提"armature 要写在 `<joint>` 上" | ⚠️ **本仓库踩坑** | 本仓库 MJCF 把 armature 写在 `<motor>` 上，**MuJoCo 静默忽略** ⇒ 轮/臂/夹爪的 `dof_armature` 实际是 0。见 `DEF-011` |
 | 24 | 时延：训练 `DelayedPD` 每个执行器 0~5 个物理步（0~25 ms） | ✅（训练侧） | `env.yaml` `min_delay 0 / max_delay 5`；**部署侧未实现**（TODO P2-3） |
 | 25 | 摩擦/恢复系数：训练随机化 0.35~1.5 / 0~0.7 | ❓ | `env.yaml` 里 `sim.physics_material` 是 1.0/1.0/1.0（基础值），随机化区间在 events 配置里；**未逐项核对** |
 | 26 | 根初始高度 0.55（spawn） | ⚠️ | `env.yaml` `init_state.pos = (0,0,0.55)`；本仓库 MJCF 的 `base_link pos = 0.5901`，但仿真节点会按"轮子着地"重新落位（`M20_Piper_own` 默认站姿落地后 base z = 0.5266） |
+| 27 | EE 命令复位锚定（known_issues ⑫ / DEF-034，2026-09-30）：复位后的**第一拍** `ee_goal` 必须 = 那一刻的**实测 EE 位姿**，不能是 `(0,0,0,1,0,0,0)` | ✅ **部署侧天然满足** | 训练：`HeightInvariantEECommand.reset()` 把命令锚到真实 EE 位姿；部署：`ee_goal` 由 `arm_controller`（IK 目标）或 `arm_real_adapter`（FK 当前位姿）持续发布，复位键 `ee_reset` 也是取当前 FK，不用常量 0 |
+| 28 | EE 目标避障盒定义在**高度不变系局部坐标**（随机器人走），不是世界坐标（known_issues ⑭ / DEF-066） | ➖ **部署侧不适用** | 本仓库没有"EE 目标不得穿身体"的采样检查（目标来自遥操作，不是采样器），因此无对应实现；仅记录训练侧语义 |
 
 ---
 
@@ -102,6 +105,15 @@
 | 57..72 | `actions` | **16** | 上一步的策略输出（原始值，`clip_actions=100`） | ±100 | 1.0 |
 | 73..79 | `ee_goal` | 7 | `[pos_b(3), quat_b(4) wxyz]`（**root 系**目标） | **±3** | 1.0 |
 | 80..82 | `body_pose_cmd` | 3 | `[height, pitch, roll]` | — | — |
+
+> ⚠️ **`ee_goal` 的四元数符号（4 个原始分量，不是"旋转等价"就够）**：训练侧来自
+> PhysX `subtract_frame_transforms(root_quat, ee_quat)` 的**链式合成**，默认站姿下是
+> **(−0.7373, 0, −0.6756, 0)**；而"旋转矩阵→四元数"（`mat_to_quat`，大致 w≥0）给的是
+> **(+0.7373, 0, +0.6756, 0)**。策略吃的是这 4 个原始分量 ⇒ 反号是**分布外输入**。
+> 部署侧所有发布 `/ARM_TELEOP_STATE` 的路径（`arm_controller` / `arm_real_adapter` /
+> `arm_udp_bridge` / `arm_stub_node` / rl_deploy 的内部默认值）都必须用训练那一支，
+> 并且**逐帧连续**（姿态过 180° 时符号会跳，见 `arm_controller.align_quat_sign()`）。
+> 实测代价：反号会让零速度命令下的前向漂移从 0.007 m/s 涨到 0.045 m/s（DEF-039）。
 
 > ⚠️ 与旧 checkpoint 的差别：`joint_pos`/`joint_vel` 从 22 维（leg+wheel+arm）
 > 变成 **24 维**（含夹爪）；`actions` 从 23 维变成 **16 维**（`ee_ik` 槽位消失）。
@@ -221,9 +233,9 @@ docker exec m20_piper_ros bash -lc \
 | 控制周期 | `sim.dt=0.005` × `decimation=4` = **20 ms**（50 Hz） | 控制 tick 1 ms × `decimation=4` = **20 ms** | ✅ 一致 |
 | 物理积分步长 | 5 ms/步 | `PHYSICS_DT=0.0002` × 5 = 1 ms/控制 tick（= 200 µs/物理步） | ⚠️ **有意偏离**：我们积分更细（数值更准）。代价是"PD 每个物理步都更新"，而训练是每 5 ms 更新一次 ⇒ 见下一行的延迟项 |
 | 执行器延迟 | `DelayedPD`：每个执行器随机 0~5 个物理步（**0~25 ms**） | 默认 0；`M20_SIM_ACTUATOR_DELAY_TICKS` 可按 1 ms 粒度模拟 | ⚠️ 默认关。实测打开（0~25 ms）**失败率反而变高**（5/12 vs 3/12），所以作为对照工具保留 |
-| 关节增益 | 腿 80/2、轮 0/0.6、臂 300/20、夹爪 4000/200 | 同（`DEF-007` 已对齐三处常量） | ✅ 一致（`check_mjcf_contract.py` 逐项断言） |
+| 关节增益 | 腿 80/2、轮 0/0.6、臂 **300/8**、夹爪 **286/5** | 同（2026-10-08 起：`arm_controller.py` / `mujoco_simulation_ros2.py` / `piper_arm_interface.hpp` 三处常量已同步） | ✅ 一致（`check_mjcf_contract.py` 逐项断言） |
 | armature | 轮 0.00243216、臂/夹爪 0.01、腿 0 | 同（`DEF-011` 修好后真正生效） | ✅ 一致 |
-| 力矩/速度限幅 | 腿 76.4/22.4、轮 21.6/79.3、臂 100/3.0、夹爪 10/1.0 | 腿/轮/臂/夹爪的力矩限幅由 MJCF `ctrlrange` 落实并断言 | ✅ 力矩一致；**速度限幅仿真侧没有限制**（MuJoCo 不强制），靠训练分布约束 |
+| 力矩/速度限幅 | 腿 76.4/22.4、轮 21.6/79.3、臂 100/**3.0**、夹爪 10/1.0 | 腿/轮/臂/夹爪的力矩限幅由 MJCF `ctrlrange` 落实并断言 | ✅ 力矩一致；**臂速度上限 3 rad/s 在训练侧由启动事件 `align_joint_velocity_limits` 写进 PhysX DOF 上限（DEF-065），MuJoCo 不强制** ⇒ 真机按第 §3 表把臂 1~6 设成 3 rad/s |
 | 重力 | −9.81 | −9.81 | ✅ |
 | 摩擦（静/动） | 每个 env 在 **0.35~1.5** 里随机（startup），材质组合 = multiply | MJCF 未写 ⇒ MuJoCo 默认滑动摩擦 **1.0**（滚动 0.0001、扭转 0.005） | ⚠️ **有意偏离**：取训练分布内的固定值（1.0）；要复刻随机化就按 env 改 MJCF |
 | 恢复系数 | **0~0.7** 随机 | MuJoCo 默认 **0** | ⚠️ 同上（取分布下沿） |
