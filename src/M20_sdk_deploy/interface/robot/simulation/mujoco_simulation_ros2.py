@@ -97,10 +97,16 @@ ACTUATOR_DELAY_MAX = int(os.environ.get("M20_SIM_ACTUATOR_DELAY_TICKS", "0"))
 WHEEL_STEP = float(os.environ.get("M20_SIM_WHEEL_STEP_RAD_S", "0"))
 WHEEL_STEP_AT = float(os.environ.get("M20_SIM_WHEEL_STEP_AT", "5"))
 
-DT = 0.001
+DT = 0.001          # 控制周期（s）：仿真每 1 ms 走一个控制 tick
+# 可视化渲染间隔（控制 tick）：50 = 每 50 ms 刷一次（20 fps）。
+# ⚠️ 渲染很贵：`viewer.sync()` 每个窗口帧要几十毫秒，会直接拖慢仿真循环。
+# 仿真一旦落后墙钟，rl_deploy 的**墙钟 50 Hz** 策略周期在仿真时间里就被压缩
+# （速率失配 ⇒ 训练分布外 ⇒ 直流发散/乱动，见 DEF-018 的复现性说明）。
+# 所以开窗口时若实时因子明显 <1，就把这个值调大（例如 200 = 5 fps）：
+#   M20_SIM_RENDER_INTERVAL=200 bash scripts/run_sim2sim.sh full
+RENDER_INTERVAL = int(os.environ.get("M20_SIM_RENDER_INTERVAL", "50"))
 # 单次迭代最多补多少个 1 ms 控制 tick（防止落后时雪崩；正常应为 1~2）
 MAX_CATCHUP_TICKS = int(os.environ.get("M20_SIM_MAX_CATCHUP", "20"))
-RENDER_INTERVAL = 50
 # The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
 # that is marginally unstable at a 1 ms integrator step (the base gyro sees
 # +-2 rad/s alternating values that never appear in the pose). Integrate the
@@ -441,6 +447,22 @@ class MuJoCoSimulationNode(Node):
                     # 关节速度打印 (1 Hz)
                     if JVEL_DEBUG and step % JVEL_PERIOD == 0:
                         self._print_leg_wheel_velocity()
+
+                    # 实时因子自检 (1 Hz)：sim 时间 / 墙钟时间。
+                    # ⚠️ rl_deploy 的策略是**按墙钟 50 Hz** 跑的（state_machine_base.h 的
+                    # 1 kHz timerfd → 每 4 tick 一个策略周期），这个设计**要求仿真 ≈ 实时**。
+                    # 因子 <1（开可视化窗口时最常见）⇒ 策略在仿真时间里被压缩成 >50 Hz
+                    # ⇒ 训练分布外 ⇒ 底盘会"乱动/发抖"然后翻倒（DEF-018 的复现性说明）。
+                    # 看到持续 <0.95 就别用窗口看策略了：加 M20_USE_VIEWER=0 无头跑，
+                    # 或把窗口拖小 / 调大 M20_SIM_RENDER_INTERVAL，直到这条打印 ≈1.00。
+                    if step % 1000 == 0:
+                        wall_el = time.monotonic() - wall_t0
+                        print("[SIM-RT] 仿真 %.2fs / 墙钟 %.2fs -> 实时因子 %.2f%s"
+                              % (self.timestamp, wall_el,
+                                 self.timestamp / max(wall_el, 1e-9),
+                                 "" if self.timestamp / max(wall_el, 1e-9) >= 0.95
+                                 else "  <== 仿真落后墙钟，策略速率会被压缩（进 RL 易乱动）"),
+                              flush=True)
 
                     # 遥测落盘（默认 200 Hz）
                     if self.telemetry_file is not None and step % TELEMETRY_PERIOD == 0:
