@@ -18,8 +18,9 @@
   （`arm_joint1..6 = 0, 0.5, -0.5, 0, 0, 0`，夹爪 `0, 0`），速度/力矩为 0，
   `status_word = 1`（正常）、`control_word = kIndexMotorControl(4)`；
 * 以 50 Hz 发布 `/ARM_TELEOP_STATE`：该默认姿态下 `gripper_base` 在
-  **root 系**的位姿 `(0.3492, 0, 0.4326)` + 四元数 `(0.7373, 0, 0.6756, 0)`
-  （由 `scripts/check_mjcf_contract.py` 实测）；
+  **root 系**的位姿 `(0.3492, 0, 0.4326)` + 四元数 `(-0.7373, 0, -0.6756, 0)`
+  （由 `scripts/check_mjcf_contract.py` 实测；符号必须与训练/链式 FK 一致，
+  见 DEF-039 —— 这是策略观测的原始分量，不能写成 +0.7373）；
 * 订阅 `/ARM_JOINTS_CMD` 并丢弃（可选打印），这样即使有人误起
   `arm_controller`，也不会因为"没人接收"而困惑。
 
@@ -58,7 +59,7 @@ DEFAULT_POSE = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.floa
 # `PiperArmPolicyRunner` 的 ee_goal 默认值、`arm_controller` 的 body-frame 输出一致
 # （实测值见 scripts/check_mjcf_contract.py：pos=(0.3492, 0, 0.4326)）
 DEFAULT_EE_GOAL_BODY = np.array(
-    [0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0], dtype=np.float64)
+    [0.3492, 0.0, 0.4327, -0.7373, 0.0, -0.6756, 0.0], dtype=np.float64)
 
 K_INDEX_MOTOR_CONTROL = 4
 

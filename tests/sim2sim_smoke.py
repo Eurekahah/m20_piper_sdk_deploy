@@ -643,7 +643,7 @@ def main() -> int:
                              f"没起假臂节点时会是 ~0.5）")
             goal = info.get("arm_ee_goal")
             if goal is None or max(abs(a - b) for a, b in
-                                   zip(goal, (0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0))) > 0.01:
+                                   zip(goal, (0.3492, 0.0, 0.4327, -0.7373, 0.0, -0.6756, 0.0))) > 0.01:
                 fails.append(f"no_arm：ee_goal 不是默认位姿（{goal}）")
     if args.mode == "arm_mixed":
         # 混合配置：按键后"策略观测里的臂"必须真的变化（说明
@@ -665,7 +665,7 @@ def main() -> int:
                              f"没起假臂节点时会是 ~0.5）")
             goal = info.get("arm_ee_goal")
             if goal is None or max(abs(a - b) for a, b in
-                                   zip(goal, (0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0))) > 0.01:
+                                   zip(goal, (0.3492, 0.0, 0.4327, -0.7373, 0.0, -0.6756, 0.0))) > 0.01:
                 fails.append(f"no_arm：ee_goal 不是默认位姿（{goal}）")
 
     if args.mode == "push":

@@ -42,7 +42,8 @@ ARM_JOINT_COUNT = 6
 TOTAL_JOINT_COUNT = 8
 
 # 默认姿态下 gripper_base 在 root 系的位置（与 arm_real_adapter / runner 一致）
-DEFAULT_EE_GOAL_BODY = [0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0]
+# 四元数用**训练那一支**（链式 FK 合成）：默认站姿下是负号（DEF-039）
+DEFAULT_EE_GOAL_BODY = [0.3492, 0.0, 0.4327, -0.7373, 0.0, -0.6756, 0.0]
 
 
 # ---------------------------------------------------------------------------
@@ -125,7 +126,8 @@ def run_rx(port: int, publish_ee: bool) -> int:
     fk = None
     if publish_ee:
         try:                      # 复用 arm_controller 里的 MDH/FK（同目录）
-            from arm_controller import PIPER_MDH, ARM_BASE_OFFSET, fk_pose, mat_to_quat
+            from arm_controller import (PIPER_MDH, ARM_BASE_OFFSET, fk_pose, mat_to_quat,
+                                        EE_DEFAULT_QUAT_TRAIN, align_quat_sign)
             fk = (PIPER_MDH, ARM_BASE_OFFSET, fk_pose, mat_to_quat)
         except Exception as e:    # pragma: no cover
             print(f"[udp-rx] 无法导入 FK（{e}）⇒ 不发布 /ARM_TELEOP_STATE")
@@ -133,6 +135,7 @@ def run_rx(port: int, publish_ee: bool) -> int:
     class Rx(Node):
         def __init__(self) -> None:
             super().__init__("arm_udp_bridge_rx")
+            self._last_pub_quat = EE_DEFAULT_QUAT_TRAIN.copy()
             self.data_pub = self.create_publisher(JointsData, "/ARM_JOINTS_DATA", 10)
             self.ee_pub = self.create_publisher(Float32MultiArray, "/ARM_TELEOP_STATE", 10)
             self.create_timer(0.005, self._publish)        # 200 Hz
@@ -173,7 +176,8 @@ def run_rx(port: int, publish_ee: bool) -> int:
                 mdh, offset, fk_pose, mat_to_quat = fk
                 pos, R = fk_pose(mdh, state["q"])
                 pb = pos + offset
-                quat = mat_to_quat(R)
+                quat = align_quat_sign(mat_to_quat(R), self._last_pub_quat)
+                self._last_pub_quat = quat
                 goal = [pb[0], pb[1], pb[2], quat[0], quat[1], quat[2], quat[3]]
             msg = Float32MultiArray()
             msg.data = [float(v) for v in goal]

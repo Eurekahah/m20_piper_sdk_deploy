@@ -10,7 +10,8 @@
   1. 喂入 joint1..6 = 默认姿态 + gripper=0.07 后，
      /ARM_JOINTS_DATA 的 8 个 position = [0, 0.5, -0.5, 0, 0, 0, +0.035, -0.035]；
   2. /ARM_TELEOP_STATE = 用 FK 算出的 root 系末端位姿，且与
-     "默认姿态下 (0.3492,0,0.4327) + 四元数 (0.7373,0,0.6756,0)" 相差 < 2 mm / 0.5°；
+     "默认姿态下 (0.3492,0,0.4327) + 四元数 (-0.7373,0,-0.6756,0)" 相差 < 2 mm / 0.5°
+     （四元数取训练/链式 FK 的符号分支，DEF-039）；
   3. 发一条 /ARM_JOINTS_CMD（arm2 挪到 0.8、gripper1/2 = ±0.02），
      /control/joint_states 收到 joint2 ≈ 0.8、gripper ≈ 0.04。
 
@@ -41,7 +42,7 @@ ADAPTER = REPO / "src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter
 
 DEFAULT_Q = [0.0, 0.5, -0.5, 0.0, 0.0, 0.0]
 EXPECT_EE_POS = [0.3492, 0.0, 0.4327]
-EXPECT_EE_QUAT = [0.7373, 0.0, 0.6756, 0.0]
+EXPECT_EE_QUAT = [-0.7373, 0.0, -0.6756, 0.0]   # 训练/链式 FK 的符号分支（DEF-039）
 
 fails: list[str] = []
 

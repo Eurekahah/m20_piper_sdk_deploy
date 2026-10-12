@@ -46,7 +46,9 @@ DEFAULT_JOINTS = {  # 训练 init_state.joint_pos
     "arm_joint5": 0.0, "arm_joint6": 0.0,
     "gripper_joint1": 0.0, "gripper_joint2": 0.0,
 }
-EE_GOAL_DEFAULT = np.array([0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0], np.float32)
+# 训练那一支（链式 FK 合成）：默认站姿下 = 负号（DEF-039）。策略观测吃原始分量，
+# 不能用 mat_to_quat 那种 w>=0 的写法。
+EE_GOAL_DEFAULT = np.array([0.3492, 0.0, 0.4327, -0.7373, 0.0, -0.6756, 0.0], np.float32)
 BODY_HEIGHT_DEFAULT = 0.513
 FALLBACK_ACTION_LIMIT = 10.0      # 标称状态下动作幅值的合理上限（超了要人工看）
 

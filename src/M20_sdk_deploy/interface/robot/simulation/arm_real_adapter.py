@@ -73,10 +73,11 @@ GRIPPER_EFFORT = 1.0
 EE_STATE_TOPIC = '/ARM_TELEOP_STATE'
 
 # 默认姿态下 gripper_base 在 root 系的位置（实测，见 check_mjcf_contract.py）
-DEFAULT_EE_GOAL_BODY = [0.3492, 0.0, 0.4327, 0.7373, 0.0, 0.6756, 0.0]
+DEFAULT_EE_GOAL_BODY = [0.3492, 0.0, 0.4327, -0.7373, 0.0, -0.6756, 0.0]
 
 try:  # 同目录的 arm_controller 里有 MDH 表与 FK，优先复用（避免两份定义漂移）
-    from arm_controller import PIPER_MDH, ARM_BASE_OFFSET, fk_pose, mat_to_quat  # noqa: E402
+    from arm_controller import (PIPER_MDH, ARM_BASE_OFFSET, fk_pose, mat_to_quat,  # noqa: E402
+                               EE_DEFAULT_QUAT_TRAIN, align_quat_sign)
     _FK_OK = True
 except Exception as _e:  # pragma: no cover - 只在这两个文件不在一起时发生
     _FK_OK = False
@@ -108,6 +109,8 @@ class ArmRealAdapter(Node):
         self._t_start = time.time()
         self._t_first_fb = None
         self._ee_q = None
+        # 发布给策略观测的 ee_goal 四元数：初始支 = 训练默认分支（DEF-039）
+        self._last_pub_quat = EE_DEFAULT_QUAT_TRAIN.copy()
         self._ee_log_cnt = 0
         self.cmd_count = 0
 
@@ -178,7 +181,10 @@ class ArmRealAdapter(Node):
             return
         pos, R = fk_pose(PIPER_MDH, self._ee_q)
         pos_body = pos + ARM_BASE_OFFSET          # 臂基座系 -> 机体(root)系
-        quat = mat_to_quat(R)                     # wxyz
+        # 符号对齐到训练（链式 FK）那一支并保持连续：mat_to_quat 只给其中一支，
+        # 反号就是 4 维分布外输入（DEF-039）
+        quat = align_quat_sign(mat_to_quat(R), self._last_pub_quat)   # wxyz
+        self._last_pub_quat = quat
         msg = Float32MultiArray()
         msg.data = [float(pos_body[0]), float(pos_body[1]), float(pos_body[2]),
                     float(quat[0]), float(quat[1]), float(quat[2]), float(quat[3])]

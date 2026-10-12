@@ -148,6 +148,29 @@ IK_ERROR_TOL = 1e-3
 # ----------------------------------------------------------------------------
 # quaternion helpers (wxyz convention, matching Isaac Lab)
 # ----------------------------------------------------------------------------
+# 训练侧（IsaacLab / PhysX）观测里的 `ee_goal` 四元数是**链式 FK 合成**的结果
+# （`subtract_frame_transforms(root_quat, ee_quat)`），它的符号分支由父链连续决定；
+# 而 `mat_to_quat(R)`（旋转矩阵→四元数）只会给出其中一支（大致 w>=0）。
+# 两者是"同一个旋转、不同符号"，但**策略吃的是 4 个原始分量**——
+# 默认站姿下训练值是 (-0.7373, 0, -0.6756, 0)，本文件下面的 mat_to_quat 给
+# (+0.7373, 0, +0.6756, 0)。差一个符号 = 4 维输入全反 = 分布外输入，
+# 实测在零速度命令下会把底盘推成 ~0.04 m/s 的持续前向漂移（DEF-039）。
+# 所以：凡是把位姿发给策略观测的路径，都要用 align_quat_sign() 把符号拉回
+# "训练那一支"并保持连续（不能只在第一帧对齐，姿态过 180° 时符号会跳）。
+EE_DEFAULT_QUAT_TRAIN = np.array([-0.7373, 0.0, -0.6756, 0.0])   # 训练实测值
+
+
+def align_quat_sign(q, ref=None):
+    """把 q 翻到与 ref（缺省 = 训练默认分支）同一支上。
+
+    q 与 -q 表示同一个旋转；调用方式：ref 传"上一帧发布出去的四元数"，
+    就能保持发布序列的符号连续（等价于链式 FK 的分支）。
+    """
+    q = np.asarray(q, dtype=np.float64)
+    ref = EE_DEFAULT_QUAT_TRAIN if ref is None else np.asarray(ref, dtype=np.float64)
+    return -q if float(np.dot(q, ref)) < 0.0 else q
+
+
 def quat_from_euler(roll, pitch, yaw):
     cr, sr = math.cos(roll / 2), math.sin(roll / 2)
     cp, sp = math.cos(pitch / 2), math.sin(pitch / 2)
@@ -315,6 +338,8 @@ class ArmController(Node):
         # absolute EE target, initialised at the default arm pose
         self.target_pos, self.target_R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
         self.target_quat = mat_to_quat(self.target_R)
+        # 发布给策略观测的 ee_goal 四元数：初始支 = 训练默认分支（见 align_quat_sign）
+        self._last_pub_quat = EE_DEFAULT_QUAT_TRAIN.copy()
         # 请求位姿（键盘累加的目标）；被跟踪目标 target_* 以限速逼近它（DEF-022）
         self._req_pos = self.target_pos.copy()
         self._req_quat = self.target_quat.copy()
@@ -550,11 +575,13 @@ class ArmController(Node):
         # 否则策略会拿到一个落在机体内部的 EE 目标（差 24 cm，DEF-020）。
         goal_pos = (self.target_pos + ARM_BASE_OFFSET
                     if EE_GOAL_IN_BODY_FRAME else self.target_pos)
+        # 符号对齐到训练（链式 FK）那一支，并保持逐帧连续（DEF-039）
+        q_pub = align_quat_sign(self.target_quat, self._last_pub_quat)
+        self._last_pub_quat = q_pub
         state = Float32MultiArray()
         state.data = [float(v) for v in
                       [goal_pos[0], goal_pos[1], goal_pos[2],
-                       self.target_quat[0], self.target_quat[1],
-                       self.target_quat[2], self.target_quat[3]]]
+                       q_pub[0], q_pub[1], q_pub[2], q_pub[3]]]
         self.state_pub.publish(state)
 
 

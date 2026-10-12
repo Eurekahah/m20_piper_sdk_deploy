@@ -61,8 +61,15 @@ namespace qw {
         // 5.7e-5 m）、相对旋转角差 0.000°。
         // ⚠️ 曾经写的是臂基座坐标系下的同一个位姿 (0.1092, 0, 0.3439)——
         // 两者差 24 cm，会让策略拿到一个落在机体内部的 EE 目标（DEF-019）。
+        // ⚠️ 四元数必须用**训练那一支**（= 链式 FK 合成的符号，不是"矩阵→四元数"的
+        //    w>=0 支）：默认站姿下训练侧实测 ee_goal = (0.3492, 0, 0.4327,
+        //    -0.7373, 0, -0.6756, 0)；而 mat_to_quat() 那种写法给正号。
+        //    策略吃的是 4 个原始分量，反号 = 分布外输入 ⇒ 零速度命令下
+        //    ~0.04 m/s 的持续前向漂移（DEF-039）。本仓库
+        //    scripts/check_mjcf_contract.py 早就断言了负号（EXPECT_GRIPPER_BASE_QUAT_WXYZ），
+        //    这里之前与它不一致。
         std::array<float, 7> ee_goal_{0.3492f, 0.0f, 0.4327f,   // pos (root frame)
-                                      0.7373f, 0.0f, 0.6756f, 0.0f};  // quat wxyz
+                                      -0.7373f, 0.0f, -0.6756f, 0.0f};  // quat wxyz（训练分支）
 
         // VR leg/body teleop (published by vr_teleop_node at 50 Hz)
         std::mutex vr_mutex_;
