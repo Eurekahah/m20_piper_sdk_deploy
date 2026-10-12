@@ -11,7 +11,14 @@ import numpy as np
 import math
 import logging
 from typing import Dict, Optional, Set
-from scipy.spatial.transform import Rotation as R
+
+# scipy 只用来做四元数/欧拉角换算。真机（上位机）**不能联网**、装不上 scipy，
+# 所以没有 scipy 时退到本包内的纯 numpy 实现 `_rotation_compat`（API 子集一致，
+# 已与 scipy 逐项数值对照）。有 scipy 的机器行为完全不变。
+try:
+    from scipy.spatial.transform import Rotation as R
+except ImportError:  # pragma: no cover - 离线真机走这条
+    from .._rotation_compat import Rotation as R
 
 from .base import BaseInputProvider, ControlGoal, ControlMode
 from ..config import XLeVRConfig

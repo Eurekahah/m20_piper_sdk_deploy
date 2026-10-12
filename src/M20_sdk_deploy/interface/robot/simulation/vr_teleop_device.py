@@ -32,20 +32,21 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
 
 XLEVR_DIR = Path(__file__).resolve().parents[3] / "third_party" / "XLeVR"
 sys.path.insert(0, str(XLEVR_DIR))
+
+# scipy 只被用来做四元数/欧拉角换算。真机上位机**不能联网**、装不上 scipy ⇒
+# 没有 scipy 时退到 XLeVR 包内的纯 numpy 实现（同一套 API 子集，已与 scipy 对照）。
+try:
+    from scipy.spatial.transform import Rotation as R
+except ImportError:  # pragma: no cover - 离线真机走这条
+    from xlevr._rotation_compat import Rotation as R
 
 from xlevr.config import XLeVRConfig
 from xlevr.inputs.vr_ws_server import VRWebSocketServer
 
 _IDENTITY_QUAT = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float64)
-
-
-def _xyzw_to_wxyz(q):
-    """Convert [x,y,z,w] -> [w,x,y,z]."""
-    return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
 
 # 灵敏度可以用环境变量覆盖（默认值与训练侧一致，见 Se2VRExtendedCfg）。
 # 为什么要能调：VR 的手臂跟随是**1:1** 的（手柄动多少、EE 目标就走多少），
@@ -73,6 +74,11 @@ SENS_ENV = {
 # arm_teleop 那条"重置到默认末端位姿"的一次性命令（flag=2，确定语义），
 # 这里只负责把**设备的**校准原点重采一次，两条链路各管各的、不会互相打架。
 RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "1") != "0"
+
+
+def _xyzw_to_wxyz(q):
+    """Convert [x,y,z,w] -> [w,x,y,z]."""
+    return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
 
 
 # 90-degree rotation around X: VR wrist frame -> sim frame (training-tuned)
