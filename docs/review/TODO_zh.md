@@ -19,6 +19,8 @@
 | 2026-09-20 | **P0-4 完成**（`ee_goal` 默认值 + `arm_controller` 发布的坐标系都修到 root 系）；DEF-018 定位为**策略侧**边缘稳定性并交接训练侧；新增 DEF-020/021 与 `--mode arm_move` | `fix/entry-transient` / `fix/ee-goal-frame-arm-node` |
 | 2026-09-20 | **P1-1 完成**；**P3-1/P3-2/P3-3/P3-4/P1-5 完成**；清理 TODO 占位条目（P0 全部清空） | `main` |
 | 2026-09-20 | **P1-2 完成**（轮子速度伺服阶跃验收）；新增 `--mode wheel_step`；`arm_move` 增加末端位移判据；仿真遥测增加末端位姿与轮速指令列；**DEF-022 修键盘目标限速**，IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
+| 2026-10-09 | 同步仿真新代码：臂增益 300/20 → **300/8**、夹爪 4000/200 → **286/5**、臂速度上限 **3 rad/s**；默认策略切到多地形 `cloud_slowvx20k`；新增 **P1-6**（容器内补跑 L1/L3）与 **P2-6**（真机臂速度上限 3 rad/s 落地） | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | 全代码走查（`docs/review/CODE_REVIEW_2026-10-09_zh.md`）后新增 **P4 代码质量** 一节（安全层接线、单一常量来源、死代码、CMake 警告、并发约定、单元测试）；默认策略已改回**平地**模型 | 同上 |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
 P2 = sim2real 落地；P3 = 工具与文档。
@@ -73,6 +75,8 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 预估：0.5 个工作日。
 
 - [x] **P0-6 机械臂 PD 增益对齐到本次训练（40/8 → 300/20）** → 已迁至 `DONE_zh.md` 第十节（`fix/arm-gains-armature-height`）
+  - ⚠️ **2026-10-09 更新**：训练侧又把臂阻尼 20 → **8**、夹爪改成 **286/5**，本仓库三处常量
+    已同步（见 `DONE_zh.md` 第二十三节 / `DEFECT_LOG_zh.md` DEF-029/030）。以下内容保留作历史。
   - 要做什么：`arm_controller.py` 的 `ARM_KP/ARM_KD`、仿真侧"首条命令前的默认保持"
     `ARM_DEFAULT_KP/KD`，统一取本次 run 的 `piper_arm` 执行器配置；
     把它做成单一常量来源，避免三处各写一份。
@@ -151,6 +155,15 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收：删掉后 L1 + L3 仍通过；开关登记表同步更新。
   - 预估：0.5 个工作日。
 
+- [x] **P1-6 在容器里补跑 L1 + L3（2026-10-09 新增）** → 已完成（容器 `m20_piper_ros`）
+  - 结果：L0 编译 ✅；**L1 PASS**（ONNX↔TorchScript 5.96e-07）；**L3' 10 PASS / 0 FAIL**；
+    L2 ✅；hold / wheel_step / no_arm / arm_only / arm_mixed / push 全 PASS；
+    rl / walk / arm_move 重复 6 次失败率 0~17%（< 1/3）。完整数字见
+    `docs/deploy_code_delta_2026-10-09_zh.md` §7。
+  - 遗留：`arm` 档偶发触发倾角接管（新策略 9/12、旧平地策略 8/12 通过）——属训练侧
+    DEF-018，不是本次改动引入；`run_all.sh` 对 `arm` 用"0 失败"判据与 DEF-018 不自洽。
+    是否把 `arm` 也纳入"失败率 ≤ 1/3"见 **P2-7**。
+
 ---
 
 ## P2 —— sim2real 落地
@@ -200,6 +213,25 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收：给出时延分布（均值/95 分位）+ 加延迟后的 L3 结果。
   - 预估：1 个工作日。
 
+- [ ] **P2-6 臂关节速度上限 3 rad/s 的真机落地（2026-10-09 新增）**
+  - 背景：训练侧新增约束 DEF-065 —— 臂 joint1~6 速度上限按 **3 rad/s**
+    （旧 USD 是 5）；仿真已由 `align_joint_velocity_limits` 对齐。真机上这条由
+    `agx_arm_ctrl` / Piper 驱动器限制，**不在本仓库代码里**，别按 5 放开。
+  - 要做什么：在 Jetson 的 agx 驱动配置里把 arm joint1~6 的速度上限设成 3 rad/s
+    （joint6 本来就是 3），然后实测一条小步进/大范围的关节 `|qd|`。
+  - 验收：真机 `|qd|` p99 ≤ 3.0 rad/s；臂跟踪不因此变差（对比改前日志）。
+  - 参考：`docs/deploy_code_delta_2026-10-09_zh.md` §1/§2。
+
+- [ ] **P2-7 `run_all.sh` 的 `arm` 档判据与 DEF-018 对齐（2026-10-09 新增）**
+  - 现状：`tests/run_all.sh` 把 `arm` 当"0 失败"档单跑，但 `arm` 会进 RL、同样吃
+    DEF-018 的入口瞬态 ⇒ 以 ~25~33% 概率整体报红（实测：新策略 9/12、旧平地 8/12）。
+    真正按失败率判的只有 `rl / walk / arm_move / no_arm / arm_mixed`
+    （`tests/sim2sim_smoke.py` 容忍列表 = `rl / walk / arm_move / no_arm`）。
+  - 建议改法（一行）：`run_all.sh` 的 `if` 条件加 `arm`；`sim2sim_smoke.py` 的
+    `limit` 元组加 `"arm"`，即用同样的"失败率 ≤ 1/2"。
+  - 依据：`DEFECT_LOG_zh.md` DEF-018（已定位为策略侧，部署侧对照实验已排除）。
+  - 验收：`MODES="arm" SKIP_BUILD=1 bash tests/run_all.sh` 在 6 次里不再因偶发坍塌报红。
+
 ---
 
 ## P3 —— 工具与文档
@@ -226,3 +258,64 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     需要定规则：新策略放哪、命名规则（含 run 与 checkpoint 版本）、
     是否连 `policy_layout.json` 一起提交、如何在部署机上换策略。
   - 验收：`README.md` 里有"换策略"的标准步骤，且 runner 会在缺文件时打印该步骤。
+
+---
+
+## P4 —— 代码质量（2026-10-09 全代码走查新增）
+
+> 依据：`docs/review/CODE_REVIEW_2026-10-09_zh.md`（每条都有 `文件:行` 与影响面）。
+> 排序按"低风险 → 高收益"。
+
+- [ ] **P4-1 删死代码（零行为变化）**
+  - 内容：`run_policy/m20_policy_runner.hpp` + `rl_control_state.hpp:44` 的 `m20_policy_`（~265 行）、
+    `interface/user_command/keyboard_interface_sim.hpp`（283 行，且与在用键盘接口**同名类**）、
+    `qw_state_machine.hpp:33 car_move_controller_`、`main.cpp:3-9` 的 `USE_SIMULATION`+`backward.hpp`
+    死分支（`backward.hpp` 仓库里根本没有）、`Sign()`/`GetAbsPath()`/gait/msfb error setters、
+    `control_parameters.h` 里 ~10 个没人用的成员、`standup_state` 里那对**从未调用**的
+    `GetHipY/KneePosByHeight` 与 `default_pos`/`init_hipx_pos_`/`set_wheel_kd_`。
+  - 验收：L0 编译 + `SKIP_BUILD=1 MODES="hold rl" bash tests/run_all.sh` 通过。
+
+- [ ] **P4-2 安全层接线 + 时间单位统一**（走查 §1.1~§1.3）
+  - 内容：`SafeController::Run()` 接上 `IsBatteryNormal()` / `IsUserCommandNormal()`；
+    决定 `imu_update_overtime` / `joint_update_error` / 电池·CPU 温度三个"永远为 0"的标志
+    是**实现**还是**删除**；把 `current_time_`（秒）与 `> 1000.0`（ms 语义）统一；
+    把 `safe_control_mode` 的"模式/错误码"重载拆开或改注释。
+  - 验收：仿真里用假驱动状态/假电量/停止发 `/JOINTS_DATA` 三种注入，确认能进
+    `joint_damping` 且日志给出原因。
+
+- [ ] **P4-3 修 `liedown_state.hpp` 的限位夹取 bug**（走查 §1.6）
+  - 内容：`:48`/`:61` 的 `LimitNumber(...)` 丢掉返回值（standup 里同一份代码是接的），
+    导致趴下时膝目标 3.02 rad 超出上限 2.758 rad、硬顶限位。
+  - 验收：`--mode` 新增或用现有用例走一遍 `x`（趴下），确认膝角不超过限位。
+
+- [ ] **P4-4 单一常量来源**（走查 §3.1）
+  - 内容：默认站姿（8 处）、默认 EE 位姿（6 处）、臂/夹爪增益（4 处）抽成
+    `deploy_contract.json`（+ 生成的 `.h`），C++/Python 都从它读。
+  - 验收：`check_mjcf_contract.py` 与 `check_policy_interface.py` 改为读契约文件；
+    故意改错契约时 L1/L3' 必须 FAIL。
+
+- [ ] **P4-5 打开编译警告**（走查 §5）
+  - 内容：去掉 `add_definitions(-w)`，改 `-Wall -Wextra` 并逐条消；顺手合并
+    `CMakeLists.txt` 里两个完全相同的 `if/else` 分支、把 `file(GLOB_RECURSE)` 换成显式列表。
+  - 验收：全量重编无新增 warning（或每条都有明确豁免理由）。
+
+- [ ] **P4-6 策略目录解析口径统一 + 安装**（走查 §1.4/§5）
+  - 内容：`M20_POLICY_DIR` 与默认目录用同一基准解析（或只接受绝对路径）；
+    `install(DIRECTORY policy ...)` 到 `share/`，按可执行文件位置解析，
+    让"装到别的机器/移动目录"也能跑。
+  - 验收：把 `install/` 整体拷到临时目录，在**没有源码树**的位置起 `rl_deploy` 能加载策略。
+
+- [ ] **P4-7 并发约定写清 / 加固**（走查 §3.3）
+  - 内容：`common_types.h` 的 `UserCommand` 上加"字段所有权表"注释（谁写谁读）；
+    或把 `body_*`/速度字段改成原子/双缓冲。
+  - 验收：至少注释落地；若能加 TSAN 跑一次 `hold` 档无告警更好。
+
+- [ ] **P4-8 单元测试 + 把 `command_sweep` 挂进 `run_all.sh`**（走查 §2）
+  - 内容：给纯函数补测试（`GetCubicSplinePos`、`RpyToRm`、`NormalizeAngle`、
+    `fk_pose/mat_to_quat`）；`run_all.sh` 增加 `command_sweep` 一档（短冒烟）。
+  - 验收：`bash tests/run_all.sh` 里能看到 `command_sweep` 的结果行。
+
+- [ ] **P4-9 （训练侧）查 vy/wz 方向不对称**（走查 §7.1，见验收报告 §5）
+  - 现象：单命令阶跃下，平地模型 `wz -0.5` 只跟到 5%、多地形模型 `vy +0.5` 只跟到 9%，
+    而各自的反方向都正常 ⇒ 怀疑左右侧轮子符号/增益或训练侧 `yaw_rate` 符号约定。
+  - 验收：训练仓库里用同一 MJCF 跑 `vy/wz = ±0.3/±0.7` 探针，给出左右对称性结论。

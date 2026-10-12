@@ -26,20 +26,26 @@
   分支：feat/<topic> / fix/<topic> / docs/<topic> / wip/<topic>（wip 不合并）。
   合并用 `git merge --no-ff`。
 
-【当前状态】main 领先 origin/main 45+ 个提交，工作区干净。
-  ✅ sim2sim 已达标：`bash tests/run_all.sh` 全绿（L0 编译 + L1 离线验收 +
-     L3' MJCF/训练配置对照 + 7 档 L3：hold / wheel_step / rl / walk / arm /
-     arm_move / push）。
+【当前状态】工作区有 2026-10-09 的改动未提交（策略同步 + 换模型 + 走查文档）。
+  ✅ sim2sim 已达标：`bash tests/run_all.sh` 全绿（L0 + L1 + L3' + L2 +
+     **command_sweep（22 个命令阶段）** + 10 档 L3）。
   接口：83 / 700 / 16，布局驱动（读 policy_layout.json + ONNX 形状/名字断言），
-     策略目录 policy/m20_piper_history_20260920/（换策略见 policy/README.md）。
-  典型数字（2026-09-20 实测）：
-     hold    height 0.498 m / tilt 1.4°
-     rl      height 0.515 m / tilt 1.0°（失败率 0~33%，见下）
-     walk    +0.576 m/s（命令 +0.7）
-     arm     臂偏差 0.015 rad / 力矩 4.6 N·m
-     arm_move 末端 x 0.349→0.595 m、IK 残差 **0.18 mm**、底盘 tilt 1.1°
-     push    800 N 侧推 → [TAKEOVER!] → joint_damping
-     wheel_step 四轮稳态 +5.00 rad/s（命令 +5）
+     策略目录 policy/m20_piper_flat_20260930/（**平地，2026-10-09 起默认**；
+     多地形用 policy/m20_piper_rough_20261002/，更早的平地
+     policy/m20_piper_history_20260920/ 也在；换策略见 policy/README.md）。
+  ✅ 2026-10-09 夜已按训练侧 delta 同步（臂 PD 300/8、夹爪 286/5、臂速度上限 3 rad/s），
+     并把**平地 / 多地形两套模型**都用完整 harness 跑了一遍，详见
+     `docs/review/ACCEPTANCE_2026-10-09_zh.md`。要点：
+       * 命令组合扫描（22 阶段 × 3 遍）：两模型 **66 次命令暴露 0 摔倒**、实时因子 1.000；
+       * 10 档 L3：两模型**全部通过**（rl 0/6；walk 17%/33%；arm_move 0%/33%，均在容差内）；
+       * `vx` 跟踪极准（0.7→0.72、1.0→1.01、1.5→1.62/1.73）；
+       * `--mode push` 默认推力由 800 N 改为 **1500 N**（800 N 已被平地模型扛住）；
+       * **未解决**：`vy`/`wz` 存在**方向性不对称**（平地 `wz-` 只跟 5%、多地形 `vy+` 只跟 9%）,
+         见 DEF-036 —— 这是目前最需要训练侧确认的一条。
+  ⚠️ 跑之前先看仿真终端 `[SIM-RT] 实时因子`：**≈1.00 才算数**（电池供电会掉到 0.6~0.7，DEF-034）。
+  ⚠️ `M20_POLICY_DIR` 按**进程 cwd** 解析，请用绝对路径（DEF-038）。
+  📋 全代码走查已出（`docs/review/CODE_REVIEW_2026-10-09_zh.md`），待办落在 TODO 的
+     **P4-1 ~ P4-9**（死亡代码、安全层未接线、常量抄 8 遍、`-w` 关警告…）。
   ⚠️ DEF-018（未修，**已定位为策略侧**）：rl / walk / arm_move 三档在"进 RL 后
      1~4 s"有 0~35% 概率发散。部署侧 5 组对照实验全部排除（软启动长度、
      轮子执行器语义、执行器延迟 0~25 ms、站立腿增益、轮子无扰交接），

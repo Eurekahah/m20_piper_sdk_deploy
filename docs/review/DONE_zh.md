@@ -16,6 +16,7 @@
 | 2026-09-20 | 新增第十节：臂增益/armature/高度区间三条对齐 + `--mode arm` 用例 | `fix/arm-gains-armature-height` |
 | 2026-09-20 | 新增第十一节：安全接管（倾角+腿折叠）+ 扰动注入用例 + 进 RL 偶发摔倒修复 | `fix/safety-takeover` |
 | 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端；第十四节：轮子速度伺服 + 末端跟踪验收；第十五节：策略版本管理 + 物理对照；第十六节：无臂部署方案 | `feat/no-arm-stub` |
+| 2026-10-09 | 新增第二十三节：仿真新代码同步（臂/夹爪增益 300/8、286/5；臂速度上限 3 rad/s）+ 默认策略切到多地形 run `cloud_slowvx20k` | `sync/2026-10-09-sim-delta` |
 
 ---
 
@@ -251,3 +252,28 @@
 |---|---|---|---|
 | 2026-09-29 | **DEF-028**：`arm_teleop_node` 的 `Ctrl+C` 关不掉（`tty.setraw` 清掉 ISIG，`0x03` 被当普通按键丢掉）。改用 `setcbreak` + 显式处理 `0x03` + `main` 捕获 `KeyboardInterrupt` | 真 TTY 实测：`Ctrl+C` → `[arm_teleop] stopping ... / stopped (terminal restored)`；`ESC` 仍然可用 | `fix/arm-teleop-exit` |
 | 2026-09-29 | **两份命令速查**：`src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md`（全仿真/只调腿/只调臂/腿仿真+臂独立传输/VR/一键验收/换策略）与 `COMMANDS_SIM2REAL_zh.md`（只部署 M20/只调臂/只感知真臂/IK+键盘合并/DDS 两种修法/排障），每个场景一张"哪个终端敲什么"的表；README 顶部与 `docs/README_zh.md` 都已挂索引 | — | 同上 |
+
+## 二十三、仿真新代码同步 + 换多地形策略（2026-10-09）
+
+来源：训练仓库 `docs/deploy_code_delta_2026-10-09_zh.md`（基线 `2d49f47` → `f663ee1`）。
+逐条落点见 `docs/deploy_code_delta_2026-10-09_zh.md`；缺陷条目见 DEFECT_LOG 的
+DEF-029~DEF-032。
+
+| 日期 | 内容 | 关键实测 | commit |
+|---|---|---|---|
+| 2026-10-09 | **DEF-029**：臂 PD **300/20 → 300/8**（DEF-064）+ 臂关节 1~6 速度上限 **3 rad/s**（DEF-065）。同步三处常量（`arm_controller.py` / `mujoco_simulation_ros2.py` / `piper_arm_interface.hpp`）与 `check_mjcf_contract.py` 的断言 | 训练侧：饱和 23.5% → 0%、跟踪 4.14 → 2.19 cm、关节速度 p99 5.0 → 3.00 rad/s | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | **DEF-030**：夹爪 PD **4000/200 → 286/5**（DEF-058）；开合指令 ±0.035 本来就对 | 训练侧：饱和 88~100% → 0%、稳态误差 ≤0.0005 | 同上 |
+| 2026-10-09 | **DEF-031**：默认策略切到多地形 run `2026-10-02_00-44-42_cloud_slowvx20k`，新目录 `policy/m20_piper_rough_20261002/`（补齐 `joint_order_native`/`joint_order_action`）；`rl_control_state.hpp`、`check_policy_interface.py`、`preflight_real_deploy.py` 默认目录同步；旧平地目录保留 | 用本仓库 onnxruntime 编的最小校验器：两目录 I/O 名/形状一致、标称输出有限、动作幅值上限 0.958 / 1.459（<10）、输出各不相同（不同权重） | 同上 |
+| 2026-10-09 | **DEF-032**：核对训练侧其余 3 条——IK 输出夹限位（DEF-054）**已满足**（`arm_controller.ik_step` 已 clip）、EE 命令复位锚定（DEF-034）**已满足**、EE 碰撞盒机体局部系（DEF-066）**部署侧不适用** | 见 `docs/deploy_code_delta_2026-10-09_zh.md` §0 对照表 | 同上 |
+| 2026-10-09 | **容器实测（L0~L3）**：容器 `m20_piper_ros` 里重建 + `tests/run_all.sh`。L0 编译 ✅、**L1 PASS**（ONNX↔TorchScript 5.96e-07）、**L3' 10 PASS / 0 FAIL**、L2 ✅；hold/wheel_step/no_arm/arm_only/arm_mixed/push 全 PASS，rl/walk/arm_move 失败率 0~17%（<1/3）。`arm` 档偶发倾角接管 = 训练侧 DEF-018（新策略 9/12 vs 旧平地策略 8/12 通过，臂力矩全程 ≤5 N·m） | 完整数字见 `docs/deploy_code_delta_2026-10-09_zh.md` §7；测试口径问题见 DEF-033 | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | **DEF-034**：手工 `z`→`c` 后"乱动/摔倒"复现并定位为**宿主机电池降频**（`platform_profile=low-power`、全核 0.8~1.0 GHz）⇒ 实时因子 1.00→0.67 ⇒ 墙钟 50 Hz 策略被压缩成 ~1.5 倍速。仿真新增 `[SIM-RT]` 1 Hz 实时因子自检（<0.95 打印警告）与 `M20_SIM_RENDER_INTERVAL` 渲染间隔开关 | 同一命令：插电 1.000 / 0 失败 vs 电池 0.67 / **3-3 失败** | 同上 |
+| 2026-10-09 | **`COMMANDS_SIM2SIM_zh.md` 整体改写为"宿主机一行式"**：所有命令带 `docker exec`（含 `m20()` 便捷函数、`xhost` 放行、无头/窗口两种、二进制直调避免 `ros2 run` 孤儿进程）；新增 §8 键盘速查（含"速度键是阶跃、想柔和不按"与臂"轻点"语义）与 §9 排障（`[SIM-RT]` 实时因子表、残留/孤儿进程检查与 `pkill -f` 自杀坑） | 文档 | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | **平地模型 `policy/m20_piper_flat_20260930/`**（run `2026-09-30_19-36-00_cloud_cap12_20k`）入库：补齐部署侧必需的 `joint_order_native` / `joint_order_action`（与另两个目录逐项相同），并把它写进 commands/README/policy-README/契约文档作为"平地"选项 | `check_policy_interface.py` **PASS**（83/700/16、名字/形状一致、`\|a\|max` 1.093、ONNX↔TorchScript 1.36e-06） | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | **DEF-035：默认策略切到平地模型**（`rl_control_state.hpp` + 两个脚本的默认目录；多地形改 `M20_POLICY_DIR` 切回）+ `--mode push` 默认推力 800→1500 N | 插电、实时因子 **1.000**：L1 PASS、L3' 0 FAIL、hold/arm/wheel_step/no_arm/arm_only/arm_mixed PASS、**rl 0/6**、walk 2/6（容差内）、**arm_move 0/6**（ee_x +0.25 m）；push 800 N 被扛住（不触发接管）→ 1500 N **3/3** 触发 | 同上 |
+| 2026-10-09 | **新增 `tests/command_sweep.py`（22 个命令阶段：vx 0.2~1.5 / vy / wz / 组合 / 机身姿态），并挂进 `tests/run_all.sh`**；用它把平地与多地形两套模型各跑 3 遍 | 两模型各 **3/3 PASS、66 次命令暴露 0 摔倒**、实时因子 1.000；两套模型 10 档 L3 均"全部通过"（详见验收报告） | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | **验收报告 + 全代码走查**两份文档：`docs/review/ACCEPTANCE_2026-10-09_zh.md`（平地 vs 多地形全套数字 + 侧移/转向方向不对称等发现）、`docs/review/CODE_REVIEW_2026-10-09_zh.md`（缺漏/不优雅，带 `文件:行`） | 走查结论：安全层两个检查未接线、`liedown` 限位夹取失效、默认站姿抄 8 遍、死代码约 700 行；对应 TODO 新增 P4-1~P4-9 | 同上 |
+| 2026-10-10 | **VR/臂链路一整批修复**（详见 `DEFECT_LOG_zh.md` DEF-039~DEF-042）：VR 速度限幅与默认手感、臂链路自检脚本、双发布者检测、复位语义（末端目标回默认位姿 + 保持 VR 激活）、IK 节点不再因单拍异常退出、软死区 | 实测：VR vx 1.5→1.01 m/s；复位后臂与默认位姿差 0.015 rad 且不按 B 可继续操控；干净输入下 `dx` 跟手 1:1（+0.1276 m）、IK 0.08 mm；`arm_*` 回归全过 | `sync/2026-10-09-sim-delta` |
+| 2026-10-10 | **新增真机 + VR 完整部署流程文档** `docs/DEPLOY_REAL_VR_zh.md`（10 节：拓扑/前提 → 编译 arm 版与 scp → SDK 模式与标定核对 → 只上腿 → 接真臂 → 接 VR（按键分工/复位语义）→ 手感与工作空间 → 安全回滚 → 排障 → 速查），并从 `docs/README_zh.md`、`sim2real_checklist_zh.md`、`COMMANDS_SIM2REAL_zh.md` 三处挂索引 | 文档 | 同上 |
+| 2026-10-10 | **DEF-043：真机离线依赖**——VR 链路不再依赖 scipy（新增纯 numpy 的 `xlevr/_rotation_compat.py`，两处导入改成 scipy 优先 + 兼容实现兜底）；`requirements_teleop.txt` 标注 scipy 可选、yaml/websockets 必需；`DEPLOY_REAL_VR_zh.md` 新增 §1.5 离线装包（跨平台 wheel 下载参数 / `pip3 --no-index` / 无 pip 时解压 wheel + PYTHONPATH） | 与真 scipy 对照 2000 组随机旋转 **误差 ≤1e-14**；屏蔽 scipy 后 `vr_teleop_node.py` 正常启动（8443/8442 都起） | 同上 |
+| 2026-10-12 | **新增 `scripts/sync_to_robot.sh`（真机增量同步）**：rsync 优先（第二次起只传改动）、默认排除**仿真专用 mesh（47 MB / 2202 个 STL）**、开发机专用 `onnxruntime/x86`（62 MB）、`gamepad/example`（3.9 MB）、`__pycache__`；无 rsync 时退化为 `tar+ssh` 并**远端自检文件数**；`--with-meshes/--full/--dry-run/--delete/--build` + `ROBOT=`/`DEST=` | 实测：**4539 → 2038 个文件、215 MB → 104 MB、STL 0 个**（rsync 与 tar 两条路径都验过）；`DEPLOY_REAL_VR_zh.md` §1 改用该脚本 | 同上 |
+| 2026-10-12 | **离线依赖包改放在仓库 `tmp/wheels/`（`.gitignore` 已忽略 `tmp/`，重启不丢）**：`PyYAML-6.0.3` / `websockets-13.1`（cp38+aarch64）+ 新增 `pylibs_yaml_websockets_cp38.tar.gz`（两个包的纯 Python 源码，真机没 pip 时解压挂 `PYTHONPATH` 即可）；确认真机 numpy 1.17.4 够用、**无需传 numpy**；`DEPLOY_REAL_VR_zh.md` §1.5 更新为两条安装路径 | 方式 B（vendored + 屏蔽 scipy）实测能起 `vr_teleop_node.py`（8443/8442 均监听） | 同上 |

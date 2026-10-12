@@ -124,7 +124,7 @@ python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # ② 站立 → 进 
 python3 tests/sim2sim_smoke.py --mode walk --duration 25   # ③ 进 RL 后按 w 前进（判速度）
 python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # ④ 额外起 arm_controller（判臂位姿/力矩）
 python3 tests/sim2sim_smoke.py --mode arm_move --duration 25  # ⑤ 按住 numpad 动臂（判臂链路）
-python3 tests/sim2sim_smoke.py --mode push --duration 25   # ⑥ 800 N 侧推（判安全接管触发）
+python3 tests/sim2sim_smoke.py --mode push --duration 25   # ⑥ 1500 N 侧推（判安全接管触发）
 python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失败率（判 <= 1/3）
 # PASS/FAIL + 高度/倾角数字；遥测 CSV 落在 /tmp/m20_sim2sim.telemetry.csv
 
@@ -161,12 +161,14 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | 开关 | 作用 | 默认 | 归属 |
 |---|---|---|---|
 | `M20_USE_VIEWER` | 是否开 MuJoCo 窗口 | `1` | 仿真 |
+| `M20_SIM_RENDER_INTERVAL` | 可视化渲染间隔（控制 tick）：越大帧率越低、仿真越"跟得住"墙钟 | `50`（20 fps） | 仿真 |
+| `M20_SIM_MAX_CATCHUP` | 单次循环最多补多少 1 ms 控制 tick（落后时追帧上限） | `20` | 仿真 |
 | `M20_SIM_TELEMETRY` / `M20_SIM_TELEMETRY_PERIOD` | 遥测 CSV 路径 / 采样周期（tick） | 关 / `5`（=200 Hz） | 仿真 |
 | `M20_JVEL_DEBUG` / `M20_JVEL_PERIOD` | 打印腿/轮关节速度（1 Hz） | `1` / `50` tick | 仿真+部署 |
 | `M20_PIPER_DEBUG` | 把前 300 个 policy tick 的 obs/action dump 到 `policy_debug.txt` | 关 | 策略 |
 | `<del>M20_LAST_ACTION_MODE / M20_IK_FEEDBACK / M20_FREEZE_* / M20_ARM_DEFAULT_TRAINED / M20_ZERO_CMD_WHEEL_BRAKE</del>` | 旧 checkpoint 期的诊断开关（16 维动作、无 `ee_ik`）——**已随旧策略一起删除** | — | 策略（历史） |
 | `M20_EE_GOAL_BODY_FRAME` | `ee_goal` 用机体坐标系（`1`）还是臂基座坐标系（`0`） | `1` | 机械臂 |
-| `M20_POLICY_DIR` | 策略目录（含 `policy.onnx` + `policy_layout.json`） | `policy/m20_piper_history_20260920` | 策略 |
+| `M20_POLICY_DIR` | 策略目录（含 `policy.onnx` + `policy_layout.json`）。⚠️ 按**进程 cwd** 解析，写相对路径请写成 `src/M20_sdk_deploy/policy/<目录>` 或绝对路径 | `src/M20_sdk_deploy/policy/m20_piper_flat_20260930`（代码默认按 `__FILE__` 解析） | 策略 |
 | `M20_POLICY_ONNX` / `M20_POLICY_LAYOUT` | 单独覆盖 onnx / layout 路径 | 取自 `M20_POLICY_DIR` | 策略 |
 | `M20_ACTION_CLIP` | 动作安全限幅（训练 `clip_actions` = 100） | `100` | 策略 |
 | `M20_SIM_NO_ARM_DATA` | 仿真不发 `/ARM_JOINTS_DATA`（模拟"臂没装"） | `0` | 仿真 |
@@ -174,11 +176,16 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | `M20_ARM_TRANSPORT` | `mixed` 配置用真臂（`real`）还是假 CAN 驱动（默认 `sim`） | `sim` | 机械臂 |
 | `M20_TILT_TAKEOVER` | 安全接管的倾角阈值 [rad]（训练终止阈值；`<=0` 关闭） | `0.8` | 安全 |
 | `M20_LEG_FOLD_TAKEOVER` | 安全接管的"腿折叠"阈值 [rad]（`|q-q_default|`；`<=0` 关闭） | `1.2` | 安全 |
+| `M20_VR_MAX_VX` / `_VY` / `_WZ` | VR 通道的速度限幅 [m/s, m/s, rad/s]（VR 是连续量，必须夹） | `1.0` / `0.5` / `0.7` | 遥操作 |
 | `M20_SIM_PUSH_FORCE` / `_AT` / `_DURATION` | 仿真侧扰动注入（`xfrc_applied` 作用在 `base_link`） | `0`（关）/ `12 s` / `0.3 s` | 仿真 |
 | `M20_ARM_TRAINED_DEFAULT` | 仿真里臂初始位姿用训练资产的默认角 | 关 | 仿真 |
 | `M20_ARM_ROT_LOCAL_FRAME` / `M20_ARM_ROLL_SIGN` | 遥操作旋转合成方式（A/B 用） | 与训练一致 | 机械臂 |
 | `M20_EE_MAX_LIN_SPEED` / `M20_EE_MAX_ANG_SPEED` | 键盘积分路径的 EE 限速 | `0.35 m/s` / `0.8 rad/s` | 机械臂 |
-| `M20_VR_MAX_LIN_SPEED` / `M20_VR_MAX_ANG_SPEED` | VR 绝对偏移路径的 **目标** 限速 | `2.0 m/s` / `5.0 rad/s` | 机械臂 |
+| `M20_VR_MAX_LIN_SPEED` / `M20_VR_MAX_ANG_SPEED` | VR 绝对偏移路径的 **目标** 限速（2026-10-10 按操作员手感下调） | `0.4 m/s` / `1.0 rad/s`（原 2.0 / 5.0） | 机械臂 |
+| `M20_GRIPPER_SLEW` | 夹爪**目标**限速 [stroke/s]；0=不限速（仿真里 ~10 ms 到位，看着"瞬间开合"） | `0`（建议 `0.15~0.2`） | 机械臂 |
+| `M20_ARM_MAX_JOINT_VEL` | 关节**指令**限速 [rad/s]；0=不限速。设 3.0 与真机驱动器一致 | `0`（建议 `3.0`） | 机械臂 |
+| `M20_VR_*_SENS`（VX/VY/WZ/HEIGHT/PITCH/ROLL/ARM_POS/ARM_ROT） | VR 各通道**灵敏度**缩放（`vr_teleop_device.py`，2026-10-10 下调臂两项与前向油门） | `2.0/1.0/1.0/0.5/0.35/0.25` + `0.5/0.5` | 遥操作 |
+| `M20_VR_RESET_KEEPS_ACTIVE` | 左 X/Y 复位后是否**保持 VR 激活**（1 = 保持，可继续操控；0 = 训练侧老语义，需再按 B） | `1` | 遥操作 |
 | `M20_ARM_DEBUG` / `M20_ARM_DEBUG_PERIOD` | 打印 IK 残差（目标 vs FK），用于 P1-4 精度验收 | 关 / `50` tick | 机械臂 |
 | `M20_SIM_WHEEL_STEP_RAD_S` / `_AT` | 仿真侧轮子速度阶跃（P1-2 验收） | `0`（关）/ `5 s` | 仿真 |
 

@@ -22,6 +22,608 @@
 | 2026-09-22 | 新增 DEF-024（真机启动自检无限等待 → 卡死在 `joint data update is not finished`）+ DEF-025（CMake 缓存 SIM2SIM） | `fix/real-startup-selfcheck` |
 | 2026-09-22 | 新增 DEF-026（进 RL 时抢 `/ARM_JOINTS_CMD`，把 IK 控制的臂拽一下）；新增『只调臂』（不开策略）配置与用例 | `feat/arm-only` |
 | 2026-09-29 | 新增 DEF-028（`arm_teleop_node` Ctrl+C 关不掉）；新增两份命令速查（sim2sim / sim2real） | `fix/arm-teleop-exit` |
+| 2026-10-09 | 新增 DEF-029（臂 PD 阻尼 20→8、臂速度上限 3 rad/s）、DEF-030（夹爪 PD 4000/200→286/5）；DEF-031（默认策略切到多地形 run）；DEF-032（核对项：IK clamp / EE 复位锚定 部署侧已满足） | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | 容器实测（`tests/run_all.sh`）后新增 DEF-033（`arm` 档判据与 DEF-018 不自洽，未改）；各档实测数字见 `docs/deploy_code_delta_2026-10-09_zh.md` §7 | 同上 |
+| 2026-10-09 | 新增 DEF-034（宿主机电池降频 ⇒ 实时因子 0.67 ⇒ 进 RL 乱动/摔倒）；仿真新增 `[SIM-RT]` 实时因子自检与 `M20_SIM_RENDER_INTERVAL` 开关 | `sync/2026-10-09-sim-delta` |
+| 2026-10-09 | 新增 DEF-035（默认策略切到平地 `cloud_cap12_20k`；`--mode push` 推力 800→1500 N） | 同上 |
+| 2026-10-09 | 夜测后新增 DEF-036（vy/wz 方向性不对称，未修）、DEF-037（`liedown` 限位夹取空操作，未修）、DEF-038（`M20_POLICY_DIR` 相对路径口径，已缓解） | `sync/2026-10-09-sim-delta` |
+| 2026-10-12 | 新增 DEF-039（`ee_goal` 四元数用了与训练**相反的符号分支** ⇒ 零速度命令下 0.045 m/s 持续前向漂移；改为训练/链式 FK 分支 + 逐帧连续，已修并端到端实测）、DEF-040（`no_arm`/`arm_mixed` 断言读的是 append 的 `policy_debug.txt` 的**第一块** ⇒ 读到历史 run，未修） | 工作区（建议 `fix/ee-goal-quat-sign`） |
+
+---
+
+### DEF-039 `2026-10-12` `ee_goal` 四元数用了与训练相反的符号分支 ⇒ 零速度命令下 ~0.045 m/s 持续前向漂移
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-12` |
+| 类型 | `缺陷`（接口约定：观测的**原始分量**） |
+| 状态 | `已修`（sim2sim 端到端实测；真机侧同一函数已同步，待上机复核） |
+| 影响面 | `二者` |
+| 关联 | 工作区（建议分支 `fix/ee-goal-quat-sign`）；`rl_control_state.hpp::ee_goal_`、`arm_stub_node.py::DEFAULT_EE_GOAL_BODY`、`arm_real_adapter.py`、`arm_udp_bridge.py`、`arm_controller.py::align_quat_sign`、`check_policy_interface.py::EE_GOAL_DEFAULT`、`tests/sim2sim_smoke.py`、`tests/arm_real_bridge_check.py`；训练仓库 `docs/deploy_sim2sim_sim2real_zh.md` §6 与 `docs/review/DEFECT_LOG_zh.md`（known_issues ⑫ 的实测值） |
+
+**1. 现象（怎么发现的）**
+
+* 触发：`rl_deploy` 一进 RL（键盘 `z` → `c`）就开始缓慢**单向前进**（用户报的"静止命令下的偏移"）；不摔、不抖，`[SIM-RT]` 实时因子全程 1.000。
+* 实测 1（`tests/sim2sim_smoke.py --mode rl --duration 45`，平地模型 `policy/m20_piper_flat_20260930`）：Δx **+1.69 m**、Δy −0.49 m、Δyaw **−24.3°**；稳态轮速指令 fl −2.74 / fr +0.22 / hl −1.80 / hr +2.11 rad/s（左右反号 ⇒ 一边前进一边左转）。
+* 实测 2（下面新写的零命令用例，同一套遥测口径，30 s × 6 次）：Δx **+1.339 m**、Δyaw **−20.8°**、vx 0.0446 m/s、wz −0.69°/s；6/6 复现，逐次数值几乎完全一致 ⇒ 是**确定性偏置**，不是随机漂移。
+
+**2. 根因**
+
+* `ee_goal`（观测 73..79）的四元数取的是"旋转矩阵→四元数"那一支（`mat_to_quat`，大致 w≥0）：默认站姿 = **(+0.7373, 0, +0.6756, 0)**。
+* 策略训练时吃的是 PhysX `subtract_frame_transforms(root_quat, ee_quat)` 的**链式合成**结果，同一姿态 = **(−0.7373, 0, −0.6756, 0)**（训练仓库 known_issues ⑫ 的实测：`pose_command_b[0] = (0.3492, 0, 0.4327, −0.7373, …)`）。
+* 本仓库用 MuJoCo 本身复算：`mju_mulQuat(conj(xquat[base_link]), xquat[gripper_base])` = **(−0.7373, 0, −0.6756, 0)**，与 PhysX 一致；只有"矩阵→四元数"给正号。也就是说 `scripts/check_mjcf_contract.py`（`EXPECT_GRIPPER_BASE_QUAT_WXYZ`）一直在断言负号，而**运行期代码喂的是正号**——内部自相矛盾。
+* 反号不是"同一个旋转"意义上的无害差别：策略吃的是 4 个原始分量，整体取反 = 4 维分布外输入。标称观测下只翻这个符号，策略输出最大变化 **0.39**（轮速 −1.66 → −2.43 rad/s）⇒ 一个恒定的轮速偏置。
+* 排除实验（都不是原因）：① 纯 `[MJCF + ONNX + 契约观测]` 探针（去掉 ROS/线程/软启动/实时因子）能复现同一漂移，且用部署自己记录的进 RL 姿态能对到 Δx +1.73 m/40 s、末轮速 −2.735；② 物理步长 0.2 ms 与 1 ms 结果相同（不是数值伪影）；③ 地面摩擦 0.4 / 1.0 / 1.5 只差几个百分点；④ 5 kHz 采样的机身陀螺最大 0.11~0.31 rad/s（无高频污染）。
+
+**3. 修正**
+
+* 新增 `align_quat_sign(q, ref)`（`arm_controller.py`）：把 q 翻到与 ref 同一符号分支；缺省 ref = `EE_DEFAULT_QUAT_TRAIN = (−0.7373, 0, −0.6756, 0)`。发布时传"上一帧发布值"⇒ **逐帧连续**（姿态过 180° 时符号会跳，只在第一帧对齐不够）。
+* 常量改成训练分支：`rl_control_state.hpp` 的默认 `ee_goal_`、`arm_stub_node.py`、`arm_real_adapter.py`、`arm_udp_bridge.py`、`check_policy_interface.py::EE_GOAL_DEFAULT`（L1 自检）、`tests/sim2sim_smoke.py` 的 no_arm 期望值、`tests/arm_real_bridge_check.py`。
+* 发布路径全部过 `align_quat_sign`：`arm_controller._tick` 的状态发布、`arm_real_adapter._publish_ee_state`、`arm_udp_bridge` 的 Rx 节点。四条路径的 IK/运动学逻辑不受影响（四元数只用于观测）。
+* 备选与否掉：只把常量取反在"臂恰好停在默认姿态"时也对，但臂一动（过 180°）符号分支就不连续 ⇒ 否掉。
+
+**4. 结果（验收）**
+
+* 单变量 A/B（30 s、n=6、同一 runner；唯一差别 = 喂 +0.7373 还是 −0.7373）：
+
+| | Δx | Δy | Δyaw | vx | wz | 有效 |
+|---|---|---|---|---|---|---|
+| 改动前 | **+1.339 m** | −0.342 m | **−20.8°** | 0.0446 m/s | −0.69 °/s | 6/6 |
+| 改动后 | **+0.206 m** | +0.011 m | **−0.81°** | 0.0069 m/s | −0.027 °/s | 5/6 |
+
+  ⇒ 前向漂移降到 **1/6.5**、偏航漂移降到 **1/26**（每次 run 约 30 s 仿真、实时因子 1.000）。
+* 回归：`check_policy_interface.py` **L1 PASS**；`--mode no_arm` **PASS**（实测第一拍 `ee_goal = (0.3492, 0, 0.4327, −0.7373, 0, −0.6756, 0)`）；`--mode rl` **PASS**；`--mode arm` **PASS**（臂偏差 0.0207 rad / 6.6 N·m）。
+* **副作用专项排除（入口瞬态 DEF-018）**：`tests/sim2sim_smoke.py --mode rl --repeat 12` 在**改动后**是 4/12（33%），在**改动前**（外部按 +0.7373 发布 `/ARM_TELEOP_STATE`）同样是 **4/12（33%）** ⇒ 今天的入口失败率是环境/当天状态（DEF-034 同源）不是本次改动引入的；本改动方向与 2026-10-09 记录的 `rl` 0/6、DEF-018 历史区间 0~33% 一致。
+* 遗留：① 进 RL 的 1~4 s 入口瞬态（**DEF-018**）仍在（当天 33%，与本改动无关）。② 零速仍有 ~0.007 m/s 残留（训练侧 (0,0,0) 档 `err_vel_xy` 本来就是 0.10 m/s 量级 ⇒ 属策略侧，不是本缺陷）。③ 真机 `arm_real_adapter` 已同步，待上机复核。④ 本次用来量漂移的探针在 `.tmp_models/drift/`（gitignore），`policy_debug.txt` 已改名为 `policy_debug.txt.pre_2026-10-12.bak`（见 DEF-040）。
+
+---
+
+### DEF-040 `2026-10-12` `no_arm`/`arm_mixed` 断言读的是 append 的 `policy_debug.txt` 的**第一块** ⇒ 读到历史 run（未修）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-12` |
+| 类型 | `缺陷`（测试口径） |
+| 状态 | `未修`（一行可修，见下） |
+| 影响面 | `sim2sim`（只影响测试结论） |
+| 关联 | `tests/sim2sim_smoke.py::main`（`if args.mode in ("arm_mixed","no_arm")` 段）、`M20_PIPER_DEBUG` 的 dump（`m20_piper_policy_runner.hpp` 用 `std::ios::app` 打开 `policy_debug.txt`） |
+
+**1. 现象**：改完 DEF-039 后跑 `--mode no_arm`，断言报 `ee_goal 不是默认位姿（… 0.7373 …）`，但 `arm_stub_node` 的日志明明白白打的是 `-0.7373`；`policy_debug.txt` 当时已有 **82 个** `tick 0` 块（该文件只 append，从不截断），而解析代码取的是**第一个** `tick ` 块 ⇒ 断言读的是 2026-10-09 那次历史 run 的观测（`arm_obs_last` 同理，取的是整个文件的最后一块，可能来自另一次 run）。
+
+**2. 修法（建议）**：跑之前把 `policy_debug.txt` 截断/改名，或把 dump 写到每次 run 自己的路径（`M20_PIPER_DEBUG=<path>`），解析时只读本次 run 的那一份。
+
+---
+
+### DEF-029 `2026-10-09` 臂 PD 阻尼过大（20→8）+ 臂速度上限对齐到 3 rad/s
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 缺陷（增益）/ 特性（新增约束） |
+| 状态 | `已修` |
+| 影响面 | 二者 |
+| 关联 | 训练侧 DEF-064 / DEF-065；`arm_controller.py`、`mujoco_simulation_ros2.py`、`piper_arm_interface.hpp`、`check_mjcf_contract.py` |
+
+**1. 现象（训练侧实测）**：臂 `|qd|` 到 5 rad/s 时阻尼力矩 `20×5 = 100 N·m`
+正好吃满限幅 ⇒ 关节长期饱和（逐档 `|tau|` 均 53.4 N·m、饱和 23.5%、原地抖）；
+`|qd|` p99 恒为 **5.0**（贴 USD 的 `maxJointVelocity`），超速时间占比 33%。
+
+**2. 根因**：① 阻尼项相对刚度太大（`20` 在 5 rad/s 就打满 100 N·m）；
+② actuator cfg 里的 `velocity_limit=3.0` 在 `DelayedPDActuator` 里只参与力矩裁剪、
+**不限速**，真正生效的是 USD 的 5 rad/s。
+
+**3. 修正**：
+* **臂 PD 300/20 → 300/8**（刚度不动）。训练实测：22.5 N·m、饱和 0%，
+  跟踪还更好（4.14 → 2.19 cm）；只降刚度是错的（150/8 跟踪退到 2.89 cm）。
+* **臂关节 1~6 速度上限按 3 rad/s**：训练侧启动事件 `align_joint_velocity_limits`
+  把 PhysX DOF 上限从 USD 的 5 改成 3 ⇒ `|qd|` p99 3.00、超速 5~18%。
+  部署侧在 `arm_controller.py` 记下 `ARM_VEL_LIMIT = 3.0`，**真机由
+  agx_arm_ctrl / 驱动器侧限制，别放宽到 5**。
+* 三处臂增益常量同步：`arm_controller.py`（`ARM_KP/KD`）、
+  `mujoco_simulation_ros2.py`（`ARM_DEFAULT_KP/KD`）、
+  `piper_arm_interface.hpp`（`ResetToDefault`），以及 `check_mjcf_contract.py`
+  的 `EXPECT_ACTUATOR`。
+
+**4. 结果（验收）**：`check_mjcf_contract.py` 的四种执行器增益断言改成 300/8、
+286/5（仿真侧 MuJoCo 显式 PD 用同一组常量）；真机速度上限按第 §3 表设 3 rad/s。
+
+---
+
+### DEF-030 `2026-10-09` 夹爪 PD 4000/200 → 286/5（位置环原来长期饱和）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 缺陷（增益） |
+| 状态 | `已修` |
+| 影响面 | 二者 |
+| 关联 | 训练侧 DEF-058；`arm_controller.py`、`mujoco_simulation_ros2.py`、`piper_arm_interface.hpp` |
+
+**1. 现象（训练侧方波阶跃实测）**：夹爪 `4000/200` 下位置环**实际失效**——
+饱和 88~100%、稳态误差最大 0.0314 rad（行程的 90%）、多数段到不了目标。
+
+**2. 根因**：刚度/阻尼相对夹爪 `armature=0.01` 过大，`ctrlrange` 只有 10 N·m
+⇒ 每次都给到限幅、长期饱和。
+
+**3. 修正**：**286/5**（= 按"满行程 0.035 rad 误差刚好给到 10 N·m 限幅"标定），
+阻尼取 ζ≈1.5；开合指令本来就已是 `±0.035`（不超行程），无需改。
+
+**4. 结果（验收）**：训练实测饱和 **0%**、上升时间 40~80 ms、稳态误差 ≤0.0005、
+开到底误差 0.005 → 0.0001；夹持力上限不变（仍能顶到 10 N·m）。
+
+---
+
+### DEF-031 `2026-10-09` 部署默认策略切到多地形 run `cloud_slowvx20k`（接口不变，仅换权重）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 特性（换策略） |
+| 状态 | `已修` |
+| 影响面 | 策略侧 |
+| 关联 | `policy/m20_piper_rough_20261002/`、`rl_control_state.hpp`、`scripts/check_policy_interface.py`、`scripts/preflight_real_deploy.py` |
+
+**1. 现象**：训练侧新 run `2026-10-02_00-44-42_cloud_slowvx20k`（多地形）导出
+了一份新 `policy.onnx`；旧默认目录是平地 run `2026-09-20_00-50-31`。
+
+**2. 根因**：非缺陷——训练侧把默认部署模型换成了多地形 `cloud_slowvx20k`
+（见训练仓库 `docs/deploy_code_delta_2026-10-09_zh.md` §5.4）。
+
+**3. 修正**：
+* 新策略目录放在 `policy/m20_piper_rough_20261002/`（`policy.onnx` + `policy.pt` +
+  `policy_layout.json`），并补上部署侧必需的 `joint_order_native` /
+  `joint_order_action`（与旧目录逐项相同——接口一个字没变：obs 83 / history 10×70 /
+  action 16 / 增益与缩放全同）。
+* 默认目录改成新 run：`rl_control_state.hpp`、`scripts/check_policy_interface.py`、
+  `scripts/preflight_real_deploy.py`。
+* 旧目录 `policy/m20_piper_history_20260920/` **保留**做 A/B 与平地回滚。
+
+**4. 结果（验收）**：把两份 `policy.onnx` 逐项对照（用本仓库
+`third_party/onnxruntime` 编的最小校验器，复刻 `check_policy_interface.py` 的
+形状/名字/标称输出三项）：两者输入输出名 `policy_obs(83)/history_flat(700)` →
+`action(16)` 一致；标称观测下输出都有限、动作幅值上限分别 0.958 / 1.459（< 10）；
+两者输出不同（确认是不同权重）。ONNX↔TorchScript 数值对照需容器内的
+onnxruntime，容器未起，记为待补跑（`bash tests/run_all.sh` 的 L1）。
+
+---
+
+### DEF-032 `2026-10-09` 核对：IK 输出夹关节限位 / EE 复位锚定 / 碰撞盒（部署侧结论）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 核对（无需改 / 不适用） |
+| 状态 | `已核对` |
+| 影响面 | 臂侧 |
+| 关联 | 训练侧 DEF-054 / DEF-034 / DEF-066 |
+
+**1. IK 输出必须夹关节限位（训练侧 DEF-054 新增保护）** —— **部署侧已满足**：
+`arm_controller.ik_step()` 每步返回 `np.clip(q + dq, ARM_JOINT_LIMITS)`，
+限位表与 URDF/MJCF 一致；不需要额外改动。
+
+**2. EE 命令复位锚定（训练侧 known_issues ⑫ / DEF-034）** —— **部署侧天然满足**：
+策略观测里的 `ee_goal` 由 `arm_controller`（IK 目标）或 `arm_real_adapter`（FK
+当前位姿）持续发布，复位键 `ee_reset` 取的也是当前 FK，不用常量 0。
+
+**3. EE 目标碰撞盒改成机体局部系（训练侧 known_issues ⑭ / DEF-066）** ——
+**部署侧不适用**：本仓库没有"EE 目标不得穿身体"的采样检查（目标来自遥操作，
+不是采样器），无对应实现。
+
+---
+
+### DEF-033 `2026-10-09` `run_all.sh` 把 `arm` 档当"0 失败"，与 DEF-018 不自洽（**未改，待确认**）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 缺陷（测试口径） |
+| 状态 | **未修**（建议改法已给，等确认） |
+| 影响面 | 测试 |
+| 关联 | `tests/run_all.sh`、`tests/sim2sim_smoke.py`、`DEF-018`、TODO P2-7 |
+
+**1. 现象**：2026-10-09 在容器 `m20_piper_ros` 跑完整 `tests/run_all.sh`，
+除 `arm` 外各档全绿，但 `arm` 档偶发触发倾角接管导致整轮报红。
+
+**2. 根因**：
+* `arm` 档同样会 `z`→`c` 进 RL，因此同样吃 **DEF-018** 的入口瞬态
+  （策略在进 RL 后几秒偶发边缘发散）；
+* 但 `tests/run_all.sh` 只对 `rl / walk / arm_move / no_arm / arm_mixed` 用 `--repeat`
+  + 失败率判据，`arm` 走"单跑、要求 0 失败"的分支；`sim2sim_smoke.py` 内部的
+  容忍列表是 `rl / walk / arm_move / no_arm`，也不含 `arm`。
+
+**3. 证据（为什么不是本次改动引入）**：
+* `arm` 档各跑 12 次：新多地形策略 **9/12 通过（失败 25%）**、旧平地策略
+  **8/12 通过（失败 33%）** ⇒ 两者同量级；
+* 失败现场遥测：臂关节力矩全程 ≤5 N·m（倒地瞬间 21.9，限幅 100），倒下由**轮子/底盘**
+  发散引起（零速度命令下 `wcmd` 涨到 47.9 rad/s、`tilt` 1°→55°）⇒ 与臂增益无关。
+
+**4. 建议改法（一行，未应用）**：`run_all.sh` 的 `if` 条件加 `arm`；
+`sim2sim_smoke.py` 的 `limit` 元组加 `"arm"`，即用同样的"失败率 ≤ 1/2"判据。
+见 TODO P2-7。
+
+---
+
+### DEF-034 `2026-10-09` 宿主机降频 ⇒ 仿真跑不到实时 ⇒ 进 RL 必"乱动/摔倒"（**环境，非代码**）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 环境/性能（不是缺陷，但现象很像缺陷） |
+| 状态 | `已定位`（对策：插电 / 关窗口 / 看 `[SIM-RT]`） |
+| 影响面 | 仿真 |
+| 关联 | `mujoco_simulation_ros2.py`（`[SIM-RT]` 打印 + `M20_SIM_RENDER_INTERVAL`）、`state_machine_base.h` 的 1 kHz timerfd、DEF-018 |
+
+**1. 现象**：手工按 `z`（站立）→ `c`（进 RL）后，底盘在 t≈7~9 s 开始"乱动"并翻倒，
+`[TAKEOVER!] tilt/leg fold` 接管；但同样的用例用 `tests/sim2sim_smoke.py` 跑却偶尔全过。
+
+**2. 根因（实测数据）**：宿主笔记本在**电池供电**上：
+
+| 项 | 值 |
+|---|---|
+| 电源 | `BAT0 discharging 26%`（≈36 min）、`ADP0 online=0` |
+| CPU 调频 | `governor=powersave`、`platform_profile=low-power`、`EPP=power` |
+| 实际频率 | 全核 **0.8~1.0 GHz**（i9-12900H 上限 4.9 GHz） |
+| 造成的结果 | MuJoCo 仿真实时因子从 **1.00 掉到 0.63~0.82** |
+
+而 `rl_deploy` 的策略是**按墙钟 50 Hz** 跑的（`state_machine_base.h` 用 1 kHz timerfd，
+每 4 tick 一个策略周期），设计上要求"仿真 ≈ 实时"（仿真主循环里那段注释就是在说这件事）。
+仿真落后墙钟 ⇒ 同一个策略动作序列在**仿真时间**里被压缩成 ~1.5 倍速 ⇒ 训练分布外 ⇒ 乱动/翻倒。
+
+**3. 对照实验（同一份代码、同一条命令）**：
+
+| 条件 | 实时因子 | `--mode rl` 结果 |
+|---|---|---|
+| 插电时（早先） | **1.000** | 通过（0/6 失败） |
+| 电池 + 降频（现在） | **0.67~0.70** | **3/3 失败**（t≈9 s 触发摔倒判据） |
+
+**4. 对策 / 新增工具**：
+* 插上电源再跑（最省事）；需要立刻用电池跑就提频：
+  `sudo cpupower frequency-set -g performance` 或
+  `echo performance | sudo tee /sys/firmware/acpi/platform_profile`。
+* 仿真节点新增 **1 Hz 实时因子自检**：`[SIM-RT] 仿真 x.xxs / 墙钟 y.yys -> 实时因子 0.xx`，
+  低于 0.95 会附 ` <== 仿真落后墙钟，策略速率会被压缩（进 RL 易乱动）`。
+  **看到这条持续 <0.95，就别指望窗口里的策略表现**。
+* 渲染间隔改成可调：`M20_SIM_RENDER_INTERVAL`（默认 `50`=20 fps，调大=更省 CPU）。
+  实测把 50 调到 200 只能把因子从 0.62 抬到 0.69 ⇒ **主因是整机降频，不是渲染**。
+
+---
+
+### DEF-035 `2026-10-09` 默认策略切到平地模型 `cloud_cap12_20k` + `push` 用例推力重新标定
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 特性（换策略）+ 测试参数标定 |
+| 状态 | `已修` |
+| 影响面 | 策略侧 / 测试 |
+| 关联 | `policy/m20_piper_flat_20260930/`、`rl_control_state.hpp`、`scripts/{check_policy_interface,preflight_real_deploy}.py`、`tests/sim2sim_smoke.py` |
+
+**1. 现象**：训练侧 `deploy_code_delta_2026-10-09_zh.md` §5.4 指定"平地用
+`2026-09-30_19-36-00_cloud_cap12_20k`"，该 run 的导出放进
+`policy/m20_piper_flat_20260930/` 后，`check_policy_interface.py` 报
+`[FAIL] layout 里没有 joint_order_native 字段`（导出的 layout 不含部署侧两个关节序字段）。
+
+**2. 根因**：非缺陷 —— 导出脚本只给"接口契约"，`joint_order_native` /
+`joint_order_action` 按约定由部署侧补（见 `policy/README.md` 换策略第 3 步）。
+
+**3. 修正**：
+* 给 `m20_piper_flat_20260930/policy_layout.json` 补齐两个关节序字段（与另两个目录逐项相同）。
+* 默认策略目录切到它：`rl_control_state.hpp`、`check_policy_interface.py`、
+  `preflight_real_deploy.py`（多地形改
+  `M20_POLICY_DIR=/root/m20_piper_ws/src/M20_sdk_deploy/policy/m20_piper_rough_20261002`；
+  ⚠️ 这个环境变量按进程 cwd 解析，别写 `policy/...`）。
+* **`--mode push` 默认推力 800 → 1500 N**（见下）。
+
+**4. 结果（容器实测，宿主机已插电、实时因子 1.000）**：
+
+| 项 | 结果 |
+|---|---|
+| L1 | ✅ PASS（`\|a\|max` 1.093；ONNX↔TorchScript **1.36e-06**） |
+| L3' `check_mjcf_contract` | ✅ 10 PASS / 0 FAIL |
+| L3 `hold` | ✅ height 0.497 m、tilt 1.5° |
+| L3 `rl`（repeat 6） | ✅ **0/6**（0%） |
+| L3 `walk`（repeat 6） | ✅ 2/6（33%，容差 ≤50%；命令 +0.7 m/s） |
+| L3 `arm` | ✅ 臂偏差 0.0207 rad、力矩 6.6 N·m |
+| L3 `arm_move`（repeat 6） | ✅ **0/6**，末端 ee_x 0.3492→0.6002 m（**+0.25 m**） |
+| L3 `wheel_step` / `no_arm` / `arm_only` / `arm_mixed` | ✅ 四轮 +5.00 rad/s；无臂口径一致；IK 残差 0.12 mm；观测臂项变化 1.03 rad |
+| L3 `push`（800 N） | ⚠️ **没触发接管**——机器人**扛住了**（高度 0.511→0.441 m、倾角 3.9°、约 1.5 s 自恢复） |
+| L3 `push`（1500 N / 2500 N） | ✅ 均触发 `[TAKEOVER!] leg fold` → `joint_damping`；1500 N repeat 3 = **3/3** |
+
+> `push` 的判据是"**必须**被打倒并触发接管"，属于"用足够大的力验证安全通路"。
+> 平地模型比 2026-09 的模型抗推得多，800 N 已打不倒 ⇒ 用例误判成 FAIL，
+> 所以把默认值标定到 1500 N（并在文件头/文档里写明原因）。
+
+**5. 顺带**：插电后实时因子回到 **1.000**（电池时 0.67），印证 DEF-034。
+
+---
+
+### DEF-043 `2026-10-10` 真机（上位机）不能联网 ⇒ VR 节点起不来（scipy 缺失）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-10` |
+| 类型 | 缺陷（离线依赖） |
+| 状态 | `已修` |
+| 影响面 | 真机部署 / 遥操作 |
+| 关联 | `third_party/XLeVR/xlevr/_rotation_compat.py`（新增）、`vr_teleop_device.py`、`third_party/XLeVR/xlevr/inputs/vr_ws_server.py`、`requirements_teleop.txt`、`docs/DEPLOY_REAL_VR_zh.md` §1.5 |
+
+**1. 现象**：真机上位机上起 `vr_teleop_node.py` 直接报
+`ModuleNotFoundError: No module named 'scipy'`（`vr_teleop_device.py` 第 35 行的
+`from scipy.spatial.transform import Rotation as R`），而上位机**不能联网**、装不了包。
+
+**2. 根因**：VR 链路里 scipy 只被用来做**四元数/欧拉角换算**：
+`vr_teleop_device.py`（`from_quat` / `from_euler("x")` / `inv()` / `*` / `as_euler("XYZ")`）
+与 XLeVR 自带的 `xlevr/inputs/vr_ws_server.py`（`from_euler("xyz")` / `as_quat` /
+`inv` / `*` / `as_rotvec`）。为这点功能在离线机器上装 30 MB 级的 scipy（还要和
+numpy 大版本配套）不划算。
+
+**3. 修正**：
+* 新增 `third_party/XLeVR/xlevr/_rotation_compat.py`：**纯 numpy** 的
+  `scipy.spatial.transform.Rotation` 最小兼容子集（上面那些方法，语义与 scipy 对齐）；
+* 两个使用点都改成 `try: scipy … except ImportError: 用 _rotation_compat` ——
+  **有 scipy 的机器行为完全不变**，没有的也能跑；
+* `requirements_teleop.txt` 把 scipy 降级为可选；`yaml` / `websockets` 标为必需；
+* `docs/DEPLOY_REAL_VR_zh.md` 新增 §1.5「上位机 Python 依赖（离线）」：下载 wheel 的
+  跨平台参数（`--platform manylinux2014_aarch64 --python-version 38 --abi cp38`）、
+  `pip3 install --no-index --find-links`、以及**没有 pip 时直接解压 wheel + PYTHONPATH** 的兜底。
+
+**4. 验收**：
+
+| 项 | 结果 |
+|---|---|
+| 与真 scipy 数值对照 | 2000 组随机旋转，`as_quat`/`as_matrix`/`inv`/`*`/`as_rotvec`/`from_euler(xyz,XYZ,x)`/`as_euler(XYZ)` 最大绝对误差 **≤1.0e-14**（除 `as_quat` 完全相同） |
+| 屏蔽 scipy 后起 `vr_teleop_node.py` | ✅ 正常：打印 `HTTPS server on port 8443` / `VR WebSocket server on port 8442` / `VR teleop ready` / 灵敏度行 |
+| 还缺什么（实测） | `yaml`、`websockets` **必需**（屏蔽任一即 ImportError）；`scipy` 已非必需 |
+| 预备好的 wheel | `numpy-1.24.4` / `PyYAML-6.0.3` / `websockets-13.1`（cp38 + aarch64），在开发机 `/tmp/m20_wheels/` |
+
+---
+
+### DEF-042 `2026-10-10` 复位（VR 左 X/Y）后臂被旧目标拽走 + IK 节点可能因单拍异常退出
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-10` |
+| 类型 | 缺陷（复位语义 / 健壮性）+ 手感 |
+| 状态 | `已修` |
+| 影响面 | 遥操作 / 状态机 |
+| 关联 | `arm_teleop_node.py`、`arm_controller.py`、`arm_teleop_protocol.py`、`run_sim2sim.sh` |
+
+**1. 现象（操作员）**：① 复位后机械臂会自己"飞"一下（很明显的瞬态），末端目标**没有**
+回到默认位姿；② `arm_controller`（IK 那个终端）**有时候会掉**；③ 操作过程中仍有瞬态变化。
+
+**2. 根因**（三条独立的）：
+* **复位语义**：X/Y 复位后 VR 会被置为 inactive（设备的训练侧语义），`arm_teleop_node`
+  于是走**键盘增量**分支 —— 那条路不看 `vr_calibrate_pulse`；同时 `/reset_sim` 是异步的，
+  在复位真正落地前 `arm_controller` 还抱着**复位前的旧目标** ⇒ 它把刚被复位到默认位姿的臂
+  又拽走，等再"重新锚定"时采到的是**半路位姿**。实测臂停在 `j2=0.905` 这种既非默认
+  也非旧目标的位姿（与默认差 0.40 rad）。
+* **节点会掉**：`_tick`/订阅回调里任何未捕获异常都会从 `rclpy.spin()` 冒出来 ⇒ 进程带
+  一条 traceback 退出。最可能的是臂反馈出现 NaN/Inf 时 `np.linalg.solve` 抛 `LinAlgError`。
+* **另一个"掉"的来源（很容易误判）**：`run_sim2sim.sh` 的收工清理里有
+  `pkill -9 -f .../arm_controller.py` —— 按用法文档 `arm_controller` 是操作员**在另一个
+  终端自己起的**，于是在 T1 按 Ctrl+C 会把那个终端一起杀掉。
+
+**3. 修正**：
+* **复位改成确定性语义**：`arm_teleop_protocol` 新增 `flag=2`（`ARM_TELEOP_FLAG_RESET_DEFAULT`）
+  = "锚点取**默认关节姿态**的 FK 位姿、偏移按 0"；X/Y 复位时 `arm_teleop_node` 发一帧这种
+  命令（VR 在不在都发）⇒ 目标立刻回到默认末端位姿，**不再依赖时序**。
+  （`make_absolute_offset` 原来把 flag 归一化成 `0/1`，会把 `2.0` 压成 `1.0`，一并修掉。）
+* **IK 节点不许死**：① 反馈非有限值直接丢弃该帧；② IK 异常兜底（沿用上一拍指令）；
+  ③ 整个控制拍包 try/except（限频报错）。三层都不会让进程退出。
+* `run_sim2sim.sh` 收工只收**自己启动的**进程（`pkill` 只保留仿真节点；要恢复"全清"用
+  `M20_SIM2SIM_CLEANUP_ALL=1`）。
+* 手感：VR 死区从"硬阈值"改成**软死区**（跨阈值不再从 0 跳到 4 mm，消除台阶感）。
+
+**4. 验收（容器实测）**：
+
+| 项 | 结果 |
+|---|---|
+| 复位后臂的稳态 | `q=[-0.00, 0.496, -0.485, 0.004, 0.003, -0.004]` ⇒ 与默认位姿最大偏差 **0.015 rad（0.9°）**（改前 0.40 rad，且位姿是"半路"的） |
+| `arm_controller` 存活 | 复位前后都 alive ✓ |
+| 软死区 | `_apply_deadzone` 单测：0.004→0.000、0.005→0.001、0.02→0.016（连续，无跳变） |
+| 收工不再误杀 | 模拟"手起 arm_controller + T1 Ctrl+C"：arm_controller **仍在** ✓ |
+| 回归 | `arm_only` / `arm` / `arm_move` 全 OK（`arm_move` 失败率 0%，IK 残差 0.18 mm），`全部通过` |
+
+**5. 追加（操作员反馈"reset 没问题，但机械臂无法操控了"）**：复位后 VR 被置为
+inactive 是**训练侧原语义**（X/Y = 停），操作员于是发现"复位后手柄不再管用"。
+按操作员要求改成 **X/Y 复位后保持 VR 激活**：只把**设备的校准原点**重采一次
+（偏移从 0 重新开始），不发 `_calibrate_pulse`（arm_controller 的目标由上面那条
+flag=2 的"重置到默认末端位姿"负责，两条链路不互相覆盖）；
+`M20_VR_RESET_KEEPS_ACTIVE=0` 可回到老语义。
+三段时序实测（假 VR）：A 按 B 后 `dx=0.10` → 臂动（q₂=0.968）；X/Y → 臂回默认；
+**复位后不按 B**，手再动 10 cm → 臂又跟（q₂=0.966）✓。回归仍 `全部通过`。
+
+**6. 顺带清理**：`_apply_deadzone` 相关、`_reset_state`（只写不读的死状态）删除。
+
+---
+
+### DEF-041 `2026-10-10` `/VR_TELEOP` 上跑两个发布者 ⇒ 目标在两帧之间来回跳（"动作特别快/不跟手"）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-10` |
+| 类型 | 缺陷（工具/环境） |
+| 状态 | `已定位`（脚本可自动检出；不是代码 bug） |
+| 影响面 | 遥操作 |
+| 关联 | `scripts/check_vr_arm_chain.py`（新增"发布者数量"检查）、`COMMANDS_SIM2SIM_zh.md` §5 判据表 |
+
+**1. 现象**：机械臂"动作特别快、不像电机能执行"、"某个方向不跟手"、夹爪"瞬间开合"。
+
+**2. 根因（实测复现）**：`/VR_TELEOP` 上有**两个发布者**时，两路命令**交替到达**
+（各自 50 Hz，交错 100 Hz）。`arm_teleop_node` 每收到一帧就刷新绝对偏移，
+`arm_controller` 的目标因此在两帧之间来回跳 —— 实测目标在
+`x = 0.1075` 与 `0.2275`（正好差 12 cm）之间跳变 ⇒ 腕关节被反复砸到限位
+（joint4 −1.64 / 限位 ±1.745）、IK 残差 20°、位置还有 4~5 cm 的耦合漂移。
+**表现与操作员描述完全一致。**
+
+**3. 修正**：自检脚本新增"每个话题的发布者数量与名字"，>1 时直接给结论；
+`COMMANDS_SIM2SIM_zh.md` §5 的判据表补一行。常见原因：起了两个 `vr_teleop_node`
+（或两个 `arm_teleop_node`）、换台机器/终端时旧节点没退干净。
+
+**4. 顺带纠正一条我自己的误判**：上面这些"腕关节乱摆/IK 不收敛"是**脏数据**（双发布者）
+造成的。清成**唯一发布者**后重测（只给 `dx=+0.12` 恒定）：
+
+| 量 | 干净输入下的结果 |
+|---|---|
+| `ee_x` | **+0.1276 m**（命令 +0.12 ⇒ 1:1 跟手） |
+| `ee_y` / `ee_z` | −0.0001 / −0.017（几乎无耦合） |
+| 腕关节 Δ | q20 **−0.385 rad**（平滑，远未到限位） |
+| IK 残差 | **0.08 mm / 0.000°，2 次迭代收敛** |
+
+⇒ **臂侧（arm_controller + arm_teleop）在干净输入下是准的**；"不跟手"要先查发布者
+数量与 `/VR_TELEOP` 的实际数值，而不是怀疑 IK/限位。
+
+---
+
+### DEF-040 `2026-10-10` VR 动臂"太快"的成因与两个可调旋钮（灵敏度可环境变量覆盖）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-10` |
+| 类型 | 特性（可调性）/ 说明 |
+| 状态 | `已修`（默认值保持不变；新增旋钮） |
+| 影响面 | 遥操作 |
+| 关联 | `arm_controller.py:127-130`、`vr_teleop_device.py`（`SENS_ENV`）、`COMMANDS_SIM2SIM_zh.md` §5.1 |
+
+**1. 现象（操作员）**：VR 下机械臂"动得很快"。
+
+**2. 根因（读码 + 数字）**：
+* VR 的手臂跟随是 **1:1**：`arm_pos_sensitivity = 1.0`，`command[3:6] = 手柄位移`，
+  所以"手快臂就快"，臂的速度 ≈ 手的速度（直到撞上限速）；
+* 上限由 `arm_controller` 的 **VR 限速**决定：`M20_VR_MAX_LIN_SPEED` 默认 **2.0 m/s**、
+  `M20_VR_MAX_ANG_SPEED` 默认 **5.0 rad/s**（键盘路径只有 **0.35 / 0.8**）
+  ⇒ 每个 20 ms 控制周期最多走 `2.0×0.02 = 4 cm`、转 `5.0×0.02 = 5.7°`；
+* 附带：底盘 `v_x_sensitivity` 默认 **5.0**（摇杆满量程 = 5 m/s），虽然有
+  `M20_VR_MAX_VX=1.0` 兜底，但**摇杆推 20% 就吃满 1 m/s**，油门很窜。
+
+**3. 修正**：把 `vr_teleop_device.py` 的 8 个灵敏度都做成**环境变量可覆盖**
+（`M20_VR_VX_SENS` / `_VY_` / `_WZ_` / `_HEIGHT_` / `_PITCH_` / `_ROLL_` /
+`_ARM_POS_` / `_ARM_ROT_SENS`；**默认值 = 原值，不设变量时行为完全不变**），
+并在启动时打印生效值。限速那两个本来就是环境变量，无需改代码。
+
+**4. 验收（容器实测）**：`M20_VR_ARM_POS_SENS=0.5 M20_VR_ARM_ROT_SENS=0.4 M20_VR_VX_SENS=3`
+起节点 → 打印 `arm pos 0.5 / rot 0.4`、`chassis vx 3`，进程内取值 `0.50 / 0.40 / 3.00` ✓。
+
+**5. 给操作员的推荐值**（写在 `COMMANDS_SIM2SIM_zh.md` §5.1）：
+臂限速 `0.4 m/s` / `1.0 rad/s`；臂灵敏度 `0.5` / `0.5`；底盘油门 `2.0`。
+
+**6. 2026-10-10 收尾（操作员确认手感合适后已固化为默认值）**：
+`M20_VR_MAX_LIN_SPEED=0.4`、`M20_VR_MAX_ANG_SPEED=1.0`（`arm_controller.py`）；
+`arm_pos_sensitivity=0.5`、`arm_rot_sensitivity=0.5`、`v_x_sensitivity=2.0`
+（`vr_teleop_device.py` 的 `Se2VRExtendedCfg`）—— 都可用环境变量回到原值。
+另新增两个"真机感"旋钮（默认保持现状）：`M20_GRIPPER_SLEW`（夹爪目标限速，
+默认 0 = 直接阶跃 ⇒ 仿真里 ~10 ms 到位的"瞬间开合"）与
+`M20_ARM_MAX_JOINT_VEL`（关节指令限速，默认 0；设 3.0 与真机驱动器一致）。
+
+---
+
+### DEF-039 `2026-10-10` VR 通道缺速度限幅（前向最高 1 m/s）+ 新增臂链路自检
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-10` |
+| 类型 | 特性（安全限幅）/ 工具 |
+| 状态 | `已修` |
+| 影响面 | 遥操作 |
+| 关联 | `rl_control_state.hpp`（`ApplyVrCommand`）、`scripts/check_vr_arm_chain.py`、`COMMANDS_SIM2SIM_zh.md` §5 |
+
+**1. 现象/风险**：VR 的速度是**摇杆连续量**，原来直接写进 `uc->forward_vel_scale`
+等字段，**没有任何限幅** ⇒ 一次推杆就能给到训练分布外的速度（实测命令 1.5 m/s 时
+机器人真的跑到 1.62~1.73 m/s）。
+
+**2. 修正**：在 `ApplyVrCommand` 里按部署包线夹取，默认
+**`vx ±1.0`（操作员要求）/ `vy ±0.5` / `wz ±0.7`**，可用
+`M20_VR_MAX_VX` / `_VY` / `_WZ` 覆盖；启动时打印一行 `[VR] 速度限幅: ...`。
+
+**3. 验收（容器实测，实时因子 1.000）**：VR 命令 `vx = 1.5` ⇒ 实测 **1.01 m/s**
+（改前 1.62）；命令 `vx = 0.7` 不受影响（0.70→0.71）。
+
+**4. 附带**：新增 `scripts/check_vr_arm_chain.py`（8 s 采样，逐环节判定
+`/VR_TELEOP → /ARM_TELEOP → /ARM_JOINTS_CMD → /ARM_JOINTS_DATA`）。
+自测：假 VR 发布者（active=1、dx 0→0.15 m）下链路全通、臂实际转动 0.35 rad；
+故意不起 `arm_teleop_node` 时脚本正确指出"`/ARM_TELEOP` 没有数据"。
+
+---
+
+### DEF-038 `2026-10-09` `M20_POLICY_DIR` 的相对路径口径与默认目录不一致（已缓解）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 缺陷（可用性/坑） |
+| 状态 | `已缓解`（根治见 TODO P4-6） |
+| 影响面 | 工具/部署 |
+| 关联 | `rl_control_state.hpp:245-258`、`COMMANDS_SIM2SIM_zh.md` §7、`policy/README.md`、`WORKFLOW_zh.md` 开关表 |
+
+**1. 现象**：按仓库根写 `M20_POLICY_DIR=policy/m20_piper_rough_20261002` 起 `rl_deploy`，
+进程立刻打印 `policy not found` 并退出；此时机器人不会动、只会退化到"待机保持"并缓慢下沉倾覆，
+**看起来非常像"这个模型站不住/不跟命令"**（我为此白跑了 25 分钟的对多地形模型的测试）。
+
+**2. 根因**：代码**默认**目录是按 `__FILE__` 解析的（`base/../../policy/<目录>`，等价于
+`src/M20_sdk_deploy/policy/<目录>`），而 `M20_POLICY_DIR` 覆盖值是**按进程 cwd** 解析的。
+两者口径不同，且错误信息只打印原始字符串，不打印解析后的绝对路径，猜不到问题在哪。
+
+**3. 修正（本次）**：
+* 错误信息改为打印 `fs::absolute(policy_dir)` **与 cwd**；
+* 文档里的示例统一改成绝对路径，并在 `WORKFLOW_zh.md` 开关表里写明"按进程 cwd 解析"。
+
+**4. 验收**：用 `M20_POLICY_DIR=<绝对路径>` 复跑，策略正常加载（日志打印 policy_dir），
+命令扫描 3/3 通过；用相对路径仍会失败，但现在一眼能看出是路径问题。
+
+---
+
+### DEF-037 `2026-10-09` `liedown_state` 的关节限位夹取是空操作（**未修**）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 缺陷（姿态目标超限位） |
+| 状态 | **未修**（一行改法已给） |
+| 影响面 | 状态机（趴下） |
+| 关联 | `liedown_state.hpp:48,61`、对照 `standup_state.hpp:48,61` |
+
+**1. 现象**：走查时发现 `liedown_state.hpp:48`（hipy）与 `:61`（knee）写作
+`LimitNumber(theta, lo, hi);` —— **没有接返回值**，夹取完全没生效。
+`standup_state.hpp` 里一模一样的两个函数是 `theta = LimitNumber(...)`（接了）⇒ 复制粘贴掉了一截。
+
+**2. 后果（推算）**：趴下目标 `GetKneePosByHeight(0.03)` = π − acos((l1²+l2²−h²)/(2·l1·l2))
+= **3.02 rad**，而 `control_parameters.h:44-45` 的膝关节上限是 **2.758 rad**
+⇒ 趴下时膝关节目标在限位**外** 0.26 rad，靠机械限位硬顶（不致命，但与设计意图不符）。
+
+**3. 修法**：把 `liedown_state.hpp:48,61` 改成 `theta = LimitNumber(...)`；
+建议顺手把这两个函数从 standup/liedown 抽成一处（现在两份重复，还有一份抄歪了）。
+
+---
+
+### DEF-036 `2026-10-09` 侧移/转向存在方向性不对称（**未修，需训练侧确认**）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-09` |
+| 类型 | 缺陷（策略行为，疑似左右符号/增益） |
+| 状态 | **未修**，待训练侧专项探针 |
+| 影响面 | 策略 |
+| 关联 | `tests/command_sweep.py`、`docs/review/ACCEPTANCE_2026-10-09_zh.md` §4.1、TODO P4-9 |
+
+**1. 现象（单命令阶跃，8 s 命令 / 后 6 s 稳态）**：
+
+| 命令 | 平地模型 | 多地形模型 |
+|---|---|---|
+| `wz +0.5` | +0.378（76%） | +0.440（88%） |
+| `wz −0.5` | **−0.027（5%）** | −0.288（58%） |
+| `vy +0.5` | +0.583（117%） | **+0.046（9%）** |
+| `vy −0.5` | −0.437（87%） | −0.555（111%） |
+
+**2. 排查过的**：隔离单发（只跑该阶段 10 s）复现同样结果 ⇒ 不是阶段顺序/上一段残留；
+`vx` 正负、机身姿态两个模型都正常 ⇒ 不是整体标定问题。
+两个模型"坏的方向"还不一样（平地坏在左转、多地形坏在左移）。
+
+**3. 怀疑方向**：左右侧轮子的符号/增益不对称，或训练侧 `yaw_rate`/`base_velocity`
+的符号约定与部署侧不一致。
+
+**4. 下一步**：训练仓库用同一 MJCF 跑 `vy/wz = ±0.3/±0.7` 的四象限探针，
+给出"命令 vs 实测"对照；确认后要么改训练、要么在部署侧修正。
+**在这条查清之前，不能说"部署包线已验证"。**
 
 ---
 
