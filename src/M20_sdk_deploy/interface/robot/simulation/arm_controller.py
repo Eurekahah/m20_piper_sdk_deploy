@@ -82,16 +82,29 @@ ARM_JOINT_LIMITS = np.array([
 DEFAULT_ARM_JOINTS = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0])
 
 # gains from the Isaac Lab DelayedPDActuatorCfg
-# 增益取自本次训练的 actuator 配置（DEF-007）：
-#   `2026-09-20_00-50-31/params/env.yaml` -> piper_arm stiffness 300 / damping 20,
-#                                           piper_gripper 4000 / 200
-# 旧值 40/8 来自更早的一次训练配置，会让臂明显比训练"软"。
-# 与 `hardware/piper_arm_interface.hpp` 的 Start() 保持值、以及仿真侧
+# 增益取自当前训练的 actuator 配置（2026-10-08，B2-④/⑤）：
+#   piper_arm     stiffness 300 / damping 8    （DEF-064：原 300/20）
+#   piper_gripper stiffness 286 / damping 5    （DEF-058：原 4000/200）
+# 为什么改（仿真逐档实测）：
+#   * 臂 300/20：|qd| 到 5 rad/s 时阻尼力矩 20*5 = 100 N·m 吃满限幅 ⇒ 长期饱和
+#     （逐档 |tau| 均 53.4 N·m、饱和 23.5%、原地抖）。300/8 ⇒ 22.5 N·m、饱和 0%、
+#     跟踪还更好（4.14 -> 2.19 cm）。只降刚度是错的（150/8 跟踪退到 2.89 cm）。
+#   * 夹爪 4000/200：位置环实际失效——饱和 88~100%、稳态误差最大 0.0314 rad。
+#     286/5 = 按"满行程 0.035 rad 误差刚好给到 10 N·m 限幅"标定 ⇒ 饱和 0%、
+#     上升时间 40~80 ms、稳态误差 <=0.0005（DEF-058）。
+# 与 `hardware/piper_arm_interface.hpp` 的 ResetToDefault()、以及仿真侧
 # `mujoco_simulation_ros2.py` 的 ARM_DEFAULT_KP/KD 必须一致。
-ARM_KP, ARM_KD = 300.0, 20.0
-GRIPPER_KP, GRIPPER_KD = 4000.0, 200.0
+ARM_KP, ARM_KD = 300.0, 8.0
+GRIPPER_KP, GRIPPER_KD = 286.0, 5.0
 GRIPPER_OPEN = np.array([0.035, -0.035])
 GRIPPER_CLOSED = np.array([0.0, 0.0])
+
+# 臂关节速度上限（DEF-065，2026-10-08 新增约束）：真机 Piper 关节 1~6 的速度上限
+# 按 3 rad/s 设（joint6 本来就是 3）。仿真里启动事件 `align_joint_velocity_limits`
+# 已把 PhysX 的 DOF max velocity 从 USD 的 5 改成 3，实测 |qd| p99 5.0 -> 3.00、
+# 超速时间占比 33% -> 5~18%。真机上这条由 agx_arm_ctrl / 驱动器侧限制（本节点发的
+# 是位置 PD，速度字段为 0），部署时不要放宽到 5。
+ARM_VEL_LIMIT = 3.0
 
 # 臂座相对机体（base_link）的安装偏移：M20_Piper_own.xml 里
 # `arm_base_link pos = "0.24 0 0.0888"`（纯平移，两个坐标系轴向一致）。
@@ -115,6 +128,15 @@ EE_MAX_LIN_SPEED = float(os.environ.get("M20_EE_MAX_LIN_SPEED", "0.35"))
 EE_MAX_ANG_SPEED = float(os.environ.get("M20_EE_MAX_ANG_SPEED", "0.8"))
 VR_MAX_LIN_SPEED = float(os.environ.get("M20_VR_MAX_LIN_SPEED", "2.0"))
 VR_MAX_ANG_SPEED = float(os.environ.get("M20_VR_MAX_ANG_SPEED", "5.0"))
+# 夹爪目标限速 [stroke/s]：0 = 不限速（直接阶跃到 ±0.035，仿真里 ~10 ms 就到底，
+# 看着"瞬间开合"）。真机夹爪走完一个行程大约 0.3~0.5 s ⇒ 建议 0.15~0.2。
+GRIPPER_SLEW = float(os.environ.get("M20_GRIPPER_SLEW", "0.0"))
+# 关节指令限速 [rad/s]：0 = 不限速（现状，与训练侧一致）。
+# 真机 Piper 驱动器会把关节速度限制在 ~3 rad/s（DEF-065），所以**设 3.0 更接近真机**：
+# IK 在奇异位形附近会想一步跳 1~2 rad，限速后会被摊成可见的轨迹。
+# ⚠️ 训练侧 DEF-054 的结论是"限制 **EE 目标** 的单步变化会让跟踪变差"；这里限制的是
+# **关节指令**（更靠执行器一层），与驱动器限速同义，不会把目标本身改坏。
+ARM_MAX_JOINT_VEL = float(os.environ.get("M20_ARM_MAX_JOINT_VEL", "0.0"))
 
 EE_POS_CLAMP = ((-0.6, 0.6), (-0.6, 0.6), (0.02, 0.95))
 IK_LAMBDA = 0.01
@@ -286,6 +308,9 @@ class ArmController(Node):
 
         self.cur_joints = DEFAULT_ARM_JOINTS.copy()
         self.cur_gripper = GRIPPER_CLOSED.copy()
+        self.gripper_goal = GRIPPER_CLOSED.copy()
+        # 上一拍真正下发的关节指令（M20_ARM_MAX_JOINT_VEL 限速用）
+        self.q_cmd = DEFAULT_ARM_JOINTS.copy()
 
         # absolute EE target, initialised at the default arm pose
         self.target_pos, self.target_R = fk_pose(PIPER_MDH, DEFAULT_ARM_JOINTS)
@@ -429,8 +454,12 @@ class ArmController(Node):
                                   [c[0] for c in EE_POS_CLAMP],
                                   [c[1] for c in EE_POS_CLAMP])
         if gripper_cmd >= 0.0:
-            self.gripper_target = (
+            # 只更新"目标"；真正的关节指令在 _tick 里按 M20_GRIPPER_SLEW 逼近，
+            # 不然仿真里 10 ms 就开到顶/关到底，看着不像真夹爪。
+            self.gripper_goal = (
                 GRIPPER_OPEN if gripper_cmd >= 0.5 else GRIPPER_CLOSED)
+            if GRIPPER_SLEW <= 0.0:
+                self.gripper_target = self.gripper_goal.copy()
 
     def _tick(self):
         # solve IK from the current (feedback) joint angles
@@ -483,6 +512,22 @@ class ArmController(Node):
                   "(ik_iters %d)" % (self.target_pos[0], self.target_pos[1],
                                      self.target_pos[2], pos_err, ang_err, ik_iters))
         self.debug_cnt += 1
+
+        # 夹爪目标限速（可选）：按 M20_GRIPPER_SLEW 逼近目标。
+        # 不做的话位置目标直接阶跃 ±0.035，仿真里 kp=286/kd=5 + armature=0.01
+        # 的带宽约 170 rad/s ⇒ 10~20 ms 就到底，肉眼看就是"瞬间开合"（真夹爪要 0.3~0.5 s）。
+        if GRIPPER_SLEW > 0.0:
+            step = GRIPPER_SLEW * dt
+            d = self.gripper_goal - self.gripper_target
+            self.gripper_target = self.gripper_target + np.clip(d, -step, step)
+
+        # 关节指令限速（可选，M20_ARM_MAX_JOINT_VEL>0 时生效）：
+        # IK 在奇异位形附近会给出单拍 1~2 rad 的跳变，真机驱动器会在 3 rad/s 处截住，
+        # 仿真里不限速就会"啪"一下过去（看着不像电机）。这里按同样的口径摊开。
+        if ARM_MAX_JOINT_VEL > 0.0:
+            lim = ARM_MAX_JOINT_VEL * dt
+            q = self.q_cmd + np.clip(q - self.q_cmd, -lim, lim)
+        self.q_cmd = np.asarray(q, dtype=np.float64).copy()
 
         cmd = JointsDataCmd()
         for i in range(6):

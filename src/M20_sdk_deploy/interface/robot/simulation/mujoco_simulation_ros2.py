@@ -156,11 +156,11 @@ JOINT_INIT = np.concatenate([LEG_INIT["M20_Piper_own"], ARM_INIT]).astype(np.flo
 
 # Default arm hold (used until the first /ARM_JOINTS_CMD message arrives, so the
 # arm does not flop around during idle/standup). Gains must equal the training
-# actuator config (DEF-007): piper_arm stiffness 300 / damping 20,
-# piper_gripper 4000 / 200 —— 与 arm_controller.py 的 ARM_KP/KD、
-# piper_arm_interface.hpp 的 Start() 保持值三处一致。
-ARM_DEFAULT_KP = np.array([300.0] * 6 + [4000.0, 4000.0], dtype=np.float32)
-ARM_DEFAULT_KD = np.array([20.0] * 6 + [200.0, 200.0], dtype=np.float32)
+# actuator config (2026-10-08): piper_arm stiffness 300 / damping 8 (DEF-064),
+# piper_gripper 286 / 5 (DEF-058) —— 与 arm_controller.py 的 ARM_KP/KD、
+# piper_arm_interface.hpp 的 ResetToDefault() 三处一致。
+ARM_DEFAULT_KP = np.array([300.0] * 6 + [286.0, 286.0], dtype=np.float32)
+ARM_DEFAULT_KD = np.array([8.0] * 6 + [5.0, 5.0], dtype=np.float32)
 
 
 class MuJoCoSimulationNode(Node):

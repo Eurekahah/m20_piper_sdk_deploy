@@ -113,9 +113,11 @@ public:
 
     void ResetToDefault() {
         VecXf kp(kArmDof), kd(kArmDof), pos(kArmDof);
-        // arm: 300/20, gripper: 4000/200 (from the Isaac Lab DelayedPDActuatorCfg)
-        kp << 300, 300, 300, 300, 300, 300, 4000, 4000;
-        kd << 20, 20, 20, 20, 20, 20, 200, 200;
+        // arm: 300/8 (DEF-064), gripper: 286/5 (DEF-058)
+        // —— 与 arm_controller.py 的 ARM_KP/KD、GRIPPER_KP/KD 以及仿真侧
+        //    mujoco_simulation_ros2.py 的 ARM_DEFAULT_KP/KD 三处一致。
+        kp << 300, 300, 300, 300, 300, 300, 286, 286;
+        kd << 8, 8, 8, 8, 8, 8, 5, 5;
         pos << 0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0;
 
         MatXf cmd = MatXf::Zero(kArmDof, 5);
