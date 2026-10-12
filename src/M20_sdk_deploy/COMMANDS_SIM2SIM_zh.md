@@ -229,10 +229,10 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ### 5.1 手感调节（VR 动得太快/太钝就调这两处）
 
-**为什么 VR 下臂很快**：VR 的手臂跟随是 **1:1**（手柄动 10 cm ⇒ EE 目标也走 10 cm），
-所以"手快 → 臂快"；上限由 `arm_controller` 的 **VR 限速**决定，默认
-**2.0 m/s / 5.0 rad/s**（键盘路径只有 0.35 m/s / 0.8 rad/s，所以键盘感觉温和得多）。
-每个 20 ms 的控制周期里最多走 `2.0 × 0.02 = 4 cm`。
+**为什么 VR 下臂很快**：VR 的手臂跟随是 **1:1**（手柄动 10 cm ⇒ EE 目标也走 10 cm，
+再乘 `M20_VR_ARM_POS_SENS`），所以"手快 → 臂快"；上限由 `arm_controller` 的
+**VR 限速**决定，默认 **0.4 m/s / 1.0 rad/s**（键盘路径 0.35 m/s / 0.8 rad/s）。
+每个 20 ms 的控制周期里最多走 `0.4 × 0.02 = 8 mm`。
 
 两个旋钮含义不同，通常一起用：
 
@@ -242,7 +242,11 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 | **灵敏度**（整体缩放，更细腻） | `M20_VR_ARM_POS_SENS` / `M20_VR_ARM_ROT_SENS` | `0.5` / `0.5` | **A4 `vr_teleop_node`** |
 | 底盘/机身灵敏度（可选） | `M20_VR_VX_SENS` / `_VY_SENS` / `_WZ_SENS`、`_HEIGHT_SENS` / `_PITCH_SENS` / `_ROLL_SENS` | `2.0` / `1.0` / `1.0`、`0.5` / `0.35` / `0.25` | A4 |
 | 夹爪"像真夹爪"（默认直接阶跃） | `M20_GRIPPER_SLEW` [stroke/s] | `0`（建议 `0.15~0.2`） | A3 |
-| 关节指令限速（默认不限制，仿真会"啪"一下） | `M20_ARM_MAX_JOINT_VEL` [rad/s] | `0`（建议 `3.0`＝真机驱动器限速） | A3 |
+| 关节指令限速（= 真机驱动器口径） | `M20_ARM_MAX_JOINT_VEL` [rad/s] | `3.0`（`0` = 不限，不建议） | A3 |
+| VR 臂映射（见 §5.2；一般不要动） | `M20_VR_ARM_MAP` | `cylindrical`（`cartesian` = 旧行为） | A3 |
+| 臂摆动角度上限 | `M20_VR_SWING_MAX_DEG` | `60` | A3 |
+| IK 拒绝阈值（解不出来就不下发） | `M20_ARM_IK_MAX_POS_ERR` / `_ANG_ERR` | `0.010` m / `3.0` ° | A3 |
+| IK 姿态正则（压手腕漂移） | `M20_ARM_IK_POSTURE_GAIN` | `0.3`（`0` = 关） | A3 |
 
 > 上面这组默认值是 **2026-10-10 操作员实测确认手感合适** 后固化进代码的（原来是
 > 2.0 m/s / 5.0 rad/s、灵敏度 1.0/1.0、油门 5.0）。要回到训练侧原值：
@@ -251,11 +255,38 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 **想让仿真的臂/夹爪更像真机**（可选，默认都不限速）：
 
 ```bash
-# A3 臂 IK：夹爪按真夹爪的行程时间走 + 关节指令限到真机驱动器的 3 rad/s
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
+# A3 臂 IK：夹爪按真夹爪的行程时间走（关节限速现在默认就是真机的 3 rad/s）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_GRIPPER_SLEW=0.2 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
 ```
 
 起 A4 时 VR 节点会打印一行 `灵敏度（可用 M20_VR_*_SENS 覆盖）: ...`，可以核对是否生效。
+
+### 5.2 VR 臂的映射（2026-10-12 改，DEF-044）
+
+**为什么改**：默认站姿 `(0, 0.5, -0.5, 0, 0, 0)` 里 joint5 = joint6 = 0，joint4 与
+joint6 同轴 ⇒ **手腕正好在奇异位形**。旧实现把 VR 偏移当"笛卡尔绝对偏移"（训练侧语义）
+直接给局部 IK，而"EE 侧移 5 cm / 工具转 10°"在这个位形下需要 **2.4~2.7 rad** 的关节重排
+（键盘的 ±x 只要 0.30 rad）⇒ IK 解不出来，节点又把"顶在限位上的解"发出去，
+表现就是**臂自己甩到 joint1 = 2.168（上限）、关节速度 20 rad/s、指令力矩 139 N·m**。
+
+**现在怎么做**（默认，全部在 `arm_controller`）：
+
+| 手的动作 | 现在的含义 |
+|---|---|
+| 前伸/后收 | 沿臂当前朝向**伸缩**（半径 r） |
+| 左/右移 | **基座摆动 Δθ**（臂自然摆过去，工具跟着摆；上限 `M20_VR_SWING_MAX_DEG=60°`） |
+| 上/下 | 高度 z |
+| 手腕自转/俯仰/侧倾 | **手腕关节** j6 / j5 / j4 的增量（永远可达；不再要求手腕去补偿整条臂） |
+
+配套的两道保险：
+
+* **IK 收敛检查**：位置残差 > 10 mm 或姿态残差 > 3° 时**不下发**（沿用上一拍指令 +
+  把目标拉回实际位姿），日志里出现 `IK 未收敛…沿用上一拍指令`；
+* **零空间姿态正则**：防止手腕沿"不影响任务但会漂到限位"的方向慢慢拧过去。
+
+**回退**：`M20_VR_ARM_MAP=cartesian` 回到旧语义（只在做 A/B 时用）。
+
+**验收**：`python3 tests/vr_arm_chain_check.py`（约 25 s；对旧行为会 FAIL）。
 
 ---
 
