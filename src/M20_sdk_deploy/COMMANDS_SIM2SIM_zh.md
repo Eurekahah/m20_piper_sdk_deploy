@@ -187,13 +187,21 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && exec pip3 install -r src/M20_sdk_deploy/requirements_teleop.txt'
 ```
 
-操作：头显里按**右 B** 启动 / 重标定（把 VR 坐标系锚到当前机器人姿态），
-**左 X/Y** 复位（调 `/reset_sim`，**同时把末端目标重置回默认位姿**）。
+操作：头显里按**右 B** 启动 / 重标定（把 VR 坐标系锚到**当前左右手柄位姿**），
+**左 X/Y** 复位。
 
-> **复位后 VR 保持激活**（校准原点自动重采）⇒ **不用再按 B**，手再动就能继续操控
-> （操作员 2026-10-10 反馈"复位后不能操控了"就是因为老语义会把 VR 置为 inactive）。
-> 要回训练侧老语义（复位即停、需再按 B）：`M20_VR_RESET_KEEPS_ACTIVE=0`。
-> 复位完成时 `arm_teleop` 会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`。
+> **复位的语义（2026-10-13 起，DEF-046）**——按 X/Y 后四件事一起发生：
+> ① 机身姿态回默认（`0.513 / 0 / 0`，与键盘 `l` 同一个口径）；
+> ② 机械臂末端位姿回默认（`arm_teleop` 发一帧 flag=2 的"重置到默认末端位姿"，
+>    同时调 `/reset_sim` 把腿和臂都复位）；
+> ③ 速度归 0；
+> ④ **VR 交还控制权**（设备侧 `_started=False` ⇒ `/VR_TELEOP` 持续发全 0 + `active=0`，
+>    机身/速度字段由 `rl_deploy` 的键盘接口按默认值续写）。
+>
+> 要接着用就**再按一次右 B**：它会把那一刻的左右手柄位姿重新采成校准原点（干净的新零点），
+> 不需要再手工摆姿势。复位时 `rl_deploy` 会打印 `[VR] RESET -> 机身姿态回默认 ...`，
+> `arm_teleop` 会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`。
+> 想回到 2026-10-10 的"复位后保持激活、不用再按 B"：`M20_VR_RESET_KEEPS_ACTIVE=1`。
 
 VR 一旦激活（B 按下），
 键盘就不再写速度/机身字段（由 VR 独占），但 `z`/`c`/`r` 这些模式键仍由 A2 的键盘负责。

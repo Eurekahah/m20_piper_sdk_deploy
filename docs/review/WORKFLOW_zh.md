@@ -185,7 +185,7 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | `M20_GRIPPER_SLEW` | 夹爪**目标**限速 [stroke/s]；0=不限速（仿真里 ~10 ms 到位，看着"瞬间开合"） | `0`（建议 `0.15~0.2`） | 机械臂 |
 | `M20_ARM_MAX_JOINT_VEL` | 关节**指令**限速 [rad/s]；0=不限速。设 3.0 与真机驱动器一致 | `0`（建议 `3.0`） | 机械臂 |
 | `M20_VR_*_SENS`（VX/VY/WZ/HEIGHT/PITCH/ROLL/ARM_POS/ARM_ROT） | VR 各通道**灵敏度**缩放（`vr_teleop_device.py`，2026-10-10 下调臂两项与前向油门） | `2.0/1.0/1.0/0.5/0.35/0.25` + `0.5/0.5` | 遥操作 |
-| `M20_VR_RESET_KEEPS_ACTIVE` | 左 X/Y 复位后是否**保持 VR 激活**（1 = 保持，可继续操控；0 = 训练侧老语义，需再按 B） | `1` | 遥操作 |
+| `M20_VR_RESET_KEEPS_ACTIVE` | 左 X/Y 复位后是否**保持 VR 激活**（0 = 复位即交还控制权、机身/臂/速度回默认，需再按 B 重新标定；1 = 2026-10-10 的旧语义"保持激活"） | `0` | 遥操作 |
 | `M20_ARM_DEBUG` / `M20_ARM_DEBUG_PERIOD` | 打印 IK 残差（目标 vs FK），用于 P1-4 精度验收 | 关 / `50` tick | 机械臂 |
 | `M20_SIM_WHEEL_STEP_RAD_S` / `_AT` | 仿真侧轮子速度阶跃（P1-2 验收） | `0`（关）/ `5 s` | 仿真 |
 

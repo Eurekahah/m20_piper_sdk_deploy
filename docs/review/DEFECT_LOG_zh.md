@@ -31,6 +31,71 @@
 | 2026-10-12 | 新增 DEF-044（VR 臂跟随：默认站姿手腕奇异 + 笛卡尔绝对偏移 ⇒ 局部 IK 解不出来还把"顶在限位上的解"下发，臂自己甩到 joint1=2.168，关节 20 rad/s / 力矩 139 N·m；改为**柱坐标位置 + 手腕关节偏移**的映射 + IK 收敛检查 + 零空间姿态正则，并新增回归用例 `tests/vr_arm_chain_check.py`） | `fix/vr-arm-ik-reachability` |
 | 2026-10-13 | 开窗口（MuJoCo viewer）对着 12 个具名末端位姿指令做可视化验收（`scripts/arm_pose_demo.py` 新增）：跟踪 5 mm / 0.8°，关节 ≤0.06 rad/s、力矩 ≤4.6 N·m，机器人 RL 站立不接管；顺带修掉**半径下限把标定锚点自己钳住**（floor 0.12 → min(0.05, r_anchor)） | `fix/vr-arm-ik-reachability` |
 | 2026-10-13 | 新增 DEF-045（残留 `arm_stub_node.py` 与 arm_controller **同时发** `/ARM_JOINTS_DATA` + `/ARM_TELEOP_STATE` ⇒ IK 反馈与策略 `ee_goal` 观测被混入常量默认位姿；表现"目标读数不变、臂不听使唤"） | 同上 |
+| 2026-10-13 | 新增 DEF-046（VR 复位只把机身锚点置失效 ⇒ 复位前的偏移被固化成新零点、机身永远回不到默认；按操作员语义改为"机身/臂/速度回默认 + 交还控制权，再按 B 重新标定"，新增回归 `tests/vr_reset_semantics_check.py` 与 A/B 复现） | 工作区（建议 `fix/vr-reset-defaults`） |
+
+---
+
+### DEF-046 `2026-10-13` VR 复位只把机身锚点置为"失效" ⇒ 复位前的偏移被固化成新零点，机身永远回不到默认
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-13` |
+| 类型 | `缺陷`（复位语义 / 外部源与本地源的控制权交接） |
+| 状态 | `已修`（`rl_control_state.hpp` + `user_command_interface.h` + `keyboard_interface.hpp` + `vr_teleop_device.py`；新增回归 `tests/vr_reset_semantics_check.py`，含旧实现的 A/B 复现） |
+| 影响面 | `二者`（sim2sim 与真机走同一条 VR 链路） |
+| 关联 | DEF-042（复位锚定）、DEF-044（臂侧的同类问题：臂专门定义了 `ARM_TELEOP_FLAG_RESET_DEFAULT=2`"锚到默认末端位姿"）、`COMMANDS_SIM2SIM_zh.md` §5、`docs/DEPLOY_REAL_VR_zh.md` §5.1、`tests/vr_reset_semantics_check.py` |
+
+**1. 现象（操作员）**：头显里按**左 X/Y（reset）**之后，**机身姿态没有回默认** ——
+复位那一刻的高度/俯仰/横滚偏置原样留着（观感是"复位反而把它锁住了"）；而且复位后
+VR 仍保持激活（2026-10-10 起的旧默认），只能反向推手柄把它推回去。
+
+**2. 根因（两层，均可离线复现）**
+
+* **锚点被"归档"**：`rl_control_state.hpp` 的 `/VR_TELEOP` 回调在 reset 边沿**只**把
+  `vr_anchor_valid_ = false`；紧接着 `ApplyVrCommand()` 的重新锚定分支取的是**当前
+  指令值**（`vr_body_anchor_[i] = uc->body_height/…`，本意是"按 B 时不要跳变"）⇒
+  `target = 旧 anchor + 旧 off + 0 = 复位前的指令值`，**偏移被固化成新零点**。
+  设备侧其实已经把 13 维指令与机身高度积分量清零了（`vr_teleop_device.py::_on_reset`），
+  是策略侧把它锁住。
+* **没有"回默认"的路径**：设备侧 `RESET_KEEPS_ACTIVE` 当时默认 `1`（保持激活）⇒ 复位后
+  VR 仍持有控制权，键盘被 `IsRemoteActive()` 挡住，机身字段没有任何源去写默认值。
+
+**3. 修正**（按操作员 2026-10-13 定义的语义：复位 = 机身姿态回默认 + 臂末端位姿回默认
+ + 速度归 0 + **交还控制权**；再按 B 把当前左右手柄位姿重新采成校准原点）
+
+* `rl_control_state.hpp`：reset 边沿**直接把机身锚点写成默认 `(0.513, 0, 0)`**
+  （不再交给"锚到当前指令值"分支）、清零 `vr_vel_`/`vr_body_off_`、把共享 `UserCommand`
+  的速度/机身写回默认，并打印 `[VR] RESET -> 机身姿态回默认 (0.513 / 0 / 0)…`；
+* `user_command_interface.h` + `keyboard_interface.hpp`：新增
+  `RequestLocalReset()/ConsumeLocalResetRequest()`，键盘线程消费后把自己的
+  `body_height_/body_pitch_/body_roll_` 归位到默认并清空"按住"的键 —— 否则它会在 5 ms 后
+  用复位前的旧值把默认指令覆盖掉；
+* `vr_teleop_device.py`：`RESET_KEEPS_ACTIVE` 默认 `1` → **`0`**（复位即 `_started=False`，
+  `/VR_TELEOP` 持续发全 0 + `active=0`，等价"持续给 0 指令"）；
+  `M20_VR_RESET_KEEPS_ACTIVE=1` 可回旧语义；
+* 臂侧沿用既有 `ARM_TELEOP_FLAG_RESET_DEFAULT=2`（`arm_teleop` → `arm_controller`
+  重置到默认末端位姿）+ `/reset_sim`，本次无需改动。
+
+**4. 结果与验证**（`tests/vr_reset_semantics_check.py`：设备级 + 端到端，
+含 `default`/`keepactive` 两个场景，并对 DEF-018 入口瞬态自动重跑）
+
+| 时点 | 机身俯仰 | 机身高度 | \|轮速指令\| | 臂末端目标 x | 机身锚点 |
+|---|---|---|---|---|---|
+| 基线（进 RL、VR 未接管） | +0.5° | 0.506 m | 0.24 rad/s（零速残余） | 0.3492 m | — |
+| 复位前（VR 命令 +0.12 rad / +30 mm / vx 0.3 / 臂 +50 mm） | **+6.8°** | 0.516 m | 3.71 rad/s | 0.3990 m | 0.513/0/0 |
+| 复位后 | **+0.7°** | 0.514 m | **0.165** rad/s | **0.3492 m**（= 默认位姿） | 0.513/0/0 |
+| 再按 B 之后 | +0.7° | 0.512 m | — | 0.3790 m（重新跟手） | 0.513/0/0 |
+
+* 日志：`rl_deploy` 打印 `[VR] RESET -> 机身姿态回默认 (0.513 / 0 / 0)` 与
+  `[RESET] 外部源（VR）交还控制权：机身姿态 -> 默认 (0.513, 0, 0)、速度 -> 0`；
+  `arm_teleop` 打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`。
+* **A/B 复现（旧实现原样：reset 边沿只 `vr_anchor_valid_ = false`；`keepactive` 场景）**：
+  复位后俯仰仍偏 **+6.3°**、锚点被固化成 **`0.543 / 0.12 / 0`** ⇒ 用例 6 条判据 FAIL。
+  这正是操作员报的现象。
+* 用例里固化的两条口径（都是策略侧特性，不是本次改动的锅）：① **机身高度命令跟踪很慢**
+  （命令 +30 mm，8 s 只走到 +10 mm 且还在爬）⇒ 高度只判"方向 + 量级下限"，严格判据放在
+  俯仰通道与日志上；② **零速有残余轮速指令**（实测 0.2~1.4 rad/s）⇒ "速度归 0"只能跟
+  基线比，不能卡绝对值。
 
 ---
 

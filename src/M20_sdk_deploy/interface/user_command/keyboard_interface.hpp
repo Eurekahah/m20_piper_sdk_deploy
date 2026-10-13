@@ -222,6 +222,22 @@ private:
             double now = GetCurrentTimeStamp();
             usr_cmd_->time_stamp = now;
 
+            // 外部源（VR）复位后把控制权交还键盘：把内部底座归位到默认值，并清掉
+            // "按住"的键。不做这一步的话，下面几行会在 5 ms 后用复位前的旧值把
+            // "回到默认"的指令覆盖掉（2026-10-13 操作员反馈：按 X/Y 后机身没回默认）。
+            if (ConsumeLocalResetRequest()) {
+                body_height_ = 0.513f;
+                body_pitch_  = 0.0f;
+                body_roll_   = 0.0f;
+                {
+                    std::lock_guard<std::mutex> lock(keys_mutex_);
+                    held_keys_.clear();
+                    last_seen_time_.clear();
+                }
+                std::cout << "[RESET] 外部源（VR）交还控制权：机身姿态 -> 默认 "
+                             "(0.513, 0, 0)、速度 -> 0\n";
+            }
+
             // Read all available keyboard input
             while (read(STDIN_FILENO, &ch, 1) == 1) {
                 char k = std::tolower(static_cast<unsigned char>(ch));

@@ -329,7 +329,7 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 | 底盘速度上限 | `M20_VR_MAX_VX` / `_VY` / `_WZ`（**T2** `rl_deploy`） | `1.0 / 0.5 / 0.7` |
 | 夹爪"像真夹爪" | `M20_GRIPPER_SLEW`（T5） | `0`（建议 `0.2`） |
 | 关节指令限速（= 驱动器口径） | `M20_ARM_MAX_JOINT_VEL`（T5） | `3.0`（`0` = 不限） |
-| 复位后是否保持 VR 激活 | `M20_VR_RESET_KEEPS_ACTIVE`（T7） | `1`（保持） |
+| 复位后是否保持 VR 激活 | `M20_VR_RESET_KEEPS_ACTIVE`（T7） | `0`（复位即交还控制权，需再按 B；`1` = 2026-10-10 的旧语义，见 DEF-046） |
 | VR 臂映射（**不要动**，见下） | `M20_VR_ARM_MAP`（T5） | `cylindrical`（`cartesian` = 旧行为） |
 | VR 臂半径下限（防止把手往怀里拉进臂座） | `M20_VR_RADIUS_MIN`（T5） | `0.05` m；**必须 ≤ 标定锚点半径**（默认站姿 0.109 m） |
 
@@ -372,6 +372,8 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 | 臂**乱动 / 特别快 / 不跟手** | **先看发布者数量**（脚本会列）：`/VR_TELEOP`、`/ARM_TELEOP`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 上任一有 2 个发布者，两路数据就会交替到达（`DEF-041`；`DEF-045` 实测过一个残留的 `arm_stub_node` 同时发假臂反馈与常量 ee_goal，表现就是"目标读数不变、臂不听使唤"）。常见原因：起了两个 `vr_teleop_node`，或上一次的 `arm_stub_node` / `arm_real_adapter` 没退干净 |
 | `arm_controller` 终端自己没了 | 已加三层兜底不会再死（`DEF-042`）；若是被别的终端 Ctrl+C 连带杀了，注意清理脚本的 `pkill` 范围；把 traceback 贴出来 |
 | 复位后臂被"拽"一下 | 现在已是确定性的"重置到默认位姿"（`DEF-042`）；正常时会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`（真机上没有 `/reset_sim`，会打一条 service not available 的警告，但末端目标仍会重置） |
+| 复位（左 X/Y）后机身姿态/高度没回默认 | **已修**（`DEF-046`）。现在的复位语义 = 机身姿态回默认 `0.513 / 0 / 0` + 臂末端位姿回默认 + 速度归 0 + **VR 交还控制权**：`rl_deploy` 应打印 `[VR] RESET -> 机身姿态回默认 (0.513 / 0 / 0)...`，键盘侧打印 `[RESET] 外部源（VR）交还控制权：机身姿态 -> 默认 ...`。回归用例：`python3 tests/vr_reset_semantics_check.py --scenario both`（旧实现在 `keepactive` 场景会 FAIL） |
+| 复位后手柄"不管用"了 | 新默认语义就是这样：复位即交还控制权（`/VR_TELEOP` 持续发全 0 + `active=0`），**再按一次右 B** 就会把当前左右手柄位姿重新采成校准原点并重新接管。想要 2026-10-10 的"复位后保持激活、不用再按 B"：`M20_VR_RESET_KEEPS_ACTIVE=1`（`DEF-046`） |
 | `Policy dim mismatch` / 找不到策略 | 策略目录必须含 `policy.onnx` + `policy_layout.json`；用 `M20_POLICY_DIR` 时**写绝对路径**（按进程 cwd 解析，`DEF-038`） |
 | 策略周期被拉长 / 动作卡顿 | 上位机上 `top` 看谁在抢 CPU；`[JVEL]` 打印应 1 Hz；仿真侧那条 `[SIM-RT]` 自检**真机上没有** |
 

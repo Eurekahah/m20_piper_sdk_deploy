@@ -19,6 +19,7 @@
 | 2026-10-09 | 新增第二十三节：仿真新代码同步（臂/夹爪增益 300/8、286/5；臂速度上限 3 rad/s）+ 默认策略切到多地形 run `cloud_slowvx20k` | `sync/2026-10-09-sim-delta` |
 | 2026-10-12 | 新增第二十四节：VR 臂跟随修复（DEF-044）——柱坐标位置 + 手腕关节偏移的姿态映射、IK 收敛检查（解不出来不下发）、零空间姿态正则、关节指令限速默认 3 rad/s；新增 `tests/vr_arm_chain_check.py` 回归用例（对旧行为 FAIL、新行为 PASS） | `fix/vr-arm-ik-reachability` |
 | 2026-10-13 | 第二十四节续：MuJoCo 窗口里的可视化验收（12 个具名末端位姿指令、跟踪 ~5 mm / 0.8°）+ 补修"半径下限把标定锚点钳住" + 定位 DEF-045（残留 `arm_stub_node` 造成 /ARM_JOINTS_DATA、/ARM_TELEOP_STATE 双发布者） | `fix/vr-arm-ik-reachability` |
+| 2026-10-13 | 修复 **DEF-046**：VR 复位语义 = 机身姿态回默认 + 臂末端位姿回默认 + 速度归 0 + **交还控制权**（再按 B 把左右手柄当前位姿重采成校准原点）。改动 4 个文件（C++ 机身锚点/共享指令、键盘内部底座归位、设备侧 `RESET_KEEPS_ACTIVE` 默认 1→0），新增回归 `tests/vr_reset_semantics_check.py`（设备级 + 端到端两场景，含旧实现 A/B 复现）并接入 `tests/run_all.sh` | 工作区（建议 `fix/vr-reset-defaults`） |
 
 ---
 

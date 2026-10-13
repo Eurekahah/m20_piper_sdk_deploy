@@ -66,14 +66,18 @@ SENS_ENV = {
 }
 
 # 左 X/Y（复位）之后是否**保持 VR 激活**：
-#   1（默认）= 保持激活 + 把校准原点重锚到"按下去那一刻的手柄位姿" ⇒ 复位完
-#               可以直接接着用手柄操控（不用再按 B）。这是操作员 2026-10-10 的要求。
-#   0       = 训练侧原语义：置 `_started=False`（VR 变 inactive，腿/臂都不听 VR），
-#               要接着用必须再按一次 B。
-# 注意保持激活时**不发** `_calibrate_pulse`：令 arm_controller 重新锚定的是
+#   0（默认，2026-10-13 起）= 复位即**交还控制权**：清空指令（速度 0）、置
+#               `_started=False`（VR 变 inactive ⇒ /VR_TELEOP 持续发 0 且 active=0）。
+#               机身姿态 / 臂末端位姿 / 速度的"回归默认"分别由 rl_deploy（机身锚点，
+#               DEF-046）与 arm_teleop→arm_controller（flag=2 重置到默认末端位姿）
+#               完成。要接着用必须再按一次 B —— B 会把**当前**左右手柄位姿重新采成
+#               校准原点，所以复位→按 B 之后是一套干净的新零点。
+#   1       = 旧语义（操作员 2026-10-10 要求的"复位后不用再按 B"）：保持激活 + 把
+#               校准原点重锚到"按下去那一刻的手柄位姿"。留这个开关是方便 A/B 与回滚。
+# 复位**不发** `_calibrate_pulse`（那是 B 的事）：令 arm_controller 重新锚定的是
 # arm_teleop 那条"重置到默认末端位姿"的一次性命令（flag=2，确定语义），
-# 这里只负责把**设备的**校准原点重采一次，两条链路各管各的、不会互相打架。
-RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "1") != "0"
+# 这里只负责把**设备的**校准原点清零，两条链路各管各的、不会互相打架。
+RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "0") != "0"
 
 
 def _xyzw_to_wxyz(q):
@@ -419,13 +423,16 @@ class Se2VRExtendedDevice:
             self._on_reset("success")
 
     def _on_reset(self, kind):
-        """X/Y 复位。默认**保持 VR 激活**，复位完可以直接接着操控。"""
-        print("[VR] Button %s -> RESET (%s)%s"
+        """X/Y 复位：机身姿态 / 臂末端位姿 / 速度都回默认，VR 交还控制权。"""
+        print("[VR] Button %s -> RESET (%s)：机身/臂回默认、速度 0；%s"
               % ("X" if kind == "fail" else "Y", kind,
-                 "" if RESET_KEEPS_ACTIVE else "  [VR 变为 inactive，需再按 B]"))
+                 "VR 交还控制权（再按 B 重新标定并接管）"
+                 if not RESET_KEEPS_ACTIVE else
+                 "保持激活（M20_VR_RESET_KEEPS_ACTIVE=1）"))
         self._reset_event = kind
         if RESET_KEEPS_ACTIVE:
-            # 保持激活：把设备的校准原点重采（下一次手柄包会更新），并把指令清零。
+            # 保持激活（旧语义）：把设备的校准原点重采（下一次手柄包会更新），
+            # 并把指令清零。
             # 不发 `_calibrate_pulse` —— arm_controller 的目标由 arm_teleop 那条
             # "重置到默认末端位姿"（flag=2）负责，避免两条链路互相覆盖。
             self._command[:] = 0.0
@@ -433,6 +440,10 @@ class Se2VRExtendedDevice:
             self._calibration_triggered["left"] = True
             self._calibration_triggered["right"] = True
         else:
+            # 默认：交还控制权。`reset()` 会把 13 维指令、机身高度积分量、两手的
+            # 校准原点全部清掉；`_started=False` 之后 `_poll_queue()` 不再更新指令，
+            # 于是 /VR_TELEOP 持续发全 0 + active=0（= 持续给 0 指令）。
+            # 再按 B 时 `_on_button_press` 会把两手的校准原点重采成当前手柄位姿。
             self._started = False
             self.reset()
 

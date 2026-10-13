@@ -58,6 +58,16 @@ if [ "${VRA:-1}" = "1" ]; then
   report $? "vr_arm_chain_check.py"
 fi
 
+step "L3 VR 复位语义（机身/臂/速度回默认 + 交还控制权，DEF-046）"
+# 设备级 + 端到端两个场景（default = 复位交还控制权；keepactive = 复位保持激活，
+# 机身锚点"被归档"那个 bug 就在这个分支）。进 RL 的入口瞬态（DEF-018）会自动重跑。
+# VRR=0 可跳过；VRR_SCENARIOS 可覆盖（例如 VRR_SCENARIOS=default 只跑一遍）。
+if [ "${VRR:-1}" = "1" ]; then
+  python3 tests/vr_reset_semantics_check.py --out /tmp/m20_vr_reset_check \
+    --scenario "${VRR_SCENARIOS:-both}"
+  report $? "vr_reset_semantics_check.py"
+fi
+
 for m in $MODES; do
   step "L3 sim2sim --mode $m"
   if [ "$m" = "rl" ] || [ "$m" = "walk" ] || [ "$m" = "arm_move" ] || [ "$m" = "no_arm" ] || [ "$m" = "arm_mixed" ]; then
