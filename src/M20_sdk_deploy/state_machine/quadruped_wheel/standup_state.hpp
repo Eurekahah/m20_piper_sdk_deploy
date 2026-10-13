@@ -24,6 +24,15 @@ private:
         //   第一段折到 pre_height_ 蹲姿、第二段按高度规划升到 stand_height_，轮子 kp=0。
         //   默认 0 = 本项目行为（一步到训练默认姿态并保持）。见 DEF-060 / TODO P1-9。
         bool vendor_mode_ = false;
+        // M20_STANDUP_HIPX_DEG=<度>：给四个 hipx 目标加一个**镜像对称**的偏置
+        //   （fl/hl += d，fr/hr -= d），用来在真机上做"站姿 → 侧摆静力矩"的扫描
+        //   （DEF-059 §7：厂商姿态把侧摆从 29 N·m 降到 10.7，但膝盖仍然过热）。
+        //   默认 0 = 不动。⚠️ 会让站位偏离训练默认姿态 ⇒ 别带着它进 RL。
+        float hipx_offset_ = 0.f;
+        // M20_STANDUP_HEIGHT_M=<m>：配合 vendor_mode_ 用，覆盖厂商的 stand_height_（默认 0.48）。
+        //   用来在真机上扫"站高 → 各关节静力矩"，因为 A/B 显示站高对侧摆负载影响很大
+        //   而仿真对姿态不敏感（DEF-059 §7）。默认 = cp_ptr_->stand_height_。
+        float stand_height_m_ = -1.f;
 
     const float init_hipx_pos_ = Deg2Rad(0.);
     const float set_wheel_kd_ = 1.;
@@ -111,6 +120,32 @@ public:
             joint_cmd_.col(0) = kp_;
             joint_cmd_.col(2) = kd_;
             stand_duration_ = cp_ptr_->stand_duration_;
+
+            if (const char *ho = std::getenv("M20_STANDUP_HIPX_DEG")) {
+                hipx_offset_ = Deg2Rad(std::atof(ho));
+            }
+            if (const char *hs = std::getenv("M20_STANDUP_HEIGHT_M")) {
+                stand_height_m_ = std::atof(hs);
+            }
+            if (stand_height_m_ > 0.f) {
+                if (!vendor_mode_) {
+                    std::cout << "[STANDUP] ⚠️ M20_STANDUP_HEIGHT_M 只对 M20_STANDUP_VENDOR=1 生效"
+                                 "（当前是训练姿态档，忽略）" << std::endl;
+                } else {
+                    std::cout << "[STANDUP] M20_STANDUP_HEIGHT_M=" << stand_height_m_
+                              << " m（覆盖厂商 stand_height_ = " << cp_ptr_->stand_height_
+                              << " m）" << std::endl;
+                }
+            }
+            if (hipx_offset_ != 0.f) {
+                goal_joint_pos_(0) += hipx_offset_;   goal_joint_pos_(8) += hipx_offset_;
+                goal_joint_pos_(4) -= hipx_offset_;   goal_joint_pos_(12) -= hipx_offset_;
+                std::cout << "[STANDUP] M20_STANDUP_HIPX_DEG=" << (hipx_offset_ * 180. / M_PI)
+                          << " deg ⇒ hipx 目标 (fl/fr/hl/hr) = " << goal_joint_pos_(0) << " / "
+                          << goal_joint_pos_(4) << " / " << goal_joint_pos_(8) << " / "
+                          << goal_joint_pos_(12) << "（镜像对称；偏离训练姿态，别进 RL）"
+                          << std::endl;
+            }
         }
     ~StandUpState(){}
 
@@ -142,9 +177,11 @@ public:
             }else{
                 // 第二段：按高度规划从 pre_height_ 抬到 stand_height_
                 double new_time = run_time_ - time_stamp_record_ - stand_duration_;
-                float plan_height = GetCubicSplinePos(cp_ptr_->pre_height_, 0, cp_ptr_->stand_height_, 0,
+                const float goal_h = (stand_height_m_ > 0.f) ? stand_height_m_
+                                                             : cp_ptr_->stand_height_;
+                float plan_height = GetCubicSplinePos(cp_ptr_->pre_height_, 0, goal_h, 0,
                                                     new_time, stand_duration_);
-                float plan_height_next = GetCubicSplinePos(cp_ptr_->pre_height_, 0, cp_ptr_->stand_height_, 0,
+                float plan_height_next = GetCubicSplinePos(cp_ptr_->pre_height_, 0, goal_h, 0,
                                                     new_time+dt, stand_duration_);
                 float hipy_pos = GetHipYPosByHeight(plan_height);
                 float hipy_vel = (GetHipYPosByHeight(plan_height_next) - hipy_pos) / dt;

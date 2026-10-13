@@ -190,6 +190,8 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | `M20_SIM_WHEEL_STEP_RAD_S` / `_AT` | 仿真侧轮子速度阶跃（P1-2 验收） | `0`（关）/ `5 s` | 仿真 |
 | `M20_STANDUP_VENDOR` | 站立状态机用**厂商原版两段式**（先蹲到 `pre_height_` 0.12 m，再按高度规划升到 `stand_height_` 0.48 m；轮子 kp=0、第一段 kd=0）而不是"一步到训练默认姿态并保持"。**结束站位与训练默认姿态不同 ⇒ 别带着它进 RL**（DEF-060 / TODO P1-9 的 A/B 用） | `0`（本仓库行为） | 状态机（站立） |
 | `M20_IDLE_ZERO_GAIN` | idle 状态机发**零增益**（厂商原版：完全不使力）而不是 `kp 80/2` 主动保持。⚠️ 进 SDK 模式后腿就没人撑了 ⇒ 会塌（厂商的用法是"站完交还控制权"，不是长期挂在 SDK 里） | `0`（本仓库行为） | 状态机（idle） |
+| `M20_STANDUP_HIPX_DEG` | 站立时给四个 hipx 目标加**镜像对称**偏置（fl/hl `+d`、fr/hr `−d`，单位度）——用于真机"站姿 → 侧摆静力矩"扫描（DEF-059 §7）。⚠️ 偏离训练姿态，别进 RL | `0` | 状态机（站立） |
+| `M20_STANDUP_HEIGHT_M` | **配合 `M20_STANDUP_VENDOR=1`** 覆盖厂商的 `stand_height_`（默认 0.48 m），用于扫描"站高 → 各关节静力矩"。⚠️ 同上 | 未设 = 0.48 m | 状态机（站立） |
 
 > 上面这些开关多数是为**旧 checkpoint** 的诊断引入的（在
 > `wip/old-ckpt-arm-coupling-debug` 上）。换到新 checkpoint 后要逐条判定
