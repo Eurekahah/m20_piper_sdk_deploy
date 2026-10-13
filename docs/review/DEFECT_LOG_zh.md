@@ -36,6 +36,109 @@
 | 2026-10-13 | **修编号冲突**：10-10 那批（VR 限速 / 手感旋钮 / 双发布者 / 复位与 IK 健壮性 / 离线依赖）与 10-12 真机条目撞了 039、040 两个号 ⇒ 前者重编号为 **DEF-052~DEF-056**（标题里标了"原 DEF-0xx"），并同步更新 DONE / TODO / DEPLOY_REAL_VR / `arm_pose_demo.py` 里的引用；10-12/13 的条目（039/040/044/045/046）**保持原号不动**；**DEF-047 留给 10-13 的 `tests/arm_ik_unreachable_check.py`（IK 够不到目标时的行为回归），该条目尚未在本文登记** | `sync/2026-10-13-defnumber-fix` |
 | 2026-10-13 | 新增 **DEF-058**（头显页面依赖公网 CDN 拉 A-Frame ⇒ 内网里页面"卡住"、只剩中间一张卡片、点哪都没反应；**不是上位机性能问题**）：`index.html` 改本地 `aframe.min.js` + 缺失时页顶红色横幅；新增 `scripts/fetch_aframe.sh`（6 镜像 + 校验 + `--check`）；`sync_to_robot.sh` 与 VR 启动横幅都提示引擎是否就位；HTTPS 服务改 `ThreadingHTTPServer` | `sync/2026-10-13-vr-ip` |
 | 2026-10-13 | **DEF-058 闭环**（操作员实测：放好 `aframe.min.js` 后头显页面正常、可遥操）；新增 **`docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么）**——把 A-Frame、上位机 `PyYAML`/`websockets` wheel、**不用下的** scipy/numpy/pynput/torch、放哪/怎么自检/缺了的症状/换机器后重做哪些集中一处，并在 `DEPLOY_REAL_VR_zh.md` §1.5/§1.6、`COMMANDS_SIM2REAL_zh.md` §0.3、`docs/README_zh.md` 索引里加了指针 | `sync/2026-10-13-vr-ip` |
+| 2026-10-13 | 新增 **DEF-059**（真机"左前侧摆关节过温 100 ℃ → 安全接管 → 趴下 → 10 s 后恢复"）：**仿真侧没有电机热模型**（`mujoco_simulation_ros2.py` 把 `motion_temp/driver_temp` 写死 40/45 ℃ ⇒ 温度那条接管路径在 sim2sim 不可达）；等价可观测的**关节力矩**实测为**长期静载**：站立状态机 `fl_hipx +12.0 N·m`、RL 站立零命令 `fl_hipx +15.1 N·m`（四个侧摆里最大、且是 `fr_hipx` 的 2.3 倍），是 M20 腿型"侧摆轴在机体侧 / 轮子接地点在 y≈0.23"的固有静负荷。新增离线探针 `tests/joint_torque_report.py` | `investigate/left-hipx-temp-sim2sim` |
+
+---
+
+### DEF-059 `2026-10-13` 站立/RL 站立时**前腿侧摆关节长期顶 12~15 N·m**；仿真无热模型 ⇒ 真机"左前侧摆过温 → 100 ℃ 安全接管 → 趴下 → 10 s 后恢复"在 sim2sim **无法出现**（只能看力矩）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-13` |
+| 类型 | `缺陷`（真机现象；仿真侧缺热模型 = 可观测性缺口） |
+| 状态 | `未修（见 TODO_zh.md P1-7）` |
+| 影响面 | `二者`（`fl_hipx` 的静载在 sim2sim 与真机同源；真机才有温度） |
+| 关联 | `investigate/left-hipx-temp-sim2sim`；`mujoco_simulation_ros2.py:836-837/874-875`（写死温度）、`include/utils/safe_controller.hpp:190/202/381`（`>100 ℃` ⇒ `safe_control_mode=2`）、`state_machine/quadruped_wheel/{standup,rl_control,joint_damping}_state.hpp`、`state_machine/parameters/m20_control_parameters.cpp`（腿 `swing_leg_kp_ = 200`、`hip_len_ = 0.104`）、新增 `tests/joint_torque_report.py`；相关 **DEF-036**（vy/wz 方向不对称，同属"策略/结构左右不对称"家族） |
+
+**1. 现象（操作员 2026-10-13 报告的真机现象 + 本轮仿真复现）**
+
+* **真机**：进入**站立状态机**或 **rl_control** 后过一段时间，**左前侧摆关节（`fl_hipx`）**
+  温度升到 **100 ℃** ⇒ 触发安全保护 ⇒ 机器人**趴下**；约 **10 s** 后温度掉回阈值以下 ⇒
+  **又能恢复**。
+* **复现命令（仿真侧，看等价量"关节力矩"）**：
+  ```
+  M20_SIM_TELEMETRY=/root/m20_piper_ws/tmp/temp_probe/stand.telemetry.csv \
+    python3 tests/sim2sim_smoke.py --mode stand --duration 60
+  M20_SIM_TELEMETRY=.../rl.telemetry.csv  python3 tests/sim2sim_smoke.py --mode rl  --duration 60
+  M20_SIM_TELEMETRY=.../hold.telemetry.csv python3 tests/sim2sim_smoke.py --mode hold --duration 40
+  python3 tests/joint_torque_report.py tmp/temp_probe/rl.telemetry.csv --t0 25
+  ```
+* **实测（200 Hz 遥测；MJCF 序；单位 N·m。`stand`/`hold` 取 t≥15 s 窗，
+  `rl` 取 t≥25 s 窗 —— 进 RL 后的收敛要 ~30 s，窗口取早了会把入口瞬态算进来，
+  例如 `rl` 用 t≥15 s 窗会得到 fl 15.24 / hr −12.44）**：
+
+  | 状态（用例） | 腿 kp/kd | `fl_hipx` | `fr_hipx` | `hl_hipx` | `hr_hipx` | 轮接触力 fl/fr/hl/hr | 站高 |
+  |---|---|---|---|---|---|---|---|
+  | 站立状态机（`--mode stand`，`z` 后停在 standup 保持） | 200 / 4 | **+12.0**（std 0.002） | −11.9 | +8.0 | −7.9 | 106.5 / 105.9 / 86.2 / 85.6 N | 0.514 m |
+  | 仿真自带保持（`--mode hold`，无状态机，目标=训练默认姿态） | 80 / 2 | **+18.6**（std 3.0） | −18.5 | +8.7 | −8.6 | 114.1 / 113.6 / 78.5 / 77.9 N | 0.479 m |
+  | RL 站立（`--mode rl`，零速度命令） | 80 / 2 | **+15.1**（std 0.09） | −6.6 | +4.6 | −13.6 | 127.0 / 80.5 / 70.2 / 106.5 N | 0.510 m |
+
+* 时间演化（`--ts`，三次独立 run 结论一致）：进 RL 后 `fl_hipx` 先冲到 **+20.2 N·m**
+  （t≈8 s，入口瞬态），随后单调收敛，**t≈30 s 起钉在 +15.0 N·m**；150 s 的长用例里
+  **t≥70 s 之后完全不变**（fl +15.03 / fr −6.44 / hl +4.60 / hr −13.68，站高 0.5097 m），
+  即这是一条**稳态**而非漂移。
+* 全腿热负荷（`mean(τ²)`，与电机铜损同量纲）排序：
+  `fl_knee 460.7 > fl_hipy 266.5 > hr_knee 240.7 >` **`fl_hipx 227.2`** `> hr_hipx 184.0`
+  `≫ fr_hipx 43.0 > hl_hipx 21.0` ⇒ **左前侧摆是四个侧摆里最大的那个，且是右前的 5.3 倍**。
+* 频谱：四个侧摆的高频段（>5 Hz）都 **< 0.001 N·m** ⇒ 仿真里**没有抖动/颤振**，
+  热负荷全部来自"**直流静载**"，不是高频来回。
+
+**2. 根因**
+
+* **仿真侧没有温度模型（可观测性缺口）**：`mujoco_simulation_ros2.py:836-837`（腿）与
+  `:874-875`（臂）把 `motion_temp = 40.0`、`driver_temp = 45.0` 写死 ⇒
+  `SafeController::IsMotorTempertureNormal()`（`safe_controller.hpp:190`）的
+  `max_temp > 100` **永远不成立** ⇒ 真机那条"过温 → 接管"路径在 sim2sim 里**不可达**。
+  （真机链路已核对：`:202` 置 `safe_control_mode=2` ⇒ `standup_state.hpp` /
+  `rl_control_state.hpp` 的 `LoseControlJudge()` ⇒ `JointDampingState`（只发 kd=2/1、
+  无位置目标 = 卸力）⇒ **趴下**；温度掉回后 `Safe control recovered: safe_control_mode -> 0`
+  （`:396-399`）⇒ **又能恢复** —— 与操作员描述的现象链完全一致。）**故本现象在
+  sim2sim 里既不会出现、也无法验证。**
+* **力矩为什么长期这么大（机理，可独立复算）**：`fl_hipx` 关节轴在**机体侧**
+  （MJCF `fl_hipx` body `y = +0.0685`），而轮子接地点在 `y = +0.0685 + 0.0984 + 0.0597
+  ≈ 0.2266` ⇒ **力臂 ≈ 0.158 m**。平地站立时前腿承担 ~106 N（前/后 ≈ 55/45）
+  ⇒ 侧摆关节必须顶住 `106 × 0.158 ≈ 16.7 N·m`，扣掉腿自重那部分（≈2 N·m）后与实测的
+  12~15 N·m 同量级。**这是 M20 腿型 + 站立姿态的固有静负荷**：与 kp 无关，
+  kp 只决定"让步多少角度"——站立状态机 kp=200 时停在 `q = −0.060 rad`（200×0.060 = 12.0），
+  RL kp=80 时停在 `q_des − q = 0.188 rad`（80×0.188 = 15.1）。
+* **关节角速度 ≈ 0 ⇒ 没有机械功率，只有铜损**：`P ≈ I²R ≈ (τ/k_t)²·R ∝ τ²`，
+  电机电流长期为"顶力矩/转矩常数"⇒ 温度单调升到某个平衡值；只要平衡值 > 100 ℃，
+  真机就会"顶一会儿 → 过温 → 趴下 → 冷却 → 再站起来"循环。
+* **"左前"这个方位在 RL 站立里是稳定的**：策略在零速度命令下自己收敛到**不对称站姿**
+  （反推命令：`fl_hipx` 目标 ≈ +0.19 rad、`fr_hipx` ≈ −0.05 rad；动作值 +1.5 / −0.4），
+  轮接触力也长期偏成 127/80/70/107 N（对角吃重）。两次 45~60 s 与一次 150 s 用例都复现
+  同一模式（注意：策略是确定性的、仿真初始状态也几乎对称，所以这**不能**当成独立采样，
+  "重的那一侧是不是永远是左前"仍需在真机/带扰动的情况下确认）。
+* 在**站立状态机**里左右是基本对称的（12.0 / −11.9）⇒ 若操作员是在"刚站起来还没进 RL"
+  的阶段看到左前先热，那更可能是**真机自身的左右差异**（标定/装配/线的走向/摩擦）叠加，
+  而不是仿真里的这条不对称。
+
+**3. 修正**
+
+* 本轮**没有改任何控制/姿态逻辑**（真机现象、且改站姿会直接把策略推到分布外）：
+  新增离线探针 `tests/joint_torque_report.py`（τ 统计 / 热负荷排序 / 频谱 / 饱和检查 /
+  1 Hz 时间序列），登记本条目。
+* 备选方案（都**没做**，需用户/训练侧决定）：
+  a) 给仿真加**一阶热模型**（`dT/dt = (T_amb − T)/τ_th + k·τ²`，按 `tau`/`dq` 算铜损），
+     让"过温 ⇒ 自动接管 ⇒ 倒 ⇒ 冷却恢复"这条安全路径在 sim2sim 里可回归——
+     参数只能取假设值，但足以验证**逻辑**；
+  b) 真机核对：`ros2 topic echo /JOINTS_DATA` 看 16 个关节的 `torque` 与 `motion_temp`
+     长期曲线，确认 `fl_hipx` 是"纯静载"还是"静载 + 抖动/额外摩擦"（若是后者，仿真
+     测不到，需要查电流环/减速箱/装配）；
+  c) 若确认是静载：从**姿态**入手降载（站高、髋外展角、前后配重/加配重），
+     但这是训练侧改动（会改策略的分布），必须两边同步。
+
+**4. 结果（验收）**
+
+* 实测数据：见 §1 的对照表与时间序列（`stand` 47 s、`hold` 42 s、`rl` 64 s、`rl_b` 49 s、
+  `rl_long` 154 s 共 5 次用例，`rl` 档全部 PASS）。
+* 回归：`tests/sim2sim_smoke.py --mode stand|hold|rl` 本身判据（高度/倾角）全过
+  （`rl` 档 0.502~0.514 m、倾角 ≤0.9°），说明**这个静载没有把机器人顶坏**，
+  它是"正常但很费电/很热"的工况。
+* 遗留问题：① 仿真无法验证过温保护（无热模型）；② 真机 `fl_hipx` 是"静载"还是
+  "静载+抖动"未确认；③ "左前"这一侧在真机上的可重复性未确认（策略确定性 ⇒ 仿真的
+  复现不能当独立样本）；④ 原始遥测 CSV 体积大（单次 10~33 MB），只留在
+  `tmp/temp_probe/`（`tmp/` 已 gitignore），未入库。
 
 ---
 
