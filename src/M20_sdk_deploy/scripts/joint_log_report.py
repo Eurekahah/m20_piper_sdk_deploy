@@ -9,6 +9,17 @@
   ③ 谁最热 vs 谁力矩最大（若两者不是同一个关节 ⇒ 不是纯铜损）；
   ④ `--spectrum`：扭矩的 std 与高频带能量（仿真里是 <0.001 N·m，真机若有 ⇒ 纹波/极限环）。
 
+⚠️ **读法（2026-10-13 踩过的坑）**：真机一次长时间的站立会经历"保持 → 过温保护 → 卸力塌下 →
+冷却 → 重新站起"好几个循环。**全程平均会把过渡段的力矩混进来，看着像"抖动"**，实际稳态是
+一条平的静载。所以本脚本把 **①** 拆成两层：
+
+* `保持段`：所有髋/膝速度都很小（`--still-vel`，默认 0.2 rad/s）且持续 > 1 s 的片段；
+* `过渡/塌下`：膝或髋速度超过 `--move-vel`（默认 1.0 rad/s）的片段，单独列出（这就是保护触发）。
+
+另外真机 `/JOINTS_DATA` 是**机器人自己的关节系**，与仿真（策略系）差一个 `dir`
+（`M20Interface` 的 `joint_dir` 表，写在本脚本里，`--no-dir` 可关）。**力矩必须换算到策略系**
+才能和仿真参考值比大小/方向。
+
 用法（开发机或容器里，需要 numpy）::
 
     python3 src/M20_sdk_deploy/scripts/joint_log_report.py joints_xxx.csv
@@ -53,6 +64,8 @@ REF_RL = {
 REF = {"standup": REF_STANDUP, "rl": REF_RL, "none": None}
 
 OVER_TEMP = 100.0
+# M20Interface 的 joint_dir（硬件 → 策略系）；顺序 fl,fr,hl,hr × hipx,hipy,knee,wheel
+M20_DIR = [1, 1, -1, 1, 1, -1, 1, -1, -1, 1, -1, 1, -1, -1, 1, -1]
 
 
 def load(path):
@@ -101,6 +114,12 @@ def main() -> int:
     ap.add_argument("--ref", choices=("rl", "standup", "none"), default="rl",
                     help="与哪套仿真参考值对照（默认 rl）")
     ap.add_argument("--spectrum", action="store_true", help="打印扭矩高频带能量")
+    ap.add_argument("--still-vel", type=float, default=0.2,
+                    help="判定『保持段』的速度阈值（rad/s，髋/膝，默认 0.2）")
+    ap.add_argument("--move-vel", type=float, default=1.0,
+                    help="判定『塌下/抬起』过渡的速度阈值（rad/s，默认 1.0）")
+    ap.add_argument("--no-dir", action="store_true",
+                    help="不按 M20Interface 的 joint_dir 换算（直接看原始符号）")
     args = ap.parse_args()
 
     d = load(args.csv)
@@ -110,6 +129,13 @@ def main() -> int:
         print(f"[err] 窗口内样本太少（{sel.sum()}）")
         return 1
     names = d["names"]
+    # 关节名：真机 /JOINTS_DATA 的 name 字段可能只是序号数字（如 "0".."15"）⇒ 用 MJCF 名
+    names = [NAMES[i] if (not n or n.strip().isdigit()) else n for i, n in enumerate(names)]
+    dirs = [1] * DOF if args.no_dir else M20_DIR
+    tau = d["tau"] * np.array(dirs)[None, :]      # 换算到策略系（与仿真参考值同口径）
+    d["tau"] = tau
+    frame = "原始（机器人系）" if args.no_dir else "策略系（已按 joint_dir 换算）"
+    print(f"力矩口径: {frame}")
     fs = 1.0 / float(np.median(np.diff(w)))
     dur = float(w[sel][-1] - w[sel][0])
     print(f"{args.csv}: {d['n']} 行，{dur:.1f} s（窗口 {w[sel][0]:.1f}~{w[sel][-1]:.1f} s，"
@@ -119,23 +145,65 @@ def main() -> int:
               f"pitch ±{np.nanmax(np.abs(d['imu_pitch'][sel])):.1f}° "
               f"(倾角大 ⇒ 中途趴下/被抬动了)")
 
-    # ---- ① 逐关节：τ / 温度 / 位置 ----
+    # ---- 保持段 / 塌下事件（先分清楚"静载"与"过渡"，否则统计会被拉歪）----
+    leg_move = np.abs(d["vel"][sel, :]).copy()
+    leg_move[:, 3::4] = 0.0                     # 轮子不算
+    # "卸力/趴下"段：12 个腿关节的力矩中位数都很小（保护接管后 legs 只挂 kd）
+    leg_tau_med = np.median(np.abs(tau[sel][:, [i for i in range(DOF) if i % 4 != 3]]),
+                            axis=1)
+    limp = leg_tau_med < 1.0
+    still = (leg_move.max(axis=1) < args.still_vel) & ~limp
+    moved = leg_move.max(axis=1) > args.move_vel
+    segs = []
+    for i, ok in enumerate(still):
+        if ok:
+            if segs and i - segs[-1][-1] == 1:
+                segs[-1].append(i)
+            else:
+                segs.append([i])
+    segs = [s for s in segs if len(s) > fs]     # > 1 s
+    evs = []
+    for i, ok in enumerate(moved):
+        if ok:
+            if evs and i - evs[-1][-1] < int(2 * fs):
+                evs[-1].append(i)
+            else:
+                evs.append([i])
+    mts = d["mtemp"][sel]
+    print(f"\n== 保持段（全部髋/膝速度 < {args.still_vel} rad/s，>1 s）==")
+    for s in segs:
+        hot = max(range(DOF), key=lambda i: mts[s[-1], i])
+        print(f"  {w[sel][s[0]]:7.1f}~{w[sel][s[-1]]:7.1f}s（{len(s) / fs:5.1f}s）"
+              f"  最热 {names[hot]} {mts[s[0], hot]:.1f}→{mts[s[-1], hot]:.1f} ℃")
+    if not segs:
+        print("  （没有 >1 s 的静止保持段 ⇒ 这段数据全是过渡/抬起/放下）")
+    n_limp = int(limp.sum())
+    print(f"== 『卸力/趴下』（12 个腿关节力矩中位数 < 1 N·m）: {n_limp / fs:.1f} s ==")
+    hold_idx = np.concatenate(segs) if segs else np.array([], dtype=int)
+    print(f"== 『塌下/抬起』事件（髋/膝速度 > {args.move_vel} rad/s）: {len(evs)} 次 ==")
+    for g in evs:
+        print(f"  t≈{w[sel][g[0]]:6.1f}s 起，持续 {len(g) / fs:4.1f}s")
+
+    # ---- ① 逐关节：τ / 温度 / 位置（保持段口径 + 全程口径）----
     mt, dt = d["mtemp"][sel], d["dtemp"][sel]
+    tau_sel = tau[sel]
     ref = REF[args.ref]
-    print(f"\n== ① 逐关节（窗口内均值；对照 `--ref {args.ref}`）==")
+    src = tau_sel[hold_idx] if len(hold_idx) else tau_sel
+    tag = "保持段" if len(hold_idx) else "全程（没找到保持段）"
+    print(f"\n== ① 逐关节（{tag}；对照 `--ref {args.ref}`）==")
     hdr = f"{'joint':>9} {'tau均值':>9} {'tau_std':>8} {'tau极值':>16}"
     if ref:
         hdr += f" {'仿真tau':>8} {'差':>8}"
     hdr += f" {'q均值':>8}{'仿真q':>8} {'m_temp 首/末/峰':>21} {'d_temp 首/末/峰':>21}"
     print(hdr)
     for i in range(DOF):
-        tau = d["tau"][sel, i]
-        q = d["pos"][sel, i]
-        line = (f"{names[i]:>9} {tau.mean():9.3f} {tau.std():8.3f} "
-                f"{tau.min():7.2f}/{tau.max():7.2f}")
+        x = src[:, i]
+        q = d["pos"][sel, i] * dirs[i]
+        line = (f"{names[i]:>9} {x.mean():9.3f} {x.std():8.3f} "
+                f"{x.min():7.2f}/{x.max():7.2f}")
         if ref:
             r = ref["tau"][i]
-            line += f" {r:8.2f} {tau.mean() - r:+8.2f}"
+            line += f" {r:8.2f} {x.mean() - r:+8.2f}"
         line += f" {q.mean():8.3f}"
         line += f"{ref['q'][i]:8.3f}" if (ref and ref["q"][i] is not None) else f"{'—':>8}"
         line += (f" {mt[0, i]:6.1f}/{mt[-1, i]:6.1f}/{mt[:, i].max():6.1f}"
@@ -153,9 +221,15 @@ def main() -> int:
                 continue
             found = True
             idx = np.flatnonzero(over)
-            print(f"  ⚠️ {names[i]} 的 {label} > {OVER_TEMP:.0f} ℃: "
-                  f"首次 {w[sel][idx[0]]:.1f}s，持续 {len(idx) / fs:.1f} s，"
-                  f"峰值 {arr[:, i].max():.1f} ℃")
+            eps = []
+            for k in idx:
+                if eps and k - eps[-1][-1] <= int(0.5 * fs):
+                    eps[-1].append(k)
+                else:
+                    eps.append([k])
+            txt = " / ".join(f"{w[sel][e[0]]:.1f}s 起 {len(e) / fs:.1f}s" for e in eps)
+            print(f"  ⚠️ {names[i]} 的 {label} > {OVER_TEMP:.0f} ℃: {len(eps)} 次"
+                  f"（{txt}），峰值 {arr[:, i].max():.1f} ℃")
     if not found:
         print(f"  窗口内没有任何关节的 m/d_temp 超过 {OVER_TEMP:.0f} ℃"
               f"（若无过温，说明这次没复现；可看下面的斜率/温差）")
