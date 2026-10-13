@@ -64,6 +64,15 @@ DEST='~/M20_sdk_deploy/src/M20_sdk_deploy' bash src/M20_sdk_deploy/scripts/sync_
 > 密码是**一个单引号** `'`（首次会问；配好免密就不用输了）：
 > `ssh-copy-id user@10.21.31.103`。
 
+> **头显页面要的离线引擎别忘了**（DEF-058）：`third_party/XLeVR/web-ui/aframe.min.js`
+> 1247 KB，仓库里**默认不自带**（要联网下，或从别的机器拷）——缺了它头显里只会显示中间一张
+> `VR Teleoperation` 卡片、点哪都没反应。同步脚本会打印它是"已就位"还是缺失：
+>
+> ```bash
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh          # 在有外网的机器上跑一次
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check  # 自检（存在/大小/不是错误页）
+> ```
+
 ### 0.2 在 M20 上编译真机版（**必须显式 `-DSIM2SIM=OFF`**）
 
 ```bash
@@ -78,6 +87,10 @@ grep -c SIM2SIM build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make   # 应
 > 否则还是恒等标定的仿真接口（`DEF-025`）。
 
 ### 0.3 M20 上的 Python 依赖（**离线**，只装一次）
+
+> 📥 本节与 §0.1 的备注（还有头显要的 `aframe.min.js`）汇总在
+> [`docs/OFFLINE_ASSETS_zh.md`](../../docs/OFFLINE_ASSETS_zh.md)：
+> 「要下什么 / 放哪 / 怎么下 / 怎么自检 / 缺了什么症状 / 换机器后重做哪些」，一页看完。
 
 VR 节点要 `yaml` 与 `websockets`（`xlevr/config.py`、`xlevr/inputs/vr_ws_server.py` 各用一个）。
 **scipy 已经不需要**（2026-10-10 起用纯 numpy 实现替代）；**numpy 也不用传**

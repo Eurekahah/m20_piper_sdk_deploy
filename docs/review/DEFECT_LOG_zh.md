@@ -34,6 +34,8 @@
 | 2026-10-13 | 新增 DEF-046（VR 复位只把机身锚点置失效 ⇒ 复位前的偏移被固化成新零点、机身永远回不到默认；按操作员语义改为"机身/臂/速度回默认 + 交还控制权，再按 B 重新标定"，新增回归 `tests/vr_reset_semantics_check.py` 与 A/B 复现） | 工作区（建议 `fix/vr-reset-defaults`） |
 | 2026-10-13 | 新增 DEF-057（VR 节点把地址打印成 `https://localhost:8443`：IP 探测依赖外网默认路由，真机内网没有 ⇒ 改为**离线枚举所有网卡地址**（无线优先）+ `M20_VR_IP` 指定；顺带修 `xlevr/config.py` 的 `config.yaml` 相对路径 ⇒ 警告消失且改 yaml 生效） | `sync/2026-10-13-vr-ip` |
 | 2026-10-13 | **修编号冲突**：10-10 那批（VR 限速 / 手感旋钮 / 双发布者 / 复位与 IK 健壮性 / 离线依赖）与 10-12 真机条目撞了 039、040 两个号 ⇒ 前者重编号为 **DEF-052~DEF-056**（标题里标了"原 DEF-0xx"），并同步更新 DONE / TODO / DEPLOY_REAL_VR / `arm_pose_demo.py` 里的引用；10-12/13 的条目（039/040/044/045/046）**保持原号不动**；**DEF-047 留给 10-13 的 `tests/arm_ik_unreachable_check.py`（IK 够不到目标时的行为回归），该条目尚未在本文登记** | `sync/2026-10-13-defnumber-fix` |
+| 2026-10-13 | 新增 **DEF-058**（头显页面依赖公网 CDN 拉 A-Frame ⇒ 内网里页面"卡住"、只剩中间一张卡片、点哪都没反应；**不是上位机性能问题**）：`index.html` 改本地 `aframe.min.js` + 缺失时页顶红色横幅；新增 `scripts/fetch_aframe.sh`（6 镜像 + 校验 + `--check`）；`sync_to_robot.sh` 与 VR 启动横幅都提示引擎是否就位；HTTPS 服务改 `ThreadingHTTPServer` | `sync/2026-10-13-vr-ip` |
+| 2026-10-13 | **DEF-058 闭环**（操作员实测：放好 `aframe.min.js` 后头显页面正常、可遥操）；新增 **`docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么）**——把 A-Frame、上位机 `PyYAML`/`websockets` wheel、**不用下的** scipy/numpy/pynput/torch、放哪/怎么自检/缺了的症状/换机器后重做哪些集中一处，并在 `DEPLOY_REAL_VR_zh.md` §1.5/§1.6、`COMMANDS_SIM2REAL_zh.md` §0.3、`docs/README_zh.md` 索引里加了指针 | `sync/2026-10-13-vr-ip` |
 
 ---
 
@@ -569,6 +571,75 @@ onnxruntime，容器未起，记为待补跑（`bash tests/run_all.sh` 的 L1）
 > 所以把默认值标定到 1500 N（并在文件头/文档里写明原因）。
 
 **5. 顺带**：插电后实时因子回到 **1.000**（电池时 0.67），印证 DEF-034。
+
+---
+
+### DEF-058 `2026-10-13` 头显页面依赖公网 CDN 拉 A-Frame ⇒ 内网里页面"卡住"、只有一张卡片、点哪都没反应
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-13` |
+| 类型 | 缺陷（离线部署） |
+| 状态 | `已修 · 已闭环`（**2026-10-13 操作员实测：头显刷新后恢复正常，可正常遥操**） |
+| 影响面 | 真机 / 遥操作 |
+| 关联 | `third_party/XLeVR/web-ui/index.html`、新增 `scripts/fetch_aframe.sh`、`scripts/sync_to_robot.sh`、`vr_teleop_device.py`、`docs/DEPLOY_REAL_VR_zh.md` §1.6/§5.2/§8/§9 |
+
+**1. 现象**：头显里能打开 `https://10.21.31.103:8443`，但**页面卡住**：
+屏幕中间只有一张写着 `VR Teleoperation` 的卡片，没有 `Enter VR` / `Start Controller Tracking`
+之类的按钮，**点哪儿都没反应**（操作员问"是不是 M20 主板跑不动这些程序"）。
+
+**2. 根因**：**不是算力问题**——上位机的 HTTPS:8443、WS:8442、静态文件都正常服务
+（地址能打开本身就是证据）。真正的原因在页面这一侧：
+
+* `web-ui/index.html` 第 8 行原本是
+  `<script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>`
+  —— **公网 CDN**。上位机和头显都在内网、没有外网 ⇒ 这个脚本拉不下来：
+  * 它在 `<head>` 里且**没有 `defer`/`async`** ⇒ **阻塞 HTML 解析**，
+    浏览器一直等这个永远不来的响应，页面就"卡住"（等到超时才把后面解析出来）；
+  * `web-ui/vr_app.js` 第 3 行顶层就是 `AFRAME.registerComponent('controller-updater', …)`
+    ⇒ 抛 `AFRAME is not defined` ⇒ **整个文件一行注册都执行不到**
+    （包括那个绿色 `Start Controller Tracking` 按钮的注入逻辑）；
+  * 没有 A-Frame 时 `<a-scene>` 只是个未知标签、不会渲染，A-Frame 自带的
+    `Enter VR` 按钮当然也不存在。
+* 同一页面的 `interface.js` 是**另一个文件**，它照常执行：检测到"设备支持 `immersive-vr`"
+  就把桌面 UI 隐藏、只显示 `#vrContent` —— 那是 `styles.css` 里
+  `position:fixed; left/top:50%; z-index:9999` 的**纯静态 div**（里面只有标题文字），
+  没有任何事件 ⇒ **屏幕上就只剩中间那张卡片，且点什么都没反应**。
+* 顺带一个会放大"卡住的观感"的问题：HTTPS 服务用的是**单线程**
+  `http.server.HTTPServer`，而浏览器会并发开好几条连接
+  （`index.html` + 3 个 `.js` + `.css` + `.jpg`），一次只服务一条 ⇒ 加载被拉长。
+
+**3. 修正**：
+* `web-ui/index.html`：改用**同目录的离线副本** `aframe.min.js`（`defer`，与
+  `vr_app.js`/`interface.js` 保持先后顺序），页面上再无阻塞式 CDN 引用；
+  并新增兜底脚本：本地引擎缺失时 ① 立刻在页面顶部插一条**红色横幅**（写清缺什么文件、
+  怎么修 —— 头显里看不到 devtools，这条是给操作员看的）；② 若头显恰好能上外网，
+  从 jsdelivr → unpkg → aframe.io 依次补一份并**自动刷新一次**
+  （`sessionStorage` 标记只试一次，避免刷新循环）。
+* 新增 `scripts/fetch_aframe.sh`（**在有外网的机器上跑**）：6 个镜像
+  （官方 release / jsdelivr / unpkg / cdnjs / bootcdn / staticfile）依次尝试，
+  校验"够大 + 不是 HTML 错误页 + 内含 `AFRAME`"后落到 `web-ui/`；
+  `--check` 只做自检，`--url` / `--dest` 可指定。
+* `scripts/sync_to_robot.sh`：同步前打印 A-Frame 是否就位；缺了直接给出
+  "头显里会怎样 + 该跑哪条命令"的警告。
+* `vr_teleop_device.py`：启动横幅新增
+  `头显页面: 已自带离线 A-Frame（xxxx KB）`（缺失时 ⚠️ + 修法）；
+  HTTPS 服务换成 `http.server.ThreadingHTTPServer` + `daemon_threads=True`。
+* 文档：`DEPLOY_REAL_VR_zh.md` 新增 **§1.6**（离线引擎这一步 + 怎么确认好了）、
+  §5.2 头显侧提示、§8 排障两行、§9 真机实测项（已勾）、§10 命令速查两行。
+
+**4. 验收**（本机静态/单测；容器与头显此刻都不可用）：
+
+| 项 | 结果 |
+|---|---|
+| `index.html` 是否还有阻塞式 CDN 引用 | **无**：`<script src="aframe.min.js" defer>`，`defer` 顺序 = `aframe.min.js → vr_app.js → interface.js`；CDN 地址只出现在兜底列表里（1 处） |
+| 页面内联脚本语法（`node` 逐段 `new Function()` 解析） | **2/2 OK**（2327 / 337 字符） |
+| `vr_app.js` / `interface.js` 语法（`node --check`） | **OK** |
+| `_display_info()` 两个分支（本机模拟：真缺文件 / 临时放一份 400 KB 假文件） | 缺 → `⚠️ 头显页面缺离线引擎 …` + `fetch_aframe.sh`；有 → `头显页面: 已自带离线 A-Frame（390 KB）` |
+| `fetch_aframe.sh --check` | 缺文件 → `exit 1` + 指出缺哪个路径；假文件（585 KB、含 `AFRAME`）→ `OK … exit 0`；HTML 错误页 → 判为太小/HTML（拒绝） |
+| `vr_teleop_device.py` 语法 | `python3 -m py_compile` OK |
+| **头显端实机复核** | ✅ **2026-10-13 操作员实测通过**：把 `aframe.min.js` 放到 `web-ui/` 后头显刷新页面 → 顶部红条消失、按钮出现，**机械臂遥操正常**（闭环） |
+| "要下载什么"的清单 | 已汇总为 `docs/OFFLINE_ASSETS_zh.md`（A-Frame + 上位机 wheel + 明确不用下的 scipy/numpy/pynput/torch + 换机器后重做哪些），并被 `DEPLOY_REAL_VR_zh.md` §1.5/§1.6、`COMMANDS_SIM2REAL_zh.md` §0.3 引用 |
 
 ---
 

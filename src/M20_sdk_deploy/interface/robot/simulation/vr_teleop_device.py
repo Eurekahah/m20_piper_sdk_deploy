@@ -280,8 +280,12 @@ class Se2VRExtendedDevice:
         try:
             handler = _SimpleFileHandler
             handler.web_root = str(XLEVR_DIR / "web-ui")
-            httpd = http.server.HTTPServer(
+            # 必须多线程：头显浏览器会**并发**开好几条连接（index.html + 3 个 .js
+            # + .css + .jpg），单线程 `http.server.HTTPServer` 一次只处理一条，
+            # 浏览器就表现为"页面卡住 / 一直转圈"（DEF-058）。
+            httpd = http.server.ThreadingHTTPServer(
                 ("0.0.0.0", 8443), handler)
+            httpd.daemon_threads = True
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(XLEVR_DIR / "cert.pem"),
                                 str(XLEVR_DIR / "key.pem"))
@@ -318,6 +322,19 @@ class Se2VRExtendedDevice:
             print("  ⚠️ 没能自动识别本机 IP（缺 `ip`/`hostname` 命令？）")
             print("     手动查：`ip -4 addr show`，"
                   "然后用 `M20_VR_IP=<你的IP>` 重启本节点")
+        # 头显页面是纯前端，靠本地 aframe.min.js 渲染 <a-scene>（DEF-058）：
+        # 没有外网的机器人一旦漏了这个文件，头显里只会剩一张卡片、按钮全都不响应。
+        aframe_file = XLEVR_DIR / "web-ui" / "aframe.min.js"
+        if aframe_file.is_file():
+            print(f"  头显页面: 已自带离线 A-Frame"
+                  f"（{aframe_file.stat().st_size // 1024} KB）")
+        else:
+            print("  ⚠️ 头显页面缺离线引擎 web-ui/aframe.min.js：")
+            print("     ⇒ 头显里只会显示中间那张 'VR Teleoperation' 卡片，"
+                  "没有 Enter VR / Start 按钮，点击无反应（DEF-058）。")
+            print("     修复：在**有外网**的机器上 "
+                  "`bash src/M20_sdk_deploy/scripts/fetch_aframe.sh`，"
+                  "同步到本机后刷新页面。")
         print("  灵敏度（可用 M20_VR_*_SENS 覆盖）: "
               f"chassis vx {self.v_x_sensitivity:g} / vy {self.v_y_sensitivity:g}"
               f" / wz {self.omega_z_sensitivity:g}; "

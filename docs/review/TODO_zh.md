@@ -249,6 +249,13 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 验收：故意留一个 `arm_stub_node.py` 在跑时，`run_all.sh` 在启动阶段就报红并指出
     是哪个话题、哪个进程。
 
+- [x] **P2-9 头显页面离线化后的真机复核（2026-10-13 新增，DEF-058）** → 已完成：
+  操作员 2026-10-13 实测——把 `aframe.min.js` 放到 `web-ui/` 后头显页面恢复正常，
+  **可正常遥操**。详见 `DONE_zh.md` 第二十五节、`DEFECT_LOG_zh.md` DEF-058。
+  - 遗留（非阻塞）：`aframe.min.js` 约 1.4 MB 的第三方文件**建议随仓库提交**
+    （与 `web-ui/` 其它文件一致），否则换机器/重新 clone 后要重跑一次
+    `fetch_aframe.sh`——"要下载什么"总表见 `docs/OFFLINE_ASSETS_zh.md`。
+
 ---
 
 ## P3 —— 工具与文档

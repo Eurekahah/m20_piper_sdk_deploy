@@ -20,6 +20,7 @@
 | 2026-10-12 | 新增第二十四节：VR 臂跟随修复（DEF-044）——柱坐标位置 + 手腕关节偏移的姿态映射、IK 收敛检查（解不出来不下发）、零空间姿态正则、关节指令限速默认 3 rad/s；新增 `tests/vr_arm_chain_check.py` 回归用例（对旧行为 FAIL、新行为 PASS） | `fix/vr-arm-ik-reachability` |
 | 2026-10-13 | 第二十四节续：MuJoCo 窗口里的可视化验收（12 个具名末端位姿指令、跟踪 ~5 mm / 0.8°）+ 补修"半径下限把标定锚点钳住" + 定位 DEF-045（残留 `arm_stub_node` 造成 /ARM_JOINTS_DATA、/ARM_TELEOP_STATE 双发布者） | `fix/vr-arm-ik-reachability` |
 | 2026-10-13 | 修复 **DEF-046**：VR 复位语义 = 机身姿态回默认 + 臂末端位姿回默认 + 速度归 0 + **交还控制权**（再按 B 把左右手柄当前位姿重采成校准原点）。改动 4 个文件（C++ 机身锚点/共享指令、键盘内部底座归位、设备侧 `RESET_KEEPS_ACTIVE` 默认 1→0），新增回归 `tests/vr_reset_semantics_check.py`（设备级 + 端到端两场景，含旧实现 A/B 复现）并接入 `tests/run_all.sh` | 工作区（建议 `fix/vr-reset-defaults`） |
+| 2026-10-13 | 新增第二十五节：头显页面**离线化**（DEF-058）——页面不再从公网 CDN 拉 A-Frame，改成本地 `aframe.min.js` + 缺失时页内红条 + `scripts/fetch_aframe.sh` 一键获取 + `sync_to_robot.sh`/启动横幅双重提示 + HTTPS 服务改多线程。**操作员当日实测通过：头显 VR 遥操正常**。新增 `docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么） | `sync/2026-10-13-vr-ip` |
 
 ---
 
@@ -324,3 +325,31 @@ DEF-029~DEF-032。
 > 否则会出现"两个发布者交替"的伪故障；另外**只靠仿真自己的腿部默认保持，机器人会缓慢
 > 摔倒**，必须 `rl_deploy` 走到 `rl_control`。两项都被记进 `TODO_zh.md`（P2-8）与
 > `COMMANDS_SIM2SIM_zh.md` §5.3。
+
+---
+
+## 二十五、头显页面离线化：不再依赖公网 CDN 的 A-Frame（DEF-058，2026-10-13）
+
+来源：操作员"真机上 `https://10.21.31.103:8443` 能打开，但进去就卡住、只有中间一张
+`VR Teleoperation` 卡片、点什么都没反应"。完整条目见 `DEFECT_LOG_zh.md` 的 **DEF-058**；
+部署步骤见 `docs/DEPLOY_REAL_VR_zh.md` §1.6。
+
+**结论**：不是上位机算力问题（HTTPS:8443 / WS:8442 / 静态文件都在正常服务）。
+是页面 `<head>` 里从 `https://aframe.io/...` **公网 CDN** 现拉的 `aframe.min.js`
+拉不到 ⇒ 阻塞解析 + `vr_app.js` 第一行就 `AFRAME is not defined` ⇒ `<a-scene>` 与
+两个启动按钮全都不存在；而 `interface.js` 照常执行、检测到设备支持 `immersive-vr`
+就只显示那个静态居中卡片（`z-index:9999`）⇒ 表现就是"卡住 + 点不动"。
+
+| 日期 | 内容 | 关键实测 | commit / 分支 |
+|---|---|---|---|
+| 2026-10-13 | `web-ui/index.html` 改为本地 `aframe.min.js`（`defer`，顺序在 `vr_app.js` 之前），删掉阻塞式 CDN 引用；加兜底脚本：本地缺失 → 页顶红色横幅（头显看不到控制台）+ 若头显能上网就从 CDN 补一份并只刷新一次 | 页面内联脚本 `node` 逐段解析 **2/2 OK**；`defer` 顺序 `aframe.min.js → vr_app.js → interface.js`；CDN 地址仅存在于兜底列表 | `sync/2026-10-13-vr-ip` |
+| 2026-10-13 | 新增 `scripts/fetch_aframe.sh`：6 个镜像依次尝试 → 校验（够大/非 HTML/含 `AFRAME`）→ 落到 `web-ui/`；`--check` 自检、`--url`/`--dest` 可指定 | `--check`：真缺 → `exit 1` 且指出路径；假文件 585 KB → `OK/exit 0`；HTML 错误页 → 拒绝 | 同上 |
+| 2026-10-13 | `sync_to_robot.sh` 同步前打印 A-Frame 是否就位（缺了给出"头显里会怎样 + 该跑哪条命令"）；`vr_teleop_device.py` 启动横幅加 `头显页面: 已自带离线 A-Frame（xxxx KB）` / ⚠️+修法；HTTPS 服务 `HTTPServer → ThreadingHTTPServer`（`daemon_threads=True`，浏览器并发 6 条连接不再互相堵） | `_display_info()` 两分支本机模拟通过（缺 → ⚠️+修法；有 → `已自带离线 A-Frame（390 KB）`）；`py_compile` OK | 同上 |
+
+> **闭环**：2026-10-13 操作员把 `aframe.min.js` 放到 `web-ui/` 后头显页面恢复正常，
+> **机械臂遥操正常**（原"待复核"项 `TODO_zh.md` P2-9 已勾掉）。
+>
+> **顺带产出**：把所有"必须先在**有外网**的机器上下载再搬过去"的东西集中成
+> [`docs/OFFLINE_ASSETS_zh.md`](../OFFLINE_ASSETS_zh.md) —— A-Frame、上位机的
+> `PyYAML`/`websockets` wheel、明确**不用**下的（scipy / numpy / pynput / torch）、
+> 各自放哪 / 怎么下 / 怎么自检 / 缺了是什么症状 / 换机器后要重做哪些。

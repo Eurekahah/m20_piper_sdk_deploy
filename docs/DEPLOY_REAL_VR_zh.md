@@ -75,6 +75,10 @@ colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm 
 
 ### 1.5 上位机的 Python 依赖（**真机不能联网，这一步必须离线做**）
 
+> 📥 **凡是"要下载什么"的问题，先看 [`OFFLINE_ASSETS_zh.md`](OFFLINE_ASSETS_zh.md)**
+> ——本节的 wheel、§1.6 的 `aframe.min.js`、以及**明确不用下的**（scipy / numpy / pynput / torch）
+> 都在那里按"放哪 / 怎么下 / 怎么自检 / 缺了的症状"列成一张表。
+
 先看缺什么：
 
 ```bash
@@ -156,6 +160,40 @@ python3 -c "import yaml, websockets; print('deps ok (vendored)')"
 > （`python3 -c "import yaml,websockets;print(yaml.__file__, websockets.__file__)"`）
 > 直接拷到真机再挂 `PYTHONPATH` —— 注意**版本要支持真机的 Python**
 > （例如 websockets ≥14 要求 Python ≥3.9，别拷过来）。
+
+### 1.6 头显页面要**自带离线 A-Frame**（漏了就是"页面卡住、点哪都没反应"）
+
+头显打开的 `https://<上位机IP>:8443` 是**纯前端页面**：VR 场景由 **A-Frame** 渲染。
+早先 `web-ui/index.html` 是直接从 `https://aframe.io/releases/1.7.1/aframe.min.js`
+现拉的（CDN）——**上位机和头显都在内网、没有外网**，这个脚本拉不下来 ⇒ `<a-scene>`
+不初始化 ⇒ 头显里只剩中间那张 `VR Teleoperation` 卡片，**A-Frame 自带的 Enter VR 按钮、
+`Start Controller Tracking` 按钮全都不会出现，点哪儿都没反应**（`DEF-058`）。
+那种"进去就卡住"的观感，就是浏览器在等一个永远拉不到的外网脚本。
+
+```bash
+# 【在有外网的机器上跑】把 A-Frame 1.7.1 落到仓库里（1247 KB）
+bash src/M20_sdk_deploy/scripts/fetch_aframe.sh
+bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check   # 自检：存在、大小对、不是错误页
+
+# 然后照常同步（脚本会打印 A-Frame 是否就位；缺了会给出提示）
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
+```
+
+* 文件落在 `src/M20_sdk_deploy/third_party/XLeVR/web-ui/aframe.min.js`——
+  和 `web-ui/` 里其它第三方源文件一样，**建议一起提交进 git**，
+  否则换机器 / 重新 clone 之后还要再跑一次 `fetch_aframe.sh`；
+* 单文件补传（懒人版）：
+
+  ```bash
+  scp src/M20_sdk_deploy/third_party/XLeVR/web-ui/aframe.min.js \
+      user@10.21.31.103:~/M20_sdk_deploy/src/M20_sdk_deploy/third_party/XLeVR/web-ui/
+  ```
+
+* **怎么确认已经好了**（不用进头显的控制台）：
+  * 起 `vr_teleop_node.py` 时启动横幅会多一行
+    `头显页面: 已自带离线 A-Frame（xxxx KB）`；缺文件时是 ⚠️ + 修法；
+  * 头显里刷新页面：**顶部那条红色报错条消失**、出现 `Enter VR` / `Start Controller Tracking`
+    按钮就对了。报错条是专门给头显加的（头显浏览器没法看 devtools / 控制台）。
 
 ---
 
@@ -291,6 +329,10 @@ VR teleop ready
    * 打不开：先在上位机
      `curl -k -s -o /dev/null -w "%{http_code}\n" https://127.0.0.1:8443` 看是不是 `200`，
      再确认头显与上位机同网段（`ping <上位机IP>`，或在上位机 `ip -4 addr show` 看有哪些网段）；
+   * **页面上如果有一条红色横幅说 "A-Frame 未加载（缺少 aframe.min.js）"**：
+     说明 `web-ui/aframe.min.js` 没同步过去（内网拉不到 CDN）——页面上的按钮都不会生效。
+     按 §1.6 解决（有外网的机器上跑 `scripts/fetch_aframe.sh` → 同步/单文件 scp → 刷新页面）。
+     正常时页面应该能直接看到 `Enter VR` / `Start Controller Tracking` 按钮；
 3. **右手柄**按 **B**：启动 + 标定（VR 终端会打印 `[VR] Button B -> START + calibrate`）。
 
 ### 5.3 谁控制什么（最容易搞错的一条）
@@ -376,6 +418,8 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 
 | 现象 | 先查什么 |
 |---|---|
+| 头显里页面**卡住**：只有中间一张 `VR Teleoperation` 卡片，没有 `Enter VR` / `Start` 按钮，点哪儿都没反应（**不是上位机性能问题**——HTTPS 8443 与 WS 8442 都在正常服务） | 页面顶部的**红色横幅**就是答案：`web-ui/aframe.min.js` 缺失 ⇒ 内网拉不到 CDN，A-Frame 没加载、`<a-scene>` 没初始化（`DEF-058`）。四步：① 有外网的机器 `bash src/M20_sdk_deploy/scripts/fetch_aframe.sh`；② `bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check` 自检；③ `sync_to_robot.sh`（会打印"已就位"）或单文件 scp；④ 头显刷新页面。另外 `vr_teleop_node.py` 启动横幅里的 `头显页面: 已自带离线 A-Frame（xxxx KB）` 一行可以一眼确认 |
+| 页面能开、但**每次刷新都要等很久**才出内容 | 旧实现的 HTTPS 服务是**单线程** `http.server.HTTPServer`：头显会并发开好几条连接（`index.html` + 3 个 js + css + jpg），一次只服务一条就会长时间转圈。现在已换成 `ThreadingHTTPServer`（`DEF-058`）。若还慢，看是不是被自签证书校验/网络重传拖住 |
 | 头显打不开 `https://<ip>:8443` | 节点现在会**列出所有候选地址**（无线优先）：头显与上位机在哪个网段就用哪个（第二 WiFi 是 `10.21.41.1`）；不确定就 `M20_VR_IP=<ip>` 指定后重启节点，或用 `ip -4 addr show` 自己看。另外：上位机 `curl -k https://127.0.0.1:8443` 应为 `200`；防火墙 |
 | 节点打印的是 `https://localhost:8443`（旧版本） | 老实现用"连外网取出口 IP"猜本机地址，**机器人内网没有默认路由时会猜失败**，于是退回 `localhost`。服务端其实一直绑 `0.0.0.0`，**手输正确 IP 就能连**；新版本改成离线枚举所有网卡地址 + 支持 `M20_VR_IP` 指定（`DEF-057`） |
 | VR 里**腿和臂都不动** | 头显里按 B 了吗（VR 终端应有 `[VR] Button B -> START + calibrate`）；`ros2 topic hz /VR_TELEOP` 有没有 50 Hz |
@@ -397,6 +441,9 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 * `[ ]` `arm_real_adapter` 的实机联调（只在话题层验证过）；
 * `[ ]` 端到端时延 / 抖动（P2-3）；
 * `[ ]` **VR 跨机链路**：本文假设 VR 节点与 `rl_deploy` **同在**上位机（最稳）。
+* `[x]` **头显页面在真机上的实测（DEF-058）**：2026-10-13 操作员实测通过——
+  按 §1.6 把 `aframe.min.js` 放到 `web-ui/` 后，头显刷新页面即恢复正常，
+  **VR 遥操可用**。
 * `[ ]` **新映射（DEF-044）的真机复核**：真机上重跑 §6 的 12 个位姿指令（用
   `scripts/arm_pose_demo.py` 即可，不需要头显），确认跟手与"腕部不再自己甩"。
 * `[ ]` **半径下限（`M20_VR_RADIUS_MIN`）与标定锚点的关系**：下限必须 ≤ 锚点半径
@@ -412,6 +459,8 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 ```bash
 # —— 开发机 ——
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm -DSIM2SIM=OFF'
+bash src/M20_sdk_deploy/scripts/fetch_aframe.sh            # 头显离线引擎（**要有外网的机器**，见 §1.6）
+bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check    # 自检：在不在、能不能用
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh          # 增量同步 + 排除仿真 mesh（≈104 MB/2038 文件，之后只传改动）
 
 # —— 上位机（Foxy，先 sudo su + source setup_ros2.sh）——

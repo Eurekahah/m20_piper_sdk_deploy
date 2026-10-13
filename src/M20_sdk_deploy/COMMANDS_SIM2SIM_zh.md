@@ -187,6 +187,17 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && exec pip3 install -r src/M20_sdk_deploy/requirements_teleop.txt'
 ```
 
+> **头显页面还依赖一个离线文件 `web-ui/aframe.min.js`**（DEF-058）：它原本是从公网
+> CDN 现拉的，本机/真机都没有外网 ⇒ 拉不到时头显里只会显示中间一张 `VR Teleoperation`
+> 卡片、**点哪都没反应**（页面顶部会有红色报错条）。有外网的机器上跑一次即可：
+>
+> ```bash
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh          # 下载到 third_party/XLeVR/web-ui/
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check  # 自检
+> ```
+>
+> 起 A4 时终端还会打印 `头显页面: 已自带离线 A-Frame（xxxx KB）`（缺了会打 ⚠️ + 修法）。
+
 操作：头显里按**右 B** 启动 / 重标定（把 VR 坐标系锚到**当前左右手柄位姿**），
 **左 X/Y** 复位。
 
