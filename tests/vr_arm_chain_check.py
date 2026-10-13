@@ -93,8 +93,10 @@ def requested_ee(anchor_pos, off):
     dx, dy, dz = off[:3]
     ax, ay, az = anchor_pos
     r_a = math.hypot(ax, ay)
-    th = math.atan2(ay, ax) + math.atan2(dy, max(r_a + dx, 0.12))
-    r = max(r_a + dx, 0.12)
+    # 与 arm_controller.vr_absolute_target 保持一致：下限取 min(0.05, r_a)，
+    # 否则"手停在标定点"会被钳住、跟手误差里会混进映射本身的偏差。
+    r = max(r_a + dx, min(0.05, r_a))
+    th = math.atan2(ay, ax) + math.atan2(dy, r)
     return (r * math.cos(th) + ARM_BASE_OFFSET[0],
             r * math.sin(th) + ARM_BASE_OFFSET[1],
             az + dz + ARM_BASE_OFFSET[2])

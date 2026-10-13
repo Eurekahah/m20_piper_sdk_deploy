@@ -163,7 +163,11 @@ VR_MAX_ANG_SPEED = float(os.environ.get("M20_VR_MAX_ANG_SPEED", "1.0"))
 # `M20_VR_ARM_MAP=cartesian` 可以退回旧行为做 A/B 或回滚（不推荐，原因见上）。
 VR_ARM_MAP = os.environ.get("M20_VR_ARM_MAP", "cylindrical").strip().lower()
 VR_SWING_MAX = float(os.environ.get("M20_VR_SWING_MAX_DEG", "60")) * math.pi / 180.0
-VR_RADIUS_MIN = float(os.environ.get("M20_VR_RADIUS_MIN", "0.12"))
+# 半径下限 [m]（防止"手往怀里拉"把目标推到臂座中心）。⚠️ 下限不能**高于标定锚点的
+# 半径**（默认站姿 r ≈ 0.109），否则"手停在标定点"这个最基本的动作都会被钳住、
+# 目标回不到锚点（2026-10-13 实测：下限 0.12 时"回中位"与"后收 8 cm"完全一样）。
+# 所以取 min(VR_RADIUS_MIN, r_a)。
+VR_RADIUS_MIN = float(os.environ.get("M20_VR_RADIUS_MIN", "0.05"))
 
 # 夹爪目标限速 [stroke/s]：0 = 不限速（直接阶跃到 ±0.035，仿真里 ~10 ms 就到底，
 # 看着"瞬间开合"）。真机夹爪走完一个行程大约 0.3~0.5 s ⇒ 建议 0.15~0.2。
@@ -311,7 +315,7 @@ def vr_absolute_target(anchor_pos, anchor_R, anchor_joints, offsets):
 
     r_a = math.hypot(ax, ay)
     th_a = math.atan2(ay, ax)
-    r = max(r_a + dx, VR_RADIUS_MIN)
+    r = max(r_a + dx, min(VR_RADIUS_MIN, r_a))
     dth = max(-VR_SWING_MAX, min(VR_SWING_MAX, math.atan2(dy, r)))
     th = th_a + dth
     pos = np.array([r * math.cos(th), r * math.sin(th), az + dz], dtype=np.float64)
