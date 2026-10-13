@@ -24,6 +24,7 @@ import mujoco.viewer
 import rclpy
 from rclpy.node import Node
 from builtin_interfaces.msg import Time
+from std_msgs.msg import Float32MultiArray
 from std_srvs.srv import Empty
 from drdds.msg import ImuData, JointsData, JointsDataCmd, MetaType, ImuDataValue, JointsDataValue, JointData, JointDataCmd
 
@@ -105,6 +106,27 @@ DT = 0.001          # 控制周期（s）：仿真每 1 ms 走一个控制 tick
 # 所以开窗口时若实时因子明显 <1，就把这个值调大（例如 200 = 5 fps）：
 #   M20_SIM_RENDER_INTERVAL=200 bash scripts/run_sim2sim.sh full
 RENDER_INTERVAL = int(os.environ.get("M20_SIM_RENDER_INTERVAL", "50"))
+
+# ---------------------------------------------------------------------------
+# 窗口里画"当前机械臂末端目标位姿"的坐标轴（Isaac Lab 的 EE goal frame 同款）
+#   M20_SIM_DRAW_EE=target（默认）画 /ARM_TELEOP_STATE（arm_controller 发布的
+#                                **目标**位姿，root 系 pos + quat wxyz）
+#   M20_SIM_DRAW_EE=both          再叠一层细的**实际** gripper_base 系 ⇒ 直接看跟踪误差
+#   M20_SIM_DRAW_EE=0             关掉
+# 颜色：X 红 / Y 绿 / Z 蓝；长度 M20_SIM_DRAW_EE_LEN（默认 0.18 m，比机械臂
+# 自身尺度小一号、在整机视野里一眼能看见；嫌大/嫌小直接给这个环境变量）。
+# 目标位姿是 **root（机体）系**的，画之前要用 base_link 的世界位姿变换到世界系。
+# 只在开窗口（M20_USE_VIEWER=1）时有效 —— 走的是 passive viewer 的 user_scn，
+# 不动模型/场景，也不会影响策略观测。
+# ---------------------------------------------------------------------------
+EE_STATE_TOPIC = "/ARM_TELEOP_STATE"
+DRAW_EE = os.environ.get("M20_SIM_DRAW_EE", "target").strip().lower()
+DRAW_EE_LEN = float(os.environ.get("M20_SIM_DRAW_EE_LEN", "0.18"))
+# 箭头杆半径 [m]（跟着长度一起放大，否则长箭头会显得很细）
+DRAW_EE_RADIUS = float(os.environ.get("M20_SIM_DRAW_EE_RADIUS", "0.010"))
+# 1 Hz 自检打印（默认关）：把"画出来的目标系"的世界位置和**实际**末端世界位置对比，
+# 直接看画得对不对（两者之差 ≈ IK 跟踪误差，跟手时应在 mm 量级）。
+DRAW_EE_DEBUG = os.environ.get("M20_SIM_DRAW_EE_DEBUG", "0") != "0"
 # 单次迭代最多补多少个 1 ms 控制 tick（防止落后时雪崩；正常应为 1~2）
 MAX_CATCHUP_TICKS = int(os.environ.get("M20_SIM_MAX_CATCHUP", "20"))
 # The USD-derived M20_Piper MJCF has a lightly damped 500 Hz rocking mode
@@ -266,6 +288,17 @@ class MuJoCoSimulationNode(Node):
         # 调用示例: ros2 service call /reset_sim std_srvs/srv/Empty
         self.reset_srv = self.create_service(Empty, 'reset_sim', self._reset_callback)
 
+        # 末端目标位姿（root 系 pos + quat wxyz）：只用来在窗口里画坐标轴。
+        # 回调与仿真循环在**同一个线程**（spin_once），所以不加锁。
+        self.ee_target_state = None
+        if DRAW_EE not in ("0", "off", "none"):
+            self.ee_target_sub = self.create_subscription(
+                Float32MultiArray, EE_STATE_TOPIC, self._ee_target_cb, 50)
+            self.get_logger().info(
+                f"[ee-frame] 窗口里画末端目标坐标系（M20_SIM_DRAW_EE={DRAW_EE}，"
+                f"X 红 / Y 绿 / Z 蓝，长 {DRAW_EE_LEN:g} m）；"
+                f"来源 {EE_STATE_TOPIC}")
+
         # 可视化
         self.viewer = None
         if USE_VIEWER:
@@ -341,7 +374,7 @@ class MuJoCoSimulationNode(Node):
         self.arm_cmd_valid = False
 
         if self.viewer is not None:
-            self.viewer.sync()
+            self._sync_viewer()
 
         self.get_logger().info("[reset_sim] simulation reset to initial pose")
         return response
@@ -411,6 +444,86 @@ class MuJoCoSimulationNode(Node):
         self.arm_vel_cmd.flat = pub_vel * ARM_DIR
         self.arm_cmd_valid = True
 
+    # ------------------------------------------------------------------------
+    # 末端目标坐标系可视化（Isaac Lab 的 EE goal frame 同款）
+    # ------------------------------------------------------------------------
+    def _ee_target_cb(self, msg):
+        """缓存 arm_controller 发布的末端**目标**位姿（root 系 pos + quat wxyz）。"""
+        if len(msg.data) >= 7:
+            self.ee_target_state = np.asarray(msg.data[:7], dtype=np.float64)
+
+    def _sync_viewer(self):
+        """画末端坐标系 + 刷窗口。passive viewer 的 user_scn 每帧都要重填。"""
+        if self.viewer is None:
+            return
+        if DRAW_EE not in ("0", "off", "none"):
+            try:
+                self._draw_ee_frames()
+            except Exception as exc:   # 可视化绝不允许影响仿真主循环
+                if not getattr(self, "_draw_err_logged", False):
+                    self._draw_err_logged = True
+                    self.get_logger().error(
+                        f"[ee-frame] 画坐标轴失败（{type(exc).__name__}: {exc}），"
+                        "已跳过；后续不再重复提示")
+        self.viewer.sync()
+
+    def _draw_ee_frames(self):
+        """把目标（和可选的"实际"）末端坐标系画成三根箭头。"""
+        scn = self.viewer.user_scn
+        scn.ngeom = 0
+        if self.base_body_id_ < 0:
+            return
+        base_pos = np.array(self.data.xpos[self.base_body_id_], dtype=np.float64)
+        base_mat = np.array(self.data.xmat[self.base_body_id_],
+                            dtype=np.float64).reshape(3, 3)
+
+        # 目标位姿：/ARM_TELEOP_STATE 在 root 系 ⇒ 先用 base_link 的世界位姿变换
+        if DRAW_EE in ("target", "both") and self.ee_target_state is not None:
+            st = self.ee_target_state
+            q = np.asarray(st[3:7], dtype=np.float64)
+            n = float(np.linalg.norm(q))
+            if n > 1e-9:
+                R = np.zeros(9, dtype=np.float64)
+                mujoco.mju_quat2Mat(R, np.ascontiguousarray(q / n))
+                tgt_world = base_pos + base_mat @ st[:3]
+                tgt_mat = base_mat @ R.reshape(3, 3)
+                self._add_frame(scn, tgt_world, tgt_mat,
+                                DRAW_EE_LEN, DRAW_EE_RADIUS, 1.0)
+                if DRAW_EE_DEBUG and self.ee_body_id_ >= 0:
+                    # 自检：画出来的目标系 vs 仿真里实际的 gripper_base
+                    now = time.monotonic()
+                    if now - getattr(self, "_ee_dbg_t", 0.0) > 1.0:
+                        self._ee_dbg_t = now
+                        actual = np.array(self.data.xpos[self.ee_body_id_],
+                                          dtype=np.float64)
+                        print("[ee-frame] 目标系(世界) %s | 实际 gripper_base %s | 差 %.4f m"
+                              % (np.round(tgt_world, 4), np.round(actual, 4),
+                                 float(np.linalg.norm(tgt_world - actual))), flush=True)
+
+        # 实际末端（可选，画细一点/半透明）：两者的夹角就是跟踪误差
+        if DRAW_EE == "both" and self.ee_body_id_ >= 0:
+            self._add_frame(scn,
+                            np.array(self.data.xpos[self.ee_body_id_], dtype=np.float64),
+                            np.array(self.data.xmat[self.ee_body_id_],
+                                     dtype=np.float64).reshape(3, 3),
+                            DRAW_EE_LEN * 0.7, DRAW_EE_RADIUS * 0.5, 0.5)
+
+    def _add_frame(self, scn, pos, mat, length, radius, alpha):
+        """在 user_scn 里加 X/Y/Z 三根箭头（mjv_connector 从原点指向轴端）。"""
+        cols = ((1.0, 0.15, 0.15), (0.15, 1.0, 0.15), (0.25, 0.45, 1.0))
+        for i, c in enumerate(cols):
+            if scn.ngeom >= scn.maxgeom:
+                return
+            g = scn.geoms[scn.ngeom]
+            rgba = np.array([c[0], c[1], c[2], alpha], dtype=np.float32)
+            mujoco.mjv_initGeom(g, mujoco.mjtGeom.mjGEOM_ARROW, np.zeros(3),
+                                np.zeros(3), np.eye(3).flatten(), rgba)
+            tip = pos + mat[:, i] * length
+            mujoco.mjv_connector(g, mujoco.mjtGeom.mjGEOM_ARROW, radius,
+                                 np.ascontiguousarray(pos, dtype=np.float64),
+                                 np.ascontiguousarray(tip, dtype=np.float64))
+            scn.ngeom += 1
+
     def start(self):
         # 主模拟循环
         step = 0
@@ -470,7 +583,7 @@ class MuJoCoSimulationNode(Node):
 
                     # 可视化
                     if self.viewer and step % RENDER_INTERVAL == 0:
-                        self.viewer.sync()
+                        self._sync_viewer()
 
             # Handle ROS callbacks
             rclpy.spin_once(self, timeout_sec=0.0)

@@ -17,6 +17,10 @@
 | 2026-09-20 | 新增第十一节：安全接管（倾角+腿折叠）+ 扰动注入用例 + 进 RL 偶发摔倒修复 | `fix/safety-takeover` |
 | 2026-09-20 | 新增第十二节：入口瞬态定位（DEF-018）+ `ee_goal` 坐标系修正；第十三节：臂链路端到端；第十四节：轮子速度伺服 + 末端跟踪验收；第十五节：策略版本管理 + 物理对照；第十六节：无臂部署方案 | `feat/no-arm-stub` |
 | 2026-10-09 | 新增第二十三节：仿真新代码同步（臂/夹爪增益 300/8、286/5；臂速度上限 3 rad/s）+ 默认策略切到多地形 run `cloud_slowvx20k` | `sync/2026-10-09-sim-delta` |
+| 2026-10-12 | 新增第二十四节：VR 臂跟随修复（DEF-044）——柱坐标位置 + 手腕关节偏移的姿态映射、IK 收敛检查（解不出来不下发）、零空间姿态正则、关节指令限速默认 3 rad/s；新增 `tests/vr_arm_chain_check.py` 回归用例（对旧行为 FAIL、新行为 PASS） | `fix/vr-arm-ik-reachability` |
+| 2026-10-13 | 第二十四节续：MuJoCo 窗口里的可视化验收（12 个具名末端位姿指令、跟踪 ~5 mm / 0.8°）+ 补修"半径下限把标定锚点钳住" + 定位 DEF-045（残留 `arm_stub_node` 造成 /ARM_JOINTS_DATA、/ARM_TELEOP_STATE 双发布者） | `fix/vr-arm-ik-reachability` |
+| 2026-10-13 | 修复 **DEF-046**：VR 复位语义 = 机身姿态回默认 + 臂末端位姿回默认 + 速度归 0 + **交还控制权**（再按 B 把左右手柄当前位姿重采成校准原点）。改动 4 个文件（C++ 机身锚点/共享指令、键盘内部底座归位、设备侧 `RESET_KEEPS_ACTIVE` 默认 1→0），新增回归 `tests/vr_reset_semantics_check.py`（设备级 + 端到端两场景，含旧实现 A/B 复现）并接入 `tests/run_all.sh` | 工作区（建议 `fix/vr-reset-defaults`） |
+| 2026-10-13 | 新增第二十五节：头显页面**离线化**（DEF-058）——页面不再从公网 CDN 拉 A-Frame，改成本地 `aframe.min.js` + 缺失时页内红条 + `scripts/fetch_aframe.sh` 一键获取 + `sync_to_robot.sh`/启动横幅双重提示 + HTTPS 服务改多线程。**操作员当日实测通过：头显 VR 遥操正常**。新增 `docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么） | `sync/2026-10-13-vr-ip` |
 
 ---
 
@@ -272,8 +276,80 @@ DEF-029~DEF-032。
 | 2026-10-09 | **DEF-035：默认策略切到平地模型**（`rl_control_state.hpp` + 两个脚本的默认目录；多地形改 `M20_POLICY_DIR` 切回）+ `--mode push` 默认推力 800→1500 N | 插电、实时因子 **1.000**：L1 PASS、L3' 0 FAIL、hold/arm/wheel_step/no_arm/arm_only/arm_mixed PASS、**rl 0/6**、walk 2/6（容差内）、**arm_move 0/6**（ee_x +0.25 m）；push 800 N 被扛住（不触发接管）→ 1500 N **3/3** 触发 | 同上 |
 | 2026-10-09 | **新增 `tests/command_sweep.py`（22 个命令阶段：vx 0.2~1.5 / vy / wz / 组合 / 机身姿态），并挂进 `tests/run_all.sh`**；用它把平地与多地形两套模型各跑 3 遍 | 两模型各 **3/3 PASS、66 次命令暴露 0 摔倒**、实时因子 1.000；两套模型 10 档 L3 均"全部通过"（详见验收报告） | `sync/2026-10-09-sim-delta` |
 | 2026-10-09 | **验收报告 + 全代码走查**两份文档：`docs/review/ACCEPTANCE_2026-10-09_zh.md`（平地 vs 多地形全套数字 + 侧移/转向方向不对称等发现）、`docs/review/CODE_REVIEW_2026-10-09_zh.md`（缺漏/不优雅，带 `文件:行`） | 走查结论：安全层两个检查未接线、`liedown` 限位夹取失效、默认站姿抄 8 遍、死代码约 700 行；对应 TODO 新增 P4-1~P4-9 | 同上 |
-| 2026-10-10 | **VR/臂链路一整批修复**（详见 `DEFECT_LOG_zh.md` DEF-039~DEF-042）：VR 速度限幅与默认手感、臂链路自检脚本、双发布者检测、复位语义（末端目标回默认位姿 + 保持 VR 激活）、IK 节点不再因单拍异常退出、软死区 | 实测：VR vx 1.5→1.01 m/s；复位后臂与默认位姿差 0.015 rad 且不按 B 可继续操控；干净输入下 `dx` 跟手 1:1（+0.1276 m）、IK 0.08 mm；`arm_*` 回归全过 | `sync/2026-10-09-sim-delta` |
+| 2026-10-10 | **VR/臂链路一整批修复**（详见 `DEFECT_LOG_zh.md` **DEF-052~DEF-056**；这 5 条在 2026-10-13 重编号过，原为 039~043）：VR 速度限幅与默认手感、臂链路自检脚本、双发布者检测、复位语义（末端目标回默认位姿 + 保持 VR 激活）、IK 节点不再因单拍异常退出、软死区 | 实测：VR vx 1.5→1.01 m/s；复位后臂与默认位姿差 0.015 rad 且不按 B 可继续操控；干净输入下 `dx` 跟手 1:1（+0.1276 m）、IK 0.08 mm；`arm_*` 回归全过 | `sync/2026-10-09-sim-delta` |
 | 2026-10-10 | **新增真机 + VR 完整部署流程文档** `docs/DEPLOY_REAL_VR_zh.md`（10 节：拓扑/前提 → 编译 arm 版与 scp → SDK 模式与标定核对 → 只上腿 → 接真臂 → 接 VR（按键分工/复位语义）→ 手感与工作空间 → 安全回滚 → 排障 → 速查），并从 `docs/README_zh.md`、`sim2real_checklist_zh.md`、`COMMANDS_SIM2REAL_zh.md` 三处挂索引 | 文档 | 同上 |
-| 2026-10-10 | **DEF-043：真机离线依赖**——VR 链路不再依赖 scipy（新增纯 numpy 的 `xlevr/_rotation_compat.py`，两处导入改成 scipy 优先 + 兼容实现兜底）；`requirements_teleop.txt` 标注 scipy 可选、yaml/websockets 必需；`DEPLOY_REAL_VR_zh.md` 新增 §1.5 离线装包（跨平台 wheel 下载参数 / `pip3 --no-index` / 无 pip 时解压 wheel + PYTHONPATH） | 与真 scipy 对照 2000 组随机旋转 **误差 ≤1e-14**；屏蔽 scipy 后 `vr_teleop_node.py` 正常启动（8443/8442 都起） | 同上 |
+| 2026-10-10 | **DEF-056（原 DEF-043）：真机离线依赖**——VR 链路不再依赖 scipy（新增纯 numpy 的 `xlevr/_rotation_compat.py`，两处导入改成 scipy 优先 + 兼容实现兜底）；`requirements_teleop.txt` 标注 scipy 可选、yaml/websockets 必需；`DEPLOY_REAL_VR_zh.md` §1.5 离线装包（跨平台 wheel 下载参数 / `pip3 --no-index` / 无 pip 时解压 wheel + PYTHONPATH） | 与真 scipy 对照 2000 组随机旋转 **误差 ≤1e-14**；屏蔽 scipy 后 `vr_teleop_node.py` 正常启动（8443/8442 都起） | 同上 |
 | 2026-10-12 | **新增 `scripts/sync_to_robot.sh`（真机增量同步）**：rsync 优先（第二次起只传改动）、默认排除**仿真专用 mesh（47 MB / 2202 个 STL）**、开发机专用 `onnxruntime/x86`（62 MB）、`gamepad/example`（3.9 MB）、`__pycache__`；无 rsync 时退化为 `tar+ssh` 并**远端自检文件数**；`--with-meshes/--full/--dry-run/--delete/--build` + `ROBOT=`/`DEST=` | 实测：**4539 → 2038 个文件、215 MB → 104 MB、STL 0 个**（rsync 与 tar 两条路径都验过）；`DEPLOY_REAL_VR_zh.md` §1 改用该脚本 | 同上 |
 | 2026-10-12 | **离线依赖包改放在仓库 `tmp/wheels/`（`.gitignore` 已忽略 `tmp/`，重启不丢）**：`PyYAML-6.0.3` / `websockets-13.1`（cp38+aarch64）+ 新增 `pylibs_yaml_websockets_cp38.tar.gz`（两个包的纯 Python 源码，真机没 pip 时解压挂 `PYTHONPATH` 即可）；确认真机 numpy 1.17.4 够用、**无需传 numpy**；`DEPLOY_REAL_VR_zh.md` §1.5 更新为两条安装路径 | 方式 B（vendored + 屏蔽 scipy）实测能起 `vr_teleop_node.py`（8443/8442 均监听） | 同上 |
+| 2026-10-13 | **DEF-057：VR 节点打印 `https://localhost:8443` 修掉**——IP 探测原来依赖"连外网取出口 IP"（真机内网没有默认路由 ⇒ 抛 `ENETUNREACH` ⇒ 退回 localhost）；改为**离线枚举所有网卡 IPv4**（`ip -4 -o addr show` → `hostname -I` → UDP 兜底；无线优先）并打印所有候选 + 支持 `M20_VR_IP=<ip>` 指定；顺带修 `xlevr/config.py` 的 `config.yaml` 相对路径（警告消失、改 yaml 真生效）。服务端一直绑 `0.0.0.0`，页面里的 `wss://<host>:8442` 跟着页面地址走 | 单测（模拟真机 `ip` 输出：lo/end0/wlan0/docker0）：`wlan0 10.21.41.1` 排第一、回环被跳过；三种打印路径（自动/覆盖/识别不到）逐条验过 | `sync/2026-10-13-vr-ip` |
+
+---
+
+## 二十四、VR 臂跟随修复（DEF-044，2026-10-12）
+
+来源：操作员反馈"sim2sim 里腿臂同时操作时臂动作不对，键盘正常、VR 很怪"。
+完整条目见 `DEFECT_LOG_zh.md` 的 **DEF-044**；调参说明见 `COMMANDS_SIM2SIM_zh.md` §5.2。
+
+| 日期 | 内容 | 关键实测 | commit / 分支 |
+|---|---|---|---|
+| 2026-10-12 | **定位**：默认站姿 `(0, 0.5, -0.5, 0, 0, 0)` 里 joint5 = joint6 = 0 ⇒ joint4 与 joint6 同轴 ⇒ **手腕在奇异位形**（Jacobian 最小奇异值 3.6e-18）。VR 的"侧移 + 手腕转动"在这个位形上**没有近邻解**（约束优化求最近姿态：侧移 5 cm 要 2.67 rad、工具 yaw 10° 要 2.47 rad；键盘 ±x 只要 0.30 rad），局部 IK 走不动，而节点又把"顶在关节限位上的解"无条件下发 ⇒ 臂被驱到 joint1 = 2.168（上限）、20 rad/s、139 N·m。腿是无关项（腿站着不动同样复现） | 6 个用例对照（下表的"修改前"列）；单变量 A/B：键盘 + 旋转键（numpad `+`）同样坏 ⇒ 不是 VR 传输问题 | `fix/vr-arm-ik-reachability` |
+| 2026-10-12 | **修复**：① 位置改**柱坐标**（前后→半径、左右→**基座摆动**、上下→z）；② 姿态改**手腕关节偏移**（工具姿态跟着臂摆，不再要求手腕补偿整条臂）；③ **IK 收敛检查**：残差 > 10 mm / 3° 就不下发（沿用上一拍 + 目标拉回实际位姿）；④ **零空间姿态正则**（压手腕沿自由方向漂到限位）；⑤ 关节指令限速默认 **3 rad/s**（= 真机驱动器口径）。旧映射可用 `M20_VR_ARM_MAP=cartesian` 回退 | 见下表"修改后"列 | 同上 |
+| 2026-10-12 | **回归用例** `tests/vr_arm_chain_check.py`（假头显：侧移 + 前伸 + 上下 + 手腕三轴转动；约 25 s），挂进 `tests/run_all.sh`（`VRA=0` 跳过） | **对旧行为 FAIL**（IK 残差 100.5 mm、joint5 停限位 8.46 s、21.3 rad/s、156.8 N·m）／**对新行为 PASS**（1.9 mm、0 停留、3.5 rad/s、15 N·m、跟手 23 mm） | 同上 |
+| 2026-10-12 | **不改动键盘路径**（正则与限速只在 VR 路径生效），回归：`--mode arm_move` / `arm_mixed` / `no_arm` 全 PASS，`check_policy_interface.py` **L1 PASS**，`check_mjcf_contract.py` 10 PASS / 0 FAIL | 见下 | 同上 |
+
+**实测对照（同一套 rig、同一段假头显动作，实时因子 1.000）**
+
+| 指标 | 修改前（VR） | 修改后（VR） | 键盘（对照） |
+|---|---|---|---|
+| IK 位置残差 > 10 mm 的采样占比 | 31.8% | **0.0%** | 0.0% |
+| IK 位置残差 p95 / max | 104 / 114 mm | **2.8 / 9.8 mm** | 0.2 / 0.4 mm |
+| 跟手误差（请求 vs 实际末端）p95 | 99.9 mm | **26 mm** | — |
+| 关节速度 max | **20.8 rad/s** | **1.9 rad/s** | 1.9 rad/s |
+| 指令力矩 max | **139.5 N·m** | **8.1 N·m** | 12.6 N·m |
+| 停在关节限位的关节 | joint1 / 4 / 5 | **无** | 无 |
+
+**只加安全网、不改映射**（A/B：`M20_VR_ARM_MAP=cartesian` + 关正则/限速）：
+残差看着是 0，但安全网**拒发 965 拍**（≈ 一半时间臂不动，因为它满足不了请求）
+⇒ 映射才是修复本身，安全网只是兜底。
+
+### 二十四续：窗口可视化验收 + 两个补充修复（2026-10-13）
+
+| 日期 | 内容 | 关键实测 | commit / 分支 |
+|---|---|---|---|
+| 2026-10-13 | **开 MuJoCo 窗口做可视化验收**：`sim(M20_USE_VIEWER=1)` → `arm_controller` → `rl_deploy`（`z` 站立 → `c` 进 RL）→ 新增工具 `src/M20_sdk_deploy/scripts/arm_pose_demo.py`（12 个具名末端位姿指令，循环下发并打印实测） | 实时因子 **1.000**、base 高 0.508 m、倾角 <1°、**0 次接管**；12 个位姿逐个跟踪：位置 **~5 mm**、姿态 **~0.8°**（IK 残差 0.1~1.6 mm），关节 ≤0.06 rad/s、力矩 ≤4.6 N·m。明细表见 DEFECT_LOG 的 DEF-044 §6 | `fix/vr-arm-ik-reachability` |
+| 2026-10-13 | **补修：半径下限把标定锚点自己钳住**——`M20_VR_RADIUS_MIN` 默认 0.12 m 高于默认站姿半径 0.1092 m，"手停在标定点"回不到锚点，实测"中位"与"后收 8 cm"目标完全相同（都是 x = 0.360），往回拉 <1.1 cm 无反应。改为 `min(M20_VR_RADIUS_MIN, r_anchor)`（默认 0.05） | 已提交；**窗口复跑待做**（预期：中位回到 0.3492、后收 4 cm 到 0.3092） | 同上 |
+| 2026-10-13 | **发现并定位 DEF-045**：11 小时前残留的 `arm_stub_node.py` 与 `arm_controller` **同时**发 `/ARM_JOINTS_DATA` + `/ARM_TELEOP_STATE` ⇒ IK 反馈与策略 `ee_goal` 观测被掺入常量（表现"目标读数不变、臂不听使唤"）。清掉残留后立即恢复 | 清掉后：目标随指令变化、拒发计数不再增长、逐拍目标/实际对得上（5 mm / 0.8°） | 同上 |
+
+> **流程提示（本次踩到）**：跑任何 sim2sim/真机用例**之前**先确认没有残留的同名节点
+> （`arm_stub_node` / `arm_real_adapter` / 第二个 `arm_teleop` / 第二个 `vr_teleop`），
+> 否则会出现"两个发布者交替"的伪故障；另外**只靠仿真自己的腿部默认保持，机器人会缓慢
+> 摔倒**，必须 `rl_deploy` 走到 `rl_control`。两项都被记进 `TODO_zh.md`（P2-8）与
+> `COMMANDS_SIM2SIM_zh.md` §5.3。
+
+---
+
+## 二十五、头显页面离线化：不再依赖公网 CDN 的 A-Frame（DEF-058，2026-10-13）
+
+来源：操作员"真机上 `https://10.21.31.103:8443` 能打开，但进去就卡住、只有中间一张
+`VR Teleoperation` 卡片、点什么都没反应"。完整条目见 `DEFECT_LOG_zh.md` 的 **DEF-058**；
+部署步骤见 `docs/DEPLOY_REAL_VR_zh.md` §1.6。
+
+**结论**：不是上位机算力问题（HTTPS:8443 / WS:8442 / 静态文件都在正常服务）。
+是页面 `<head>` 里从 `https://aframe.io/...` **公网 CDN** 现拉的 `aframe.min.js`
+拉不到 ⇒ 阻塞解析 + `vr_app.js` 第一行就 `AFRAME is not defined` ⇒ `<a-scene>` 与
+两个启动按钮全都不存在；而 `interface.js` 照常执行、检测到设备支持 `immersive-vr`
+就只显示那个静态居中卡片（`z-index:9999`）⇒ 表现就是"卡住 + 点不动"。
+
+| 日期 | 内容 | 关键实测 | commit / 分支 |
+|---|---|---|---|
+| 2026-10-13 | `web-ui/index.html` 改为本地 `aframe.min.js`（`defer`，顺序在 `vr_app.js` 之前），删掉阻塞式 CDN 引用；加兜底脚本：本地缺失 → 页顶红色横幅（头显看不到控制台）+ 若头显能上网就从 CDN 补一份并只刷新一次 | 页面内联脚本 `node` 逐段解析 **2/2 OK**；`defer` 顺序 `aframe.min.js → vr_app.js → interface.js`；CDN 地址仅存在于兜底列表 | `sync/2026-10-13-vr-ip` |
+| 2026-10-13 | 新增 `scripts/fetch_aframe.sh`：6 个镜像依次尝试 → 校验（够大/非 HTML/含 `AFRAME`）→ 落到 `web-ui/`；`--check` 自检、`--url`/`--dest` 可指定 | `--check`：真缺 → `exit 1` 且指出路径；假文件 585 KB → `OK/exit 0`；HTML 错误页 → 拒绝 | 同上 |
+| 2026-10-13 | `sync_to_robot.sh` 同步前打印 A-Frame 是否就位（缺了给出"头显里会怎样 + 该跑哪条命令"）；`vr_teleop_device.py` 启动横幅加 `头显页面: 已自带离线 A-Frame（xxxx KB）` / ⚠️+修法；HTTPS 服务 `HTTPServer → ThreadingHTTPServer`（`daemon_threads=True`，浏览器并发 6 条连接不再互相堵） | `_display_info()` 两分支本机模拟通过（缺 → ⚠️+修法；有 → `已自带离线 A-Frame（390 KB）`）；`py_compile` OK | 同上 |
+
+> **闭环**：2026-10-13 操作员把 `aframe.min.js` 放到 `web-ui/` 后头显页面恢复正常，
+> **机械臂遥操正常**（原"待复核"项 `TODO_zh.md` P2-9 已勾掉）。
+>
+> **顺带产出**：把所有"必须先在**有外网**的机器上下载再搬过去"的东西集中成
+> [`docs/OFFLINE_ASSETS_zh.md`](../OFFLINE_ASSETS_zh.md) —— A-Frame、上位机的
+> `PyYAML`/`websockets` wheel、明确**不用**下的（scipy / numpy / pynput / torch）、
+> 各自放哪 / 怎么下 / 怎么自检 / 缺了是什么症状 / 换机器后要重做哪些。

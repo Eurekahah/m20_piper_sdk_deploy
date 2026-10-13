@@ -67,6 +67,17 @@ else
 fi
 [ "$WITH_MESHES" = 1 ] && echo "[sync] 注意    : --with-meshes ⇒ 会传 2200+ 个 STL（慢）"
 
+# VR 头显页面依赖的离线 A-Frame（DEF-058）：漏了这个文件，头显里页面会"卡住、点不动"
+AFRAME_FILE="$SRC_REL/third_party/XLeVR/web-ui/aframe.min.js"
+if [ -f "$AFRAME_FILE" ]; then
+  echo "[sync] A-Frame : 已就位（$(du -h "$AFRAME_FILE" | cut -f1)），头显页面可离线加载"
+else
+  echo "[sync] ⚠️ A-Frame: 缺 $AFRAME_FILE"
+  echo "[sync]           ⇒ 头显打开 https://<上位机IP>:8443 时会只看到中间一张卡片、"
+  echo "[sync]             没有 Enter VR / Start 按钮（页面顶部会显示红色报错条，DEF-058）。"
+  echo "[sync]           先在有外网的机器上跑: bash src/M20_sdk_deploy/scripts/fetch_aframe.sh"
+fi
+
 # ---- 选工具：rsync 优先，否则 tar over ssh ----
 LOCAL_RSYNC=0; REMOTE_RSYNC=0
 command -v rsync >/dev/null 2>&1 && LOCAL_RSYNC=1

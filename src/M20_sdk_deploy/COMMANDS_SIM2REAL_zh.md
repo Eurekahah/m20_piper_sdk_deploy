@@ -35,7 +35,45 @@
 
 ## 场景 0：一次性准备（只做一次 / 换版本时做）
 
-### 0.1 在 M20 上编译真机版（**必须显式 `-DSIM2SIM=OFF`**）
+### 0.1 把代码同步到 M20（**在开发机**上做，别用 `scp -r`）
+
+```bash
+# 在**开发机**的仓库根目录执行
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
+```
+
+**常用开关**
+
+```bash
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --dry-run      # 先看"会传什么"，不真传
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build        # 同步完顺手在 M20 上 colcon build
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-meshes  # 要在 M20 上跑 sim2sim/check_mjcf_contract 时才加
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --full         # 不排除任何东西（= 旧的 scp -r）
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --delete       # 让远端与本地完全一致（**会删远端多余文件**，慎用）
+ROBOT=user@10.21.41.1 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh   # 第二 WiFi 换 IP
+DEST='~/M20_sdk_deploy/src/M20_sdk_deploy' bash src/M20_sdk_deploy/scripts/sync_to_robot.sh  # 换目标目录
+```
+
+| 项 | 说明 |
+|---|---|
+| 为什么不用 `scp -r` | 整包 **215 MB / 4539 个文件**，其中**仿真 mesh 47 MB / 2202 个 STL**、`third_party/onnxruntime/x86` 62 MB、`gamepad/example` 3.9 MB —— 真机**运行与编译都不需要**。scp 每次都重传（慢在"文件个数"的 ssh 开销） |
+| 默认排除后 | **104 MB / 2038 个文件**；**第二次起 rsync 只传改动过的那几个 .py/.hpp（通常几 KB）** |
+| 前提 | 开发机与 M20 都有 `rsync`；**任一端没有就自动退化成 `tar + ssh`**（带同样的排除，并在远端数文件数自检） |
+| 目标位置 | `M20:~/M20_sdk_deploy/src/M20_sdk_deploy`（与旧 scp 流程一致，M20 上 `~/M20_sdk_deploy` 是**仓库根**） |
+
+> 密码是**一个单引号** `'`（首次会问；配好免密就不用输了）：
+> `ssh-copy-id user@10.21.31.103`。
+
+> **头显页面要的离线引擎别忘了**（DEF-058）：`third_party/XLeVR/web-ui/aframe.min.js`
+> 1247 KB，仓库里**默认不自带**（要联网下，或从别的机器拷）——缺了它头显里只会显示中间一张
+> `VR Teleoperation` 卡片、点哪都没反应。同步脚本会打印它是"已就位"还是缺失：
+>
+> ```bash
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh          # 在有外网的机器上跑一次
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check  # 自检（存在/大小/不是错误页）
+> ```
+
+### 0.2 在 M20 上编译真机版（**必须显式 `-DSIM2SIM=OFF`**）
 
 ```bash
 cd ~/M20_sdk_deploy
@@ -48,15 +86,55 @@ grep -c SIM2SIM build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make   # 应
 > `SIM2SIM` 是 CMake 缓存变量：先编过仿真版再编真机版，**必须**显式 OFF，
 > 否则还是恒等标定的仿真接口（`DEF-025`）。
 
-### 0.2 只更新某个 Python 脚本（不用重编）
+### 0.3 M20 上的 Python 依赖（**离线**，只装一次）
+
+> 📥 本节与 §0.1 的备注（还有头显要的 `aframe.min.js`）汇总在
+> [`docs/OFFLINE_ASSETS_zh.md`](../../docs/OFFLINE_ASSETS_zh.md)：
+> 「要下什么 / 放哪 / 怎么下 / 怎么自检 / 缺了什么症状 / 换机器后重做哪些」，一页看完。
+
+VR 节点要 `yaml` 与 `websockets`（`xlevr/config.py`、`xlevr/inputs/vr_ws_server.py` 各用一个）。
+**scipy 已经不需要**（2026-10-10 起用纯 numpy 实现替代）；**numpy 也不用传**
+（M20 自带 `numpy 1.17.4`，实测够用）。
 
 ```bash
-# 开发机 → M20
+# 0) M20 上先确认版本（应为 Python 3.8 —— cp38 的 wheel 就是按 Foxy/Ubuntu20.04 选的）
+python3 -V
+python3 -c "import numpy, yaml, websockets; print('deps ok')"    # 报缺哪个就装哪个
+
+# 1) 开发机：传现成的包（放在仓库 tmp/wheels/，tmp/ 已被 gitignore，重启不丢）
+scp tmp/wheels/*.whl tmp/wheels/*.tar.gz user@10.21.31.103:~/
+
+# 2a) M20：有 pip（--no-index = 不上网找包）
+python3 -m pip install --no-index --no-deps ~/PyYAML-*.whl ~/websockets-*.whl
+
+# 2b) M20：没有 pip / wheel 装不上（纯 Python 兜底，最省事）
+mkdir -p ~/pylibs && tar xzf ~/pylibs_yaml_websockets_cp38.tar.gz -C ~/pylibs
+export PYTHONPATH=~/pylibs:$PYTHONPATH    # 起 vr_teleop_node 的终端都要带上
+
+python3 -c "import numpy, yaml, websockets; print('deps ok')"     # 两条路都要走到这行
+```
+
+> 目录里放的就是这三个：`PyYAML-6.0.3-cp38-…-aarch64.whl`、`websockets-13.1-cp38-…-aarch64.whl`、
+> `pylibs_yaml_websockets_cp38.tar.gz`（兜底源码包）。
+> 若 M20 的 Python 不是 3.8，用这条按实测版本重下：
+>
+> ```bash
+> python3 -m pip download PyYAML websockets --only-binary=:all: \
+>   --platform manylinux2014_aarch64 --python-version 38 --implementation cp --abi cp38 -d tmp/wheels
+> ```
+>
+> 细节（含"没有 pip 时怎么装"的更多说明）见
+> [`docs/DEPLOY_REAL_VR_zh.md`](../../docs/DEPLOY_REAL_VR_zh.md) §1.5。
+
+### 0.4 只更新某个 Python 脚本（不用重编）
+
+```bash
+# 开发机 → M20（单个文件；也可以用 0.1 的同步脚本，它本来就只传改动的文件）
 scp src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py \
     user@10.21.31.103:~/M20_sdk_deploy/src/M20_sdk_deploy/interface/robot/simulation/
 ```
 
-### 0.3 进 SDK 模式（每次上电后都要做）
+### 0.5 进 SDK 模式（每次上电后都要做）
 
 ```bash
 # M20：用手柄进入 SDK 模式（需要授权码）

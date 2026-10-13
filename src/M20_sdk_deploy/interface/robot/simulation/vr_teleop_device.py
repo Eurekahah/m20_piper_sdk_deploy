@@ -24,6 +24,7 @@ import http.server
 import os
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -66,19 +67,78 @@ SENS_ENV = {
 }
 
 # 左 X/Y（复位）之后是否**保持 VR 激活**：
-#   1（默认）= 保持激活 + 把校准原点重锚到"按下去那一刻的手柄位姿" ⇒ 复位完
-#               可以直接接着用手柄操控（不用再按 B）。这是操作员 2026-10-10 的要求。
-#   0       = 训练侧原语义：置 `_started=False`（VR 变 inactive，腿/臂都不听 VR），
-#               要接着用必须再按一次 B。
-# 注意保持激活时**不发** `_calibrate_pulse`：令 arm_controller 重新锚定的是
+#   0（默认，2026-10-13 起）= 复位即**交还控制权**：清空指令（速度 0）、置
+#               `_started=False`（VR 变 inactive ⇒ /VR_TELEOP 持续发 0 且 active=0）。
+#               机身姿态 / 臂末端位姿 / 速度的"回归默认"分别由 rl_deploy（机身锚点，
+#               DEF-046）与 arm_teleop→arm_controller（flag=2 重置到默认末端位姿）
+#               完成。要接着用必须再按一次 B —— B 会把**当前**左右手柄位姿重新采成
+#               校准原点，所以复位→按 B 之后是一套干净的新零点。
+#   1       = 旧语义（操作员 2026-10-10 要求的"复位后不用再按 B"）：保持激活 + 把
+#               校准原点重锚到"按下去那一刻的手柄位姿"。留这个开关是方便 A/B 与回滚。
+# 复位**不发** `_calibrate_pulse`（那是 B 的事）：令 arm_controller 重新锚定的是
 # arm_teleop 那条"重置到默认末端位姿"的一次性命令（flag=2，确定语义），
-# 这里只负责把**设备的**校准原点重采一次，两条链路各管各的、不会互相打架。
-RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "1") != "0"
+# 这里只负责把**设备的**校准原点清零，两条链路各管各的、不会互相打架。
+RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "0") != "0"
 
 
 def _xyzw_to_wxyz(q):
     """Convert [x,y,z,w] -> [w,x,y,z]."""
     return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
+
+
+def _local_ipv4_candidates() -> list[tuple[str, str]]:
+    """列出本机**非回环** IPv4 地址：``[(网卡名, IP), ...]``（WiFi 网卡排在前面）。
+
+    为什么不只用 `socket.connect(("8.8.8.8", 80))` 那个"取出口 IP"的技巧：
+    它**需要默认路由**，而机器人内网通常没有到外网的路由 ⇒ 直接抛
+    `ENETUNREACH` ⇒ 以前就退化打印成 `https://localhost:8443`，头显照这个地址
+    当然连不上（2026-10-13 实测）。这里改成**离线可用**的枚举，并把所有候选都打出来：
+
+      ① `ip -4 -o addr show`（最可靠，不需要外网）
+      ② `hostname -I`
+      ③ 兜底才用 UDP connect 技巧
+
+    HTTPS/WS 服务端本来就绑 `0.0.0.0`，所以"服务能不能被访问"只取决于头显能不能
+    路由到其中某个地址 —— 打印的目的是告诉操作员该用哪一个。
+    """
+    out: list[tuple[str, str]] = []
+
+    def add(iface: str, ip: str) -> None:
+        if not ip or ip.startswith("127.") or ":" in ip:
+            return
+        if all(ip != i for _, i in out):
+            out.append((iface, ip))
+
+    try:                                   # ① ip -4 -o addr show
+        r = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                           capture_output=True, text=True, timeout=3)
+        for line in r.stdout.splitlines():
+            f = line.split()
+            if len(f) >= 4 and f[2] == "inet":
+                add(f[1], f[3].split("/")[0])
+    except Exception:
+        pass
+    if not out:
+        try:                               # ② hostname -I
+            r = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=3)
+            for ip in r.stdout.split():
+                add("?", ip)
+        except Exception:
+            pass
+    if not out:
+        try:                               # ③ 兜底：UDP connect（需要默认路由）
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                add("?", s.getsockname()[0])
+            finally:
+                s.close()
+        except Exception:
+            pass
+    # 头显一般挂在 WiFi 上 ⇒ 无线网卡优先
+    order = {"wl": 0, "en": 1, "et": 2}
+    out.sort(key=lambda t: order.get(t[0][:2].lower(), 3))
+    return out
 
 
 # 90-degree rotation around X: VR wrist frame -> sim frame (training-tuned)
@@ -220,8 +280,12 @@ class Se2VRExtendedDevice:
         try:
             handler = _SimpleFileHandler
             handler.web_root = str(XLEVR_DIR / "web-ui")
-            httpd = http.server.HTTPServer(
+            # 必须多线程：头显浏览器会**并发**开好几条连接（index.html + 3 个 .js
+            # + .css + .jpg），单线程 `http.server.HTTPServer` 一次只处理一条，
+            # 浏览器就表现为"页面卡住 / 一直转圈"（DEF-058）。
+            httpd = http.server.ThreadingHTTPServer(
                 ("0.0.0.0", 8443), handler)
+            httpd.daemon_threads = True
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(str(XLEVR_DIR / "cert.pem"),
                                 str(XLEVR_DIR / "key.pem"))
@@ -239,16 +303,38 @@ class Se2VRExtendedDevice:
             print(f"[vr_teleop] VR loop failed: {exc}")
 
     def _display_info(self):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-        except Exception:
-            ip = "localhost"
+        override = os.environ.get("M20_VR_IP", "").strip()
+        cands = _local_ipv4_candidates()
         print("\n" + "=" * 50)
         print("VR teleop ready")
-        print(f"  Open in your headset browser:  https://{ip}:8443")
+        if override:
+            print(f"  Open in your headset browser:  https://{override}:8443"
+                  f"   （由 M20_VR_IP 指定）")
+        elif cands:
+            iface, ip = cands[0]
+            print(f"  Open in your headset browser:  https://{ip}:8443")
+            if len(cands) > 1:
+                rest = "、".join(f"{i} ({n})" for n, i in cands[1:])
+                print(f"  本机其它地址: {rest}")
+                print("  ⇒ 头显和 M20 在**哪个网段**就用哪个地址；"
+                      "也可以用 M20_VR_IP=<ip> 指定后重启本节点")
+        else:
+            print("  ⚠️ 没能自动识别本机 IP（缺 `ip`/`hostname` 命令？）")
+            print("     手动查：`ip -4 addr show`，"
+                  "然后用 `M20_VR_IP=<你的IP>` 重启本节点")
+        # 头显页面是纯前端，靠本地 aframe.min.js 渲染 <a-scene>（DEF-058）：
+        # 没有外网的机器人一旦漏了这个文件，头显里只会剩一张卡片、按钮全都不响应。
+        aframe_file = XLEVR_DIR / "web-ui" / "aframe.min.js"
+        if aframe_file.is_file():
+            print(f"  头显页面: 已自带离线 A-Frame"
+                  f"（{aframe_file.stat().st_size // 1024} KB）")
+        else:
+            print("  ⚠️ 头显页面缺离线引擎 web-ui/aframe.min.js：")
+            print("     ⇒ 头显里只会显示中间那张 'VR Teleoperation' 卡片，"
+                  "没有 Enter VR / Start 按钮，点击无反应（DEF-058）。")
+            print("     修复：在**有外网**的机器上 "
+                  "`bash src/M20_sdk_deploy/scripts/fetch_aframe.sh`，"
+                  "同步到本机后刷新页面。")
         print("  灵敏度（可用 M20_VR_*_SENS 覆盖）: "
               f"chassis vx {self.v_x_sensitivity:g} / vy {self.v_y_sensitivity:g}"
               f" / wz {self.omega_z_sensitivity:g}; "
@@ -419,13 +505,16 @@ class Se2VRExtendedDevice:
             self._on_reset("success")
 
     def _on_reset(self, kind):
-        """X/Y 复位。默认**保持 VR 激活**，复位完可以直接接着操控。"""
-        print("[VR] Button %s -> RESET (%s)%s"
+        """X/Y 复位：机身姿态 / 臂末端位姿 / 速度都回默认，VR 交还控制权。"""
+        print("[VR] Button %s -> RESET (%s)：机身/臂回默认、速度 0；%s"
               % ("X" if kind == "fail" else "Y", kind,
-                 "" if RESET_KEEPS_ACTIVE else "  [VR 变为 inactive，需再按 B]"))
+                 "VR 交还控制权（再按 B 重新标定并接管）"
+                 if not RESET_KEEPS_ACTIVE else
+                 "保持激活（M20_VR_RESET_KEEPS_ACTIVE=1）"))
         self._reset_event = kind
         if RESET_KEEPS_ACTIVE:
-            # 保持激活：把设备的校准原点重采（下一次手柄包会更新），并把指令清零。
+            # 保持激活（旧语义）：把设备的校准原点重采（下一次手柄包会更新），
+            # 并把指令清零。
             # 不发 `_calibrate_pulse` —— arm_controller 的目标由 arm_teleop 那条
             # "重置到默认末端位姿"（flag=2）负责，避免两条链路互相覆盖。
             self._command[:] = 0.0
@@ -433,6 +522,10 @@ class Se2VRExtendedDevice:
             self._calibration_triggered["left"] = True
             self._calibration_triggered["right"] = True
         else:
+            # 默认：交还控制权。`reset()` 会把 13 维指令、机身高度积分量、两手的
+            # 校准原点全部清掉；`_started=False` 之后 `_poll_queue()` 不再更新指令，
+            # 于是 /VR_TELEOP 持续发全 0 + active=0（= 持续给 0 指令）。
+            # 再按 B 时 `_on_button_press` 会把两手的校准原点重采成当前手柄位姿。
             self._started = False
             self.reset()
 

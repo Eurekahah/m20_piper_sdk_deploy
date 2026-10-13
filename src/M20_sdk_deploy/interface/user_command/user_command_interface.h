@@ -71,9 +71,26 @@ public:
         return remote_active_.load();
     }
 
+    /**
+     * @brief 请求"本地输入源"（键盘）把内部状态归位到默认值。
+     *
+     * 场景：VR 的复位（左 X/Y）会把机身姿态/速度交还给键盘。这时键盘必须从**默认
+     * 底座**重新开始 —— 否则它会在 5 ms 后用复位前的旧 `body_height_` 覆盖掉"回到
+     * 默认"的指令，机身就永远回不到默认（2026-10-13 操作员反馈的现象）。
+     * 外部源在复位边沿调用 `RequestLocalReset()`，键盘线程在下一拍消费。
+     */
+    void RequestLocalReset() {
+        local_reset_request_.store(true);
+    }
+
+    bool ConsumeLocalResetRequest() {
+        return local_reset_request_.exchange(false);
+    }
+
     MotionStateFeedback *msfb_;
     RobotName robot_name_;
     UserCommand *usr_cmd_;
     std::atomic<bool> remote_active_{false};
+    std::atomic<bool> local_reset_request_{false};
 };
 };

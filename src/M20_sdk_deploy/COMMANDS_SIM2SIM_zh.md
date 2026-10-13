@@ -187,13 +187,32 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && exec pip3 install -r src/M20_sdk_deploy/requirements_teleop.txt'
 ```
 
-操作：头显里按**右 B** 启动 / 重标定（把 VR 坐标系锚到当前机器人姿态），
-**左 X/Y** 复位（调 `/reset_sim`，**同时把末端目标重置回默认位姿**）。
+> **头显页面还依赖一个离线文件 `web-ui/aframe.min.js`**（DEF-058）：它原本是从公网
+> CDN 现拉的，本机/真机都没有外网 ⇒ 拉不到时头显里只会显示中间一张 `VR Teleoperation`
+> 卡片、**点哪都没反应**（页面顶部会有红色报错条）。有外网的机器上跑一次即可：
+>
+> ```bash
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh          # 下载到 third_party/XLeVR/web-ui/
+> bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check  # 自检
+> ```
+>
+> 起 A4 时终端还会打印 `头显页面: 已自带离线 A-Frame（xxxx KB）`（缺了会打 ⚠️ + 修法）。
 
-> **复位后 VR 保持激活**（校准原点自动重采）⇒ **不用再按 B**，手再动就能继续操控
-> （操作员 2026-10-10 反馈"复位后不能操控了"就是因为老语义会把 VR 置为 inactive）。
-> 要回训练侧老语义（复位即停、需再按 B）：`M20_VR_RESET_KEEPS_ACTIVE=0`。
-> 复位完成时 `arm_teleop` 会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`。
+操作：头显里按**右 B** 启动 / 重标定（把 VR 坐标系锚到**当前左右手柄位姿**），
+**左 X/Y** 复位。
+
+> **复位的语义（2026-10-13 起，DEF-046）**——按 X/Y 后四件事一起发生：
+> ① 机身姿态回默认（`0.513 / 0 / 0`，与键盘 `l` 同一个口径）；
+> ② 机械臂末端位姿回默认（`arm_teleop` 发一帧 flag=2 的"重置到默认末端位姿"，
+>    同时调 `/reset_sim` 把腿和臂都复位）；
+> ③ 速度归 0；
+> ④ **VR 交还控制权**（设备侧 `_started=False` ⇒ `/VR_TELEOP` 持续发全 0 + `active=0`，
+>    机身/速度字段由 `rl_deploy` 的键盘接口按默认值续写）。
+>
+> 要接着用就**再按一次右 B**：它会把那一刻的左右手柄位姿重新采成校准原点（干净的新零点），
+> 不需要再手工摆姿势。复位时 `rl_deploy` 会打印 `[VR] RESET -> 机身姿态回默认 ...`，
+> `arm_teleop` 会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`。
+> 想回到 2026-10-10 的"复位后保持激活、不用再按 B"：`M20_VR_RESET_KEEPS_ACTIVE=1`。
 
 VR 一旦激活（B 按下），
 键盘就不再写速度/机身字段（由 VR 独占），但 `z`/`c`/`r` 这些模式键仍由 A2 的键盘负责。
@@ -229,10 +248,10 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ### 5.1 手感调节（VR 动得太快/太钝就调这两处）
 
-**为什么 VR 下臂很快**：VR 的手臂跟随是 **1:1**（手柄动 10 cm ⇒ EE 目标也走 10 cm），
-所以"手快 → 臂快"；上限由 `arm_controller` 的 **VR 限速**决定，默认
-**2.0 m/s / 5.0 rad/s**（键盘路径只有 0.35 m/s / 0.8 rad/s，所以键盘感觉温和得多）。
-每个 20 ms 的控制周期里最多走 `2.0 × 0.02 = 4 cm`。
+**为什么 VR 下臂很快**：VR 的手臂跟随是 **1:1**（手柄动 10 cm ⇒ EE 目标也走 10 cm，
+再乘 `M20_VR_ARM_POS_SENS`），所以"手快 → 臂快"；上限由 `arm_controller` 的
+**VR 限速**决定，默认 **0.4 m/s / 1.0 rad/s**（键盘路径 0.35 m/s / 0.8 rad/s）。
+每个 20 ms 的控制周期里最多走 `0.4 × 0.02 = 8 mm`。
 
 两个旋钮含义不同，通常一起用：
 
@@ -242,7 +261,11 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 | **灵敏度**（整体缩放，更细腻） | `M20_VR_ARM_POS_SENS` / `M20_VR_ARM_ROT_SENS` | `0.5` / `0.5` | **A4 `vr_teleop_node`** |
 | 底盘/机身灵敏度（可选） | `M20_VR_VX_SENS` / `_VY_SENS` / `_WZ_SENS`、`_HEIGHT_SENS` / `_PITCH_SENS` / `_ROLL_SENS` | `2.0` / `1.0` / `1.0`、`0.5` / `0.35` / `0.25` | A4 |
 | 夹爪"像真夹爪"（默认直接阶跃） | `M20_GRIPPER_SLEW` [stroke/s] | `0`（建议 `0.15~0.2`） | A3 |
-| 关节指令限速（默认不限制，仿真会"啪"一下） | `M20_ARM_MAX_JOINT_VEL` [rad/s] | `0`（建议 `3.0`＝真机驱动器限速） | A3 |
+| 关节指令限速（= 真机驱动器口径） | `M20_ARM_MAX_JOINT_VEL` [rad/s] | `3.0`（`0` = 不限，不建议） | A3 |
+| VR 臂映射（见 §5.2；一般不要动） | `M20_VR_ARM_MAP` | `cylindrical`（`cartesian` = 旧行为） | A3 |
+| 臂摆动角度上限 | `M20_VR_SWING_MAX_DEG` | `60` | A3 |
+| IK 拒绝阈值（解不出来就不下发） | `M20_ARM_IK_MAX_POS_ERR` / `_ANG_ERR` | `0.010` m / `3.0` ° | A3 |
+| IK 姿态正则（压手腕漂移） | `M20_ARM_IK_POSTURE_GAIN` | `0.3`（`0` = 关） | A3 |
 
 > 上面这组默认值是 **2026-10-10 操作员实测确认手感合适** 后固化进代码的（原来是
 > 2.0 m/s / 5.0 rad/s、灵敏度 1.0/1.0、油门 5.0）。要回到训练侧原值：
@@ -251,11 +274,73 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 **想让仿真的臂/夹爪更像真机**（可选，默认都不限速）：
 
 ```bash
-# A3 臂 IK：夹爪按真夹爪的行程时间走 + 关节指令限到真机驱动器的 3 rad/s
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
+# A3 臂 IK：夹爪按真夹爪的行程时间走（关节限速现在默认就是真机的 3 rad/s）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_GRIPPER_SLEW=0.2 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
 ```
 
 起 A4 时 VR 节点会打印一行 `灵敏度（可用 M20_VR_*_SENS 覆盖）: ...`，可以核对是否生效。
+
+### 5.2 VR 臂的映射（2026-10-12 改，DEF-044）
+
+**为什么改**：默认站姿 `(0, 0.5, -0.5, 0, 0, 0)` 里 joint5 = joint6 = 0，joint4 与
+joint6 同轴 ⇒ **手腕正好在奇异位形**。旧实现把 VR 偏移当"笛卡尔绝对偏移"（训练侧语义）
+直接给局部 IK，而"EE 侧移 5 cm / 工具转 10°"在这个位形下需要 **2.4~2.7 rad** 的关节重排
+（键盘的 ±x 只要 0.30 rad）⇒ IK 解不出来，节点又把"顶在限位上的解"发出去，
+表现就是**臂自己甩到 joint1 = 2.168（上限）、关节速度 20 rad/s、指令力矩 139 N·m**。
+
+**现在怎么做**（默认，全部在 `arm_controller`）：
+
+| 手的动作 | 现在的含义 |
+|---|---|
+| 前伸/后收 | 沿臂当前朝向**伸缩**（半径 r） |
+| 左/右移 | **基座摆动 Δθ**（臂自然摆过去，工具跟着摆；上限 `M20_VR_SWING_MAX_DEG=60°`） |
+| 上/下 | 高度 z |
+| 手腕自转/俯仰/侧倾 | **手腕关节** j6 / j5 / j4 的增量（永远可达；不再要求手腕去补偿整条臂） |
+
+配套的两道保险：
+
+* **IK 收敛检查**：位置残差 > 10 mm 或姿态残差 > 3° 时**不下发**（沿用上一拍指令 +
+  把目标拉回实际位姿），日志里出现 `IK 未收敛…沿用上一拍指令`；
+* **零空间姿态正则**：防止手腕沿"不影响任务但会漂到限位"的方向慢慢拧过去。
+
+**回退**：`M20_VR_ARM_MAP=cartesian` 回到旧语义（只在做 A/B 时用）。
+
+**验收**：`python3 tests/vr_arm_chain_check.py`（约 25 s；对旧行为会 FAIL）。
+
+### 5.3 开窗口看"几个末端位姿指令"（`scripts/arm_pose_demo.py`）
+
+想把臂单独看清、又不想戴头显时用这个（2026-10-13 第一次这么验收的流程）：
+
+```bash
+# A1 仿真（开窗口；实时因子要 ~1.00）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_USE_VIEWER=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py'
+
+# A2 臂 IK
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_ARM_DEBUG=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
+
+# A3 腿：必须起 rl_deploy 并按 z（站立）→ c（进 RL）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ros2 run m20_sdk_deploy rl_deploy'
+
+# A4 依次下发 12 个具名位姿指令（默认一直循环；每步 2.5 s）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/arm_pose_demo.py --hold 2.5'
+```
+
+指令序列（相对按下 A4 那一刻的实际位姿）：中位 → 前伸 8 cm → 后收 4 cm →
+**左移 8 cm（基座摆动）** → 右移 8 cm → 抬高 6 cm → 降低 6 cm →
+手腕自转/俯仰/侧倾各 +25° → 组合（前伸+左移+自转）→ 回中位。
+A4 每步结束会打印 `目标 / 实际 / 位置误差 / 姿态误差 / max|dq| / max|tau|`；
+2026-10-13 的实测是 **~5 mm / ~0.8°**（IK 残差 0.1~1.6 mm）、关节 ≤0.06 rad/s、
+力矩 ≤4.6 N·m。
+
+> ⚠️ **三个坑（都踩过）**：
+> 1. **A3 必须真的进 RL**：只靠仿真自己的腿部默认保持，机器人会**缓慢摔倒**
+>    （窗口里表现为高度慢慢掉、最后趴下）。进 RL 后窗口里应看到它站住（高度 ~0.51 m）。
+> 2. **不要同时起 `arm_teleop_node` / `arm_stub_node` / `arm_real_adapter`**：会和
+>    `arm_controller` 在 `/ARM_TELEOP`（或 `/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE`）
+>    上形成**两个发布者**，两路数据交替到达 —— 表现是"目标读数不变、臂不听使唤"，
+>    见 `DEFECT_LOG_zh.md` DEF-045（本次就是一个 11 小时前残留的 `arm_stub_node` 干的）。
+>    起之前可以先 `python3 src/M20_sdk_deploy/scripts/check_vr_arm_chain.py` 看发布者数量。
+> 3. 想看"腿也在走"的组合：A3 里按住 `w`（每 0.2 s 重复一次，键盘是"按住"语义）。
 
 ---
 

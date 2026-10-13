@@ -5,10 +5,68 @@
     <title>XLeVR - Robot Arm Teleoperation</title>
     <meta name="description" content="XLeVR - Robot Arm Teleoperation">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <script src="https://aframe.io/releases/1.7.1/aframe.min.js"></script>
+    <!-- A-Frame 引擎：**必须用同目录的离线副本**（DEF-058）。
+         真机/头显都在内网、没有外网，早先这里写的是 https://aframe.io/... 的 CDN 地址，
+         拉不到脚本时 <a-scene> 不会初始化：头显里只看到中间那张 "VR Teleoperation"
+         卡片，没有任何按钮可点（连 A-Frame 自带的 Enter VR 按钮都不会出现）。
+         文件缺失时请在有外网的机器上跑：bash src/M20_sdk_deploy/scripts/fetch_aframe.sh -->
+    <script src="aframe.min.js" defer></script>
     <script src="vr_app.js" defer></script>
     <script src="interface.js" defer></script>
     <link rel="stylesheet" href="styles.css">
+    <script>
+      // A-Frame 缺失兜底：本地 aframe.min.js 没加载上时
+      //   1) 立刻在页面上显示一条明确的错误（头显里看不到 devtools / 控制台）；
+      //   2) 若头显恰好能上外网，从 CDN 补一份并自动刷新一次（每个会话只试一次）。
+      (function () {
+        if (window.AFRAME) { return; }
+        document.addEventListener('DOMContentLoaded', function () {
+          if (window.AFRAME) { return; }
+          showAframeMissingBanner();
+          var tried = false;
+          try { tried = sessionStorage.getItem('xlevr_aframe_cdn') === '1'; } catch (e) {}
+          if (tried) { return; }
+          var cdns = [
+            'https://cdn.jsdelivr.net/npm/aframe@1.7.1/dist/aframe-master.min.js',
+            'https://unpkg.com/aframe@1.7.1/dist/aframe-master.min.js',
+            'https://aframe.io/releases/1.7.1/aframe.min.js'
+          ];
+          var i = 0;
+          (function tryNext() {
+            if (i >= cdns.length) { return; }
+            var s = document.createElement('script');
+            s.src = cdns[i++];
+            s.async = true;
+            s.onload = function () {
+              if (!window.AFRAME) { tryNext(); return; }
+              try { sessionStorage.setItem('xlevr_aframe_cdn', '1'); } catch (e) {}
+              console.warn('[XLeVR] A-Frame 从 CDN 加载成功，自动刷新一次以初始化场景');
+              location.reload();
+            };
+            s.onerror = tryNext;
+            document.head.appendChild(s);
+          })();
+        });
+
+        function showAframeMissingBanner() {
+          if (document.getElementById('aframeMissingBanner')) { return; }
+          var b = document.createElement('div');
+          b.id = 'aframeMissingBanner';
+          b.style.cssText = 'position:fixed;left:0;right:0;top:0;z-index:100000;' +
+            'background:#c0392b;color:#fff;font:16px/1.6 sans-serif;padding:14px 18px';
+          b.innerHTML =
+            '<b>A-Frame 未加载（缺少 aframe.min.js）</b><br>' +
+            '本页所有按钮都不会生效：VR 场景没有初始化。<br>' +
+            '修复：在有外网的机器上执行 ' +
+            '<code>bash src/M20_sdk_deploy/scripts/fetch_aframe.sh</code>，' +
+            '把生成的 <code>aframe.min.js</code> 放到上位机 ' +
+            '<code>third_party/XLeVR/web-ui/</code> 下再刷新。' +
+            '（详见 docs/DEPLOY_REAL_VR_zh.md §1.6 / §5.2，DEFECT_LOG 的 DEF-058）';
+          document.body.appendChild(b);
+          console.error('[XLeVR] window.AFRAME 未定义：web-ui/aframe.min.js 缺失或加载失败');
+        }
+      })();
+    </script>
   </head>
   <body>
     <!-- Settings Button -->

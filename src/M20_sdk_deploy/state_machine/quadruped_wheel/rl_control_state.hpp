@@ -88,6 +88,10 @@ namespace qw {
         float vr_vel_[3] = {0.f, 0.f, 0.f};
         float vr_body_off_[3] = {0.f, 0.f, 0.f};
         float vr_body_anchor_[3] = {0.513f, 0.f, 0.f};  // height/pitch/roll
+        // 机身姿态的默认底座 = keyboard_interface.hpp 的 body_height_ 初值 / 'l' 复位值
+        // = UserCommand 的默认值（0.513, 0, 0）。VR 复位要把机身拉回**这里**，
+        // 而不是把复位前的偏移固化成新零点（DEF-046）。
+        static constexpr float kBodyHeightDefault_ = 0.513f;
 
         Eigen::MatrixXf acc_rot = Eigen::MatrixXf::Zero(20, 3);
         int acc_rot_count = 0;
@@ -309,11 +313,41 @@ namespace qw {
                             if (calib && !vr_calib_prev_) vr_calibrate_ = true;
                             vr_calib_prev_ = calib;
                             bool reset = msg->data[15] > 0.5f;
-                            if (reset && !vr_reset_prev_) vr_anchor_valid_ = false;
+                            const bool reset_edge = reset && !vr_reset_prev_;
                             vr_reset_prev_ = reset;
                             for (int i = 0; i < 3; ++i) {
                                 vr_vel_[i] = msg->data[i];
                                 vr_body_off_[i] = msg->data[9 + i];
+                            }
+                            // ---- 复位（左 X/Y）----------------------------------
+                            // 语义：机身姿态回默认 + 速度清零 + VR 交还控制权
+                            // （设备侧 RESET_KEEPS_ACTIVE=0 会同时把 active 置 0）。
+                            // ⚠️ 锚点必须锚到**默认机身姿态**：旧实现只把
+                            // `vr_anchor_valid_` 置 false、交给 ApplyVrCommand 的
+                            // "锚到当前指令值"分支，于是复位前的偏移被固化成新零点，
+                            // 机身永远回不到默认（2026-10-13 操作员反馈）。
+                            if (reset_edge) {
+                                vr_vel_[0] = vr_vel_[1] = vr_vel_[2] = 0.f;
+                                vr_body_off_[0] = vr_body_off_[1] = vr_body_off_[2] = 0.f;
+                                vr_body_anchor_[0] = kBodyHeightDefault_;
+                                vr_body_anchor_[1] = 0.f;
+                                vr_body_anchor_[2] = 0.f;
+                                vr_anchor_valid_ = true;   // 锚点已是默认值，别再重锚
+                                vr_calibrate_ = false;     // 复位优先于同帧的重标定脉冲
+                                // 共享指令立刻归位（VR 失活后由键盘每 5 ms 续写默认值）；
+                                // 同时让键盘把自己的内部底座也归位，否则它会把旧值写回来。
+                                UserCommand *uc = uc_ptr_->GetUserCommand();
+                                uc->forward_vel_scale = 0.f;
+                                uc->side_vel_scale = 0.f;
+                                uc->turnning_vel_scale = 0.f;
+                                uc->body_height = kBodyHeightDefault_;
+                                uc->body_pitch = 0.f;
+                                uc->body_roll = 0.f;
+                                uc_ptr_->RequestLocalReset();
+                                std::cout << "[VR] RESET -> 机身姿态回默认 ("
+                                          << kBodyHeightDefault_ << " / 0 / 0)、速度 0、"
+                                             "控制权交还（再按 B 重新标定并接管）"
+                                          << std::endl;
                             }
                         }
                         // while VR is active the keyboard must not overwrite

@@ -81,7 +81,12 @@ def _deep_merge(base: dict, update: dict):
             base[key] = value
 
 # Load configuration
-_config_data = load_config()
+# ⚠️ 这里原来调的是 `load_config()`（默认 `"config.yaml"`，**按进程 cwd 解析**）
+# ⇒ 只要不是在 `third_party/XLeVR/` 目录下启动，就会打印
+#   `Config file config.yaml not found, using defaults`，而且**改这个 yaml 不会生效**
+#   （静默用内置默认值）。改成**先找本包旁边的 config.yaml**，找不到再退回 cwd/默认值。
+_CFG_NEAR = Path(__file__).resolve().parents[1] / "config.yaml"
+_config_data = load_config(str(_CFG_NEAR)) if _CFG_NEAR.is_file() else load_config()
 
 # Extract values for backward compatibility
 HTTPS_PORT = _config_data["network"]["https_port"]
