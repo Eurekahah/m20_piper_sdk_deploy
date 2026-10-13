@@ -38,6 +38,7 @@
 | 2026-10-13 | **DEF-058 闭环**（操作员实测：放好 `aframe.min.js` 后头显页面正常、可遥操）；新增 **`docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么）**——把 A-Frame、上位机 `PyYAML`/`websockets` wheel、**不用下的** scipy/numpy/pynput/torch、放哪/怎么自检/缺了的症状/换机器后重做哪些集中一处，并在 `DEPLOY_REAL_VR_zh.md` §1.5/§1.6、`COMMANDS_SIM2REAL_zh.md` §0.3、`docs/README_zh.md` 索引里加了指针 | `sync/2026-10-13-vr-ip` |
 | 2026-10-13 | 新增 **DEF-059**（真机"左前侧摆关节过温 100 ℃ → 安全接管 → 趴下 → 10 s 后恢复"）：**仿真侧没有电机热模型**（`mujoco_simulation_ros2.py` 把 `motion_temp/driver_temp` 写死 40/45 ℃ ⇒ 温度那条接管路径在 sim2sim 不可达）；等价可观测的**关节力矩**实测为**长期静载**：站立状态机 `fl_hipx +12.0 N·m`、RL 站立零命令 `fl_hipx +15.1 N·m`（四个侧摆里最大、且是 `fr_hipx` 的 2.3 倍），是 M20 腿型"侧摆轴在机体侧 / 轮子接地点在 y≈0.23"的固有静负荷。新增离线探针 `tests/joint_torque_report.py` | `investigate/left-hipx-temp-sim2sim` |
 | 2026-10-13 | **DEF-059 反问修正**（用户指出"这个量级的力矩不会导致过热吧、而且没到限幅、为什么右边没事"）：补做**执行器延迟压力测试**（0 / 5 / 25 ms：`fl_hipx` std 0.139→0.115→0.111 N·m、高频带能量不变 ⇒ 仿真里"延迟 ⇒ 抖动 ⇒ 发热"不成立），并在条目里写明"**静载只是必要条件，选不出具体关节**"（同腿 `knee 21.4 / hipy 16.3` 同量级、`76.4 N·m` 是训练 `effort_limit` 不是热额定、仓库无电机规格）+ **四刀**真机取数清单；新增 **P1-8** | `investigate/left-hipx-temp-sim2sim` |
+| 2026-10-13 | **DEF-059 真机取数工具**：新增 `scripts/record_joint_data.py`（M20 上 200 Hz 录 `/JOINTS_DATA` 16 关节 `pos/vel/tau/motion_temp/driver_temp` + `/IMU_DATA`，每 5 s 打印最热 3 关节，退出给汇总并标出 `>100 ℃` 区段）与 `scripts/joint_log_report.py`（离线四刀：与仿真参考值对照 / 两个温度分开看 + 过温时序 / 谁最热 vs 谁力矩最大 + 左右镜像 / `--spectrum`）；命令写进 `COMMANDS_SIM2REAL_zh.md` **§7**（含 `scp` 取回与 `ros2 bag` 兜底）。两者已在仿真 `/JOINTS_DATA` 上自测通过 | `investigate/left-hipx-temp-sim2sim` |
 
 ---
 
@@ -49,7 +50,7 @@
 | 类型 | `缺陷`（真机现象；仿真侧缺热模型 = 可观测性缺口） |
 | 状态 | `未修（见 TODO_zh.md P1-7）` |
 | 影响面 | `二者`（`fl_hipx` 的静载在 sim2sim 与真机同源；真机才有温度） |
-| 关联 | `investigate/left-hipx-temp-sim2sim`；`mujoco_simulation_ros2.py:836-837/874-875`（写死温度）、`include/utils/safe_controller.hpp:190/202/381`（`>100 ℃` ⇒ `safe_control_mode=2`）、`state_machine/quadruped_wheel/{standup,rl_control,joint_damping}_state.hpp`、`state_machine/parameters/m20_control_parameters.cpp`（腿 `swing_leg_kp_ = 200`、`hip_len_ = 0.104`）、新增 `tests/joint_torque_report.py`；相关 **DEF-036**（vy/wz 方向不对称，同属"策略/结构左右不对称"家族） |
+| 关联 | `investigate/left-hipx-temp-sim2sim`；`mujoco_simulation_ros2.py:836-837/874-875`（写死温度）、`include/utils/safe_controller.hpp:190/202/381`（`>100 ℃` ⇒ `safe_control_mode=2`）、`state_machine/quadruped_wheel/{standup,rl_control,joint_damping}_state.hpp`、`state_machine/parameters/m20_control_parameters.cpp`（腿 `swing_leg_kp_ = 200`、`hip_len_ = 0.104`）、新增 `tests/joint_torque_report.py`（仿真遥测）、`scripts/record_joint_data.py`（**真机录** `/JOINTS_DATA`）、`scripts/joint_log_report.py`（离线四刀）、`COMMANDS_SIM2REAL_zh.md` §7（命令）；相关 **DEF-036**（vy/wz 方向不对称，同属"策略/结构左右不对称"家族） |
 
 **1. 现象（操作员 2026-10-13 报告的真机现象 + 本轮仿真复现）**
 
@@ -132,7 +133,10 @@
   * 还有一个**数据口径**上的坑：仿真遥测里的 `torque` 是**控制器算出的 PD 指令**
     （`input_tq`），而真机 `/JOINTS_DATA` 的 `torque` 是**电机实测/估计**值；
     "两边数字一样"**不等于**"两边电流一样"（多了摩擦、纹波、相电阻差异就会分叉）。
-  * 要闭合这一问，只能拿真机数据一刀一刀切（四刀，见 `TODO_zh.md` P1-7）：
+  * 要闭合这一问，只能拿真机数据一刀一刀切（四刀，工具已就位：
+    `scripts/record_joint_data.py` 在真机上录 → `scp` 取回 →
+    `scripts/joint_log_report.py` 出四刀报告，命令见
+    `COMMANDS_SIM2REAL_zh.md` **§7**；待办 `TODO_zh.md` P1-7 / P1-8）：
     ① 16 个关节静止时的 `torque` 与仿真表逐个对（差多少 ⇒ 是负载/标定问题，还是相等 ⇒ 不是）；
     ② `motion_temp`（电机）与 `driver_temp`（驱动器）**分开看**（代码判的是 `motion_temp`；
     若是 `driver_temp` 先到 100，那是功率级/压降/开关损耗，不是绕组铜损）；
@@ -154,6 +158,13 @@
 * 本轮**没有改任何控制/姿态逻辑**（真机现象、且改站姿会直接把策略推到分布外）：
   新增离线探针 `tests/joint_torque_report.py`（τ 统计 / 热负荷排序 / 频谱 / 饱和检查 /
   1 Hz 时间序列），登记本条目。
+* 为"拿真机数据切四刀"补了两个脚本（都已在仿真 `/JOINTS_DATA` 上自测通过，
+  含人造过温数据的过温事件检测）：
+  `scripts/record_joint_data.py`（真机 200 Hz 录 16 关节 `pos/vel/tau/motion_temp/driver_temp`
+  + `/IMU_DATA`，终端每 5 s 打印"最热的 3 个关节"，退出时给汇总并标出 `>100 ℃` 的区段）
+  与 `scripts/joint_log_report.py`（离线：仿真参考值对照 / 两个温度分开看 + 过温时序 /
+  谁最热 vs 谁力矩最大 + 左右镜像对比 / `--spectrum` 高频带能量）；
+  使用命令见 `COMMANDS_SIM2REAL_zh.md` §7。
 * 备选方案（都**没做**，需用户/训练侧决定）：
   a) 给仿真加**一阶热模型**（`dT/dt = (T_amb − T)/τ_th + k·τ²`，按 `tau`/`dq` 算铜损），
      让"过温 ⇒ 自动接管 ⇒ 倒 ⇒ 冷却恢复"这条安全路径在 sim2sim 里可回归——

@@ -25,6 +25,7 @@
 | 2026-10-09 | 全代码走查（`docs/review/CODE_REVIEW_2026-10-09_zh.md`）后新增 **P4 代码质量** 一节（安全层接线、单一常量来源、死代码、CMake 警告、并发约定、单元测试）；默认策略已改回**平地**模型 | 同上 |
 | 2026-10-13 | 真机"左前侧摆过温 100 ℃"排查：仿真侧**没有热模型**（温度写死 40/45 ℃），等价量**关节力矩**实测为长期静载（站立状态机 `fl_hipx` +12.0 N·m、RL 站立 +15.1 N·m）⇒ 新增 **DEF-059** 与 **P1-7**；新增离线探针 `tests/joint_torque_report.py` | `investigate/left-hipx-temp-sim2sim` |
 | 2026-10-13 | 反问修正：**静载只是必要条件**（同腿 `knee/hipy` 同量级、`76.4 N·m` 是 `effort_limit` 不是热额定）；补做延迟压力测试（0/5/25 ms 都不产生抖动）⇒ 新增 **P1-8**（"为什么偏偏左前侧摆"未闭合，四刀真机取数） | `investigate/left-hipx-temp-sim2sim` |
+| 2026-10-13 | 真机取数工具就位并入 P1-7：`scripts/record_joint_data.py`（录）+ `scripts/joint_log_report.py`（四刀分析），命令见 `COMMANDS_SIM2REAL_zh.md` §7 | `investigate/left-hipx-temp-sim2sim` |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
 P2 = sim2real 落地；P3 = 工具与文档。
@@ -190,6 +191,12 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
   - 预估：真机核对 0.5 个工作日；一阶热模型 0.5 个工作日。
   - 备注：本轮的三次 RL 用例共用一份确定性策略，**不能**当成独立样本
     （"重的一侧是否永远是左前"待真机确认）。
+  - **工具已就位**（2026-10-13 补）：真机 `scripts/record_joint_data.py`
+    （200 Hz 录 16 关节 `pos/vel/tau/motion_temp/driver_temp` + IMU）→ `scp` 取回 →
+    `scripts/joint_log_report.py`（四刀报告：仿真参考值对照 / 两个温度分开看 + 过温时序 /
+    谁最热 vs 谁力矩最大 + 左右镜像 / `--spectrum`）。命令见
+    `src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md` **§7**；
+    两个脚本已在仿真 `/JOINTS_DATA` 上自测通过（含人造过温数据的过温事件检测）。
 
 - [ ] **P1-8 "为什么偏偏是左前侧摆"未闭合（2026-10-13 反问后新增，DEF-059）**
   - 立论：`fl_hipx ≈ 15 N·m` **不是离群值**（同腿 `knee 21.4` / `hipy 16.3` 同量级，

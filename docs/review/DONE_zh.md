@@ -22,6 +22,7 @@
 | 2026-10-13 | 修复 **DEF-046**：VR 复位语义 = 机身姿态回默认 + 臂末端位姿回默认 + 速度归 0 + **交还控制权**（再按 B 把左右手柄当前位姿重采成校准原点）。改动 4 个文件（C++ 机身锚点/共享指令、键盘内部底座归位、设备侧 `RESET_KEEPS_ACTIVE` 默认 1→0），新增回归 `tests/vr_reset_semantics_check.py`（设备级 + 端到端两场景，含旧实现 A/B 复现）并接入 `tests/run_all.sh` | 工作区（建议 `fix/vr-reset-defaults`） |
 | 2026-10-13 | 新增第二十五节：头显页面**离线化**（DEF-058）——页面不再从公网 CDN 拉 A-Frame，改成本地 `aframe.min.js` + 缺失时页内红条 + `scripts/fetch_aframe.sh` 一键获取 + `sync_to_robot.sh`/启动横幅双重提示 + HTTPS 服务改多线程。**操作员当日实测通过：头显 VR 遥操正常**。新增 `docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么） | `sync/2026-10-13-vr-ip` |
 | 2026-10-13 | 新增第二十六节：真机"**左前侧摆关节过温 100 ℃ → 安全接管 → 趴下 → 10 s 后恢复**"的仿真侧排查（**DEF-059**）——结论：**仿真没有电机热模型**（温度写死 40/45 ℃ ⇒ 温度接管路径在 sim2sim 不可达），等价可观测的**关节力矩**是**长期静载**（站立状态机 `fl_hipx` +12.0 N·m / RL 站立 +15.1 N·m，150 s 稳态不变）；新增离线探针 `tests/joint_torque_report.py`；后续动作登记为 **P1-7** | `investigate/left-hipx-temp-sim2sim` |
+| 2026-10-13 | 第二十六节续：反问修正（静载只是必要条件）+ 延迟压力测试负结果；新增**真机取数工具** `scripts/record_joint_data.py` / `scripts/joint_log_report.py` 与 `COMMANDS_SIM2REAL_zh.md` **§7**（录什么 / 怎么录 / 怎么取回 / 四刀分析） | `investigate/left-hipx-temp-sim2sim` |
 
 ---
 
@@ -411,6 +412,15 @@ DEF-029~DEF-032。
 1 Hz 时间序列；用法见文件头）、`DEFECT_LOG_zh.md` 的 **DEF-059**、
 `TODO_zh.md` 的 **P1-7**（真机核对 / 给仿真加一阶热模型 / 姿态降载三条路）。
 原始遥测 CSV 在 `tmp/temp_probe/`（`tmp/` 已 gitignore，单次 10~33 MB）。
+
+**真机取数工具（当日补）**：`src/M20_sdk_deploy/scripts/record_joint_data.py`
+（M20 上 200 Hz 录 16 关节 `position/velocity/torque/motion_temp/driver_temp` + `/IMU_DATA`，
+终端每 5 s 打印"最热的 3 个关节"，退出给汇总并标出 `motion_temp > 100 ℃` 的区段）+
+`src/M20_sdk_deploy/scripts/joint_log_report.py`（离线四刀：与仿真参考值对照 /
+两个温度分开看 + 过温时序 / 谁最热 vs 谁力矩最大 + 左右镜像对比 / `--spectrum`）。
+下载与分析命令写在 `src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md` **§7**；
+两个脚本均已在容器里的仿真 `/JOINTS_DATA` 上自测通过（200 Hz 录制 + 人造过温数据的
+事件检测：`fl_hipx motion_temp > 100 ℃ 首次 19.2s / 持续 2.4 s / 峰值 103.0 ℃`）。
 
 **遗留（未验证，别当成结论）**：① 真机 `fl_hipx` 是"纯静载"还是"静载 + 抖动/额外损耗"
 （仿真测不到，要查电流环/减速箱/装配/线束）；② 仿真的三次 RL 用例**共用一份确定性策略**，

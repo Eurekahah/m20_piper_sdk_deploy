@@ -300,3 +300,92 @@ python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py
 | 臂不在默认位姿 | 起 `arm_controller`（不给输入时会回到默认位姿），或用 agx 键盘/示教摆到 `0, 0.5, -0.5, 0, 0, 0` |
 | `rl_deploy` 卡在 `joint data update is not finished` | 旧版本；现已改为有限等待 + 诊断（`DEF-024`），会告诉你是不是收不到 `/JOINTS_DATA` |
 | `arm_teleop_node.py` 按 Ctrl+C 关不掉 | 旧版本（`raw` 模式吃掉了 Ctrl+C）；新版本用 `setcbreak`，`Ctrl+C` 或 `ESC` 都能退（`DEF-028`） |
+
+---
+
+## 场景 7：录关节数据（`torque` + 两个温度）—— 排查"某关节长期顶力矩 / 过温"
+
+用途：核对真机上"某个关节（如左前侧摆 `fl_hipx`）站久了温度冲到 100 ℃ ⇒ 安全接管趴下 ⇒
+10 s 后恢复"这类现象（背景与判读口径见 `docs/review/DEFECT_LOG_zh.md` **DEF-059**、
+待办 `docs/review/TODO_zh.md` **P1-7 / P1-8**）。
+
+**录什么**：`/JOINTS_DATA` 的 16 个关节 `position / velocity / torque / motion_temp / driver_temp`
+（两个温度**都要**：代码判的是 `motion_temp`，`driver_temp` 是驱动器板温，混淆会判错病因），
+外加 `/IMU_DATA`（看有没有摔倒/被抬动）。
+
+> 为什么只能在真机录：仿真侧**没有电机热模型**（`mujoco_simulation_ros2.py` 把
+> `motion_temp/driver_temp` 写死 40/45 ℃），温度这条路在 sim2sim 里根本走不到。
+
+### 7.1 前置检查（在 M20 上）
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+
+ros2 topic hz /JOINTS_DATA                                   # 应 ~200 Hz
+python3 -c "from drdds.msg import JointsData; print('drdds ok')"   # 脚本要用
+```
+
+> 提示：**用与跑 `rl_deploy` 相同的终端环境**（domain/RMW 一致）。
+> 若第二条报 `No module named drdds`，说明这个 shell 没 source 到带 drdds 的 overlay
+> ⇒ 用 7.4 的 `ros2 bag` 兜底。
+
+### 7.2 录制（M20 上；脚本随仓库同步，见场景 0.1）
+
+```bash
+# A）站立状态机：按 z 站起来、**不要**按 c，录 10 分钟
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 600 \
+        --out ~/joint_logs/stand_$(date +%m%d_%H%M).csv
+
+# B）RL 站立、零速度命令：另一个终端跑 rl_deploy 按 z 再按 c，这里录 10 分钟
+#    （过温 → 接管趴下 → 冷却恢复 会完整落在这一份里）
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 600 \
+        --out ~/joint_logs/rl_$(date +%m%d_%H%M).csv
+
+# C）过温趴下之后，继续录 60 s 的**冷却段**（看温度多久掉回阈值以下）
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 60 \
+        --out ~/joint_logs/cool_$(date +%m%d_%H%M).csv
+```
+
+* `--duration 0` = 一直录到 `Ctrl+C`（`Ctrl+C` 也会先打印汇总再退出）；
+* 终端每 5 s 打印一行"最热的 3 个关节（motion/driver）"，**边录边看**有没有在升温：
+  ```
+  [  125.3s]  200.0 Hz  n=25060  最热: fl_hipx 87.4(drv 79.1) fl_hipy 71.2(drv 68.0) ...
+  ```
+* 退出时打印每个关节的 τ 均值/极值 + 温度首/末/峰，并标出 `motion_temp > 100 ℃`
+  的区段（第几秒开始、持续多久）。
+
+**录制期间**：急停别离手；B 档一定要亲眼看到"过温 → 趴下 → 恢复"这一轮（这才是要复现的），
+顺便记下操作员看到的**时间点**（对照 CSV 里的 `wall` 列）。
+
+### 7.3 取回 + 分析（开发机上）
+
+```bash
+# 下载（M20 的 SSH 密码是一个单引号 '）
+mkdir -p tmp/real_logs
+scp user@10.21.31.103:'~/joint_logs/*.csv' tmp/real_logs/
+scp user@10.21.31.103:'~/joint_logs/*.meta.json' tmp/real_logs/
+
+# 分析（容器里跑；也可以用开发机上带 numpy 的 python）
+docker exec m20_piper_ros bash -lc 'cd /root/m20_piper_ws &&
+  python3 src/M20_sdk_deploy/scripts/joint_log_report.py tmp/real_logs/rl_xxxx.csv --ref rl --spectrum'
+```
+
+报告直接给四刀（对应 DEF-059 的排查清单）：
+
+1. **逐关节 `τ` / `q` 与仿真参考值并列**（`--ref rl` 或 `--ref standup`）⇒ 差得多 = 负载/标定问题；
+2. **两个温度分开看 + >100 ℃ 事件时序** ⇒ 是电机绕组还是驱动器板；
+3. **谁最热 vs 谁力矩最大**（若不是一个关节 ⇒ 纯铜损解释不了）+ 左右镜像对比
+   （`|左|/|右| > 1.5` 会标出来）；
+4. `--spectrum`：`τ` 的高频带能量（仿真里 >5 Hz 都 < 0.001 N·m；真机若有 ⇒
+   纹波/极限环，仿真测不到）。
+
+### 7.4 兜底：`ros2 bag`（Python 端 import 不到 drdds 时）
+
+```bash
+# M20 上录（只依赖 ROS 自带的 ros2bag）
+ros2 bag record -o ~/joint_logs/bag_rl /JOINTS_DATA /IMU_DATA
+# 开发机上取回，再把 .db3 给需要的人（我们这边可以转成上面的 CSV 格式）
+scp -r user@10.21.31.103:'~/joint_logs/bag_rl' tmp/real_logs/
+```
