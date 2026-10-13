@@ -20,6 +20,10 @@ private:
     VecXf goal_joint_pos_, kp_, kd_;
     MatXf joint_cmd_;
     double stand_duration_ = 2.;
+        // M20_STANDUP_VENDOR=1 ⇒ 用厂商原版（046b72d）的两段式站立：
+        //   第一段折到 pre_height_ 蹲姿、第二段按高度规划升到 stand_height_，轮子 kp=0。
+        //   默认 0 = 本项目行为（一步到训练默认姿态并保持）。见 DEF-060 / TODO P1-9。
+        bool vendor_mode_ = false;
 
     const float init_hipx_pos_ = Deg2Rad(0.);
     const float set_wheel_kd_ = 1.;
@@ -65,18 +69,42 @@ private:
 public:
     StandUpState(const RobotName& robot_name, const std::string& state_name, 
         std::shared_ptr<ControllerData> data_ptr):StateBase(robot_name, state_name, data_ptr){
-            // goal = the policy default standing pose (matches the Isaac Lab
-            // init_state / USD default: hipy +/-0.6, knee -/+1.0, wheels 0),
-            // so RL control starts from the exact state the policy was trained on.
-            goal_joint_pos_ = Vec4f(0.0, -0.6, 1.0, 0.0).replicate(4, 1);
-            goal_joint_pos_(4) = 0.0; goal_joint_pos_(12) = 0.0;
-            goal_joint_pos_(9) = 0.6; goal_joint_pos_(10) = -1.0;
-            goal_joint_pos_(13) = 0.6; goal_joint_pos_(14) = -1.0;
-
+            if (const char *e = std::getenv("M20_STANDUP_VENDOR")) vendor_mode_ = (std::string(e) != "0");
+            if (vendor_mode_) {
+                // 厂商原版：goal = 按 pre_height_ 算出的蹲姿（hipx = init_hipx_pos_ = 0），
+                // 之后由第二段高度规划把机身抬到 stand_height_。
+                goal_joint_pos_ = Vec4f(init_hipx_pos_, GetHipYPosByHeight(cp_ptr_->pre_height_),
+                                        GetKneePosByHeight(cp_ptr_->pre_height_), 0).replicate(4, 1);
+                goal_joint_pos_(4) = -init_hipx_pos_; goal_joint_pos_(12) = -init_hipx_pos_;
+                // 后髋膝取反
+                goal_joint_pos_(9) = -goal_joint_pos_(9);
+                goal_joint_pos_(10) = -goal_joint_pos_(10);
+                goal_joint_pos_(13) = -goal_joint_pos_(13);
+                goal_joint_pos_(14) = -goal_joint_pos_(14);
+                std::cout << "[STANDUP] M20_STANDUP_VENDOR=1 ⇒ 厂商原版两段式站立"
+                             "（pre_height " << cp_ptr_->pre_height_ << " m → stand_height "
+                          << cp_ptr_->stand_height_ << " m，轮子 kp=0/kd=1）。"
+                             "注意：结束站位与训练默认姿态不同，进 RL 前建议先把开关去掉。"
+                          << std::endl;
+            } else {
+                // goal = the policy default standing pose (matches the Isaac Lab
+                // init_state / USD default: hipy +/-0.6, knee -/+1.0, wheels 0),
+                // so RL control starts from the exact state the policy was trained on.
+                goal_joint_pos_ = Vec4f(0.0, -0.6, 1.0, 0.0).replicate(4, 1);
+                goal_joint_pos_(4) = 0.0; goal_joint_pos_(12) = 0.0;
+                goal_joint_pos_(9) = 0.6; goal_joint_pos_(10) = -1.0;
+                goal_joint_pos_(13) = 0.6; goal_joint_pos_(14) = -1.0;
+            }
             Vec4f one_leg_kp, one_leg_kd;
-            // wheels: position-hold at 0 (kp 10) so the robot does not roll
-            one_leg_kp << cp_ptr_->swing_leg_kp_, 10;
-            one_leg_kd << cp_ptr_->swing_leg_kd_, 1;
+            if (vendor_mode_) {
+                // 厂商原版：轮子 kp=0（第一段 kd=0，第二段 kd=set_wheel_kd_）
+                one_leg_kp << cp_ptr_->swing_leg_kp_, 0;
+                one_leg_kd << cp_ptr_->swing_leg_kd_, 0;
+            } else {
+                // wheels: position-hold at 0 (kp 10) so the robot does not roll
+                one_leg_kp << cp_ptr_->swing_leg_kp_, 10;
+                one_leg_kd << cp_ptr_->swing_leg_kd_, 1;
+            }
             kp_ = one_leg_kp.replicate(4, 1);
             kd_ = one_leg_kd.replicate(4, 1);
             joint_cmd_ = MatXf::Zero(16, 5);
@@ -97,7 +125,47 @@ public:
         GetRobotJointValue();
         VecXf planning_joint_pos(current_joint_pos_.rows());
         VecXf planning_joint_vel(current_joint_pos_.rows());
-        if(run_time_ - time_stamp_record_ <= stand_duration_){
+        if(vendor_mode_){
+            double dt = 0.001;
+            if(run_time_ - time_stamp_record_ <= stand_duration_){
+                // 第一段：折到 pre_height_ 蹲姿
+                for(int i=0;i<current_joint_pos_.rows();++i){
+                    planning_joint_pos(i) = GetCubicSplinePos(init_joint_pos_(i), init_joint_vel_(i), goal_joint_pos_(i), 0,
+                                                    run_time_ - time_stamp_record_, stand_duration_);
+                    planning_joint_vel(i) = GetCubicSplineVel(init_joint_pos_(i), init_joint_vel_(i), goal_joint_pos_(i), 0,
+                                                    run_time_ - time_stamp_record_, stand_duration_);
+                    if(i%4==3){
+                        planning_joint_vel(i) = 0.0;
+                    }
+                }
+                for(int i=3;i<16;i+=4) kd_(i) = 0.f;          // 厂商：这一段的轮子完全自由
+            }else{
+                // 第二段：按高度规划从 pre_height_ 抬到 stand_height_
+                double new_time = run_time_ - time_stamp_record_ - stand_duration_;
+                float plan_height = GetCubicSplinePos(cp_ptr_->pre_height_, 0, cp_ptr_->stand_height_, 0,
+                                                    new_time, stand_duration_);
+                float plan_height_next = GetCubicSplinePos(cp_ptr_->pre_height_, 0, cp_ptr_->stand_height_, 0,
+                                                    new_time+dt, stand_duration_);
+                float hipy_pos = GetHipYPosByHeight(plan_height);
+                float hipy_vel = (GetHipYPosByHeight(plan_height_next) - hipy_pos) / dt;
+                float knee_pos = GetKneePosByHeight(plan_height);
+                float knee_vel = (GetKneePosByHeight(plan_height_next) - knee_pos) / dt;
+                planning_joint_pos = Vec4f(init_hipx_pos_, hipy_pos, knee_pos, 0).replicate(4, 1);
+                planning_joint_pos(4) = -init_hipx_pos_; planning_joint_pos(12) = -init_hipx_pos_;
+                planning_joint_vel = Vec4f(0, hipy_vel, knee_vel, 0).replicate(4, 1);
+                // 后髋膝取反
+                planning_joint_pos(9) = -planning_joint_pos(9);
+                planning_joint_pos(10) = -planning_joint_pos(10);
+                planning_joint_pos(13) = -planning_joint_pos(13);
+                planning_joint_pos(14) = -planning_joint_pos(14);
+                planning_joint_vel(9) = -planning_joint_vel(9);
+                planning_joint_vel(10) = -planning_joint_vel(10);
+                planning_joint_vel(13) = -planning_joint_vel(13);
+                planning_joint_vel(14) = -planning_joint_vel(14);
+                for(int i=3;i<16;i+=4) kd_(i) = set_wheel_kd_;
+            }
+            joint_cmd_.col(2) = kd_;
+        }else if(run_time_ - time_stamp_record_ <= stand_duration_){
             for(int i=0;i<current_joint_pos_.rows();++i){
                 planning_joint_pos(i) = GetCubicSplinePos(init_joint_pos_(i), init_joint_vel_(i), goal_joint_pos_(i), 0, 
                                                 run_time_ - time_stamp_record_, stand_duration_);

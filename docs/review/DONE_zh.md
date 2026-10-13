@@ -465,3 +465,11 @@ DEF-029~DEF-032。
   已登记为 **DEF-060** + `TODO_zh.md` **P1-9**（**厂商模式 A/B 是下一步最省事的判决实验**）。
 * 工具同步升级：`joint_log_report.py` 现在先分「保持段 / 卸力段 / 塌下事件」再统计，
   并自动按 `M20Interface::joint_dir` 把真机力矩换算到策略系（否则符号/大小没法跟仿真比）。
+
+**A/B 开关（2026-10-13，按"只加开关、默认不变、不碰 rl_deploy"的要求）**：
+只改了 `standup_state.hpp` / `idle_state.hpp` 两个文件 —— `M20_STANDUP_VENDOR=1` 切回厂商
+两段式站立（0.12 m 蹲姿 → 0.48 m 高度规划、轮子 kp=0），`M20_IDLE_ZERO_GAIN=1` 切回厂商
+idle 零增益；默认关闭 = 本仓库行为，`rl_control_state.hpp` / `run_policy` / 安全层**一行未动**。
+容器内编译通过 + sim2sim `--mode stand` 实测：厂商档站高 **0.559 m**（vs 0.514）、
+`fl_hipx` **11.78 N·m**（vs 11.99，−1.8%）、`fl_knee` **−7.07**（vs −9.52，−26%）。
+开关登记表见 `WORKFLOW_zh.md` §6.1，真机 A/B 命令见 `COMMANDS_SIM2REAL_zh.md` **§8**。

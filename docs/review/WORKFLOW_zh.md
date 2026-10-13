@@ -188,6 +188,8 @@ python3 tests/sim2sim_smoke.py --mode rl --duration 20 --repeat 6  # 入口失�
 | `M20_VR_RESET_KEEPS_ACTIVE` | 左 X/Y 复位后是否**保持 VR 激活**（0 = 复位即交还控制权、机身/臂/速度回默认，需再按 B 重新标定；1 = 2026-10-10 的旧语义"保持激活"） | `0` | 遥操作 |
 | `M20_ARM_DEBUG` / `M20_ARM_DEBUG_PERIOD` | 打印 IK 残差（目标 vs FK），用于 P1-4 精度验收 | 关 / `50` tick | 机械臂 |
 | `M20_SIM_WHEEL_STEP_RAD_S` / `_AT` | 仿真侧轮子速度阶跃（P1-2 验收） | `0`（关）/ `5 s` | 仿真 |
+| `M20_STANDUP_VENDOR` | 站立状态机用**厂商原版两段式**（先蹲到 `pre_height_` 0.12 m，再按高度规划升到 `stand_height_` 0.48 m；轮子 kp=0、第一段 kd=0）而不是"一步到训练默认姿态并保持"。**结束站位与训练默认姿态不同 ⇒ 别带着它进 RL**（DEF-060 / TODO P1-9 的 A/B 用） | `0`（本仓库行为） | 状态机（站立） |
+| `M20_IDLE_ZERO_GAIN` | idle 状态机发**零增益**（厂商原版：完全不使力）而不是 `kp 80/2` 主动保持。⚠️ 进 SDK 模式后腿就没人撑了 ⇒ 会塌（厂商的用法是"站完交还控制权"，不是长期挂在 SDK 里） | `0`（本仓库行为） | 状态机（idle） |
 
 > 上面这些开关多数是为**旧 checkpoint** 的诊断引入的（在
 > `wip/old-ckpt-arm-coupling-debug` 上）。换到新 checkpoint 后要逐条判定
