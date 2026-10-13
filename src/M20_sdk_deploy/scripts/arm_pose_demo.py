@@ -21,7 +21,7 @@
 ⚠️ **不要同时起 arm_teleop_node / arm_stub_node / arm_real_adapter**：它们和
 arm_controller 会在 /ARM_TELEOP（或 /ARM_JOINTS_DATA、/ARM_TELEOP_STATE）上
 形成**两个发布者**，两路目标/反馈交替到达 —— 表现是"目标读数是常量、臂不听使唤"，
-见 DEF-041 / DEF-045。跑之前可以用
+见 DEF-054 / DEF-045。跑之前可以用
 `python3 src/M20_sdk_deploy/scripts/check_vr_arm_chain.py` 看发布者数量。
 """
 
@@ -37,7 +37,11 @@ from pathlib import Path
 
 import numpy as np
 
-REPO = Path(__file__).resolve().parents[2]
+# 仓库根目录（scripts/ → M20_sdk_deploy/ → src/ → 仓库根）：
+# ⚠️ 这里原来是 parents[2]（= src/），于是 SIM_DIR 变成 src/src/... ⇒
+#    `from arm_controller import ...` 直接 ModuleNotFoundError（2026-10-13 实测），
+#    与 scripts/preflight_real_deploy.py 的 parents[3] 口径保持一致。
+REPO = Path(__file__).resolve().parents[3]
 SIM_DIR = REPO / "src/M20_sdk_deploy/interface/robot/simulation"
 sys.path.insert(0, str(SIM_DIR))
 
