@@ -331,6 +331,7 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 | 关节指令限速（= 驱动器口径） | `M20_ARM_MAX_JOINT_VEL`（T5） | `3.0`（`0` = 不限） |
 | 复位后是否保持 VR 激活 | `M20_VR_RESET_KEEPS_ACTIVE`（T7） | `1`（保持） |
 | VR 臂映射（**不要动**，见下） | `M20_VR_ARM_MAP`（T5） | `cylindrical`（`cartesian` = 旧行为） |
+| VR 臂半径下限（防止把手往怀里拉进臂座） | `M20_VR_RADIUS_MIN`（T5） | `0.05` m；**必须 ≤ 标定锚点半径**（默认站姿 0.109 m） |
 
 **想把范围做大**：把 `M20_VR_ARM_POS_SENS` 提到 `1.0`（速度由限速兜着，两者解耦）；
 或者**拿 B 当"离合器"**：手柄移到头了按一下 B（锚点重设到当前手位姿、臂停在原地），
@@ -368,7 +369,7 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 | 头显打不开 `https://<ip>:8443` | 头显与上位机是否同网段（`ping`）；上位机 `curl -k https://127.0.0.1:8443`；防火墙；打印的 IP 是不是**当前网段**那个（第二 WiFi 是 `10.21.41.1`） |
 | VR 里**腿和臂都不动** | 头显里按 B 了吗（VR 终端应有 `[VR] Button B -> START + calibrate`）；`ros2 topic hz /VR_TELEOP` 有没有 50 Hz |
 | **只有臂不动** | 跑 `check_vr_arm_chain.py`：`/ARM_TELEOP` 没数据 ⇒ `arm_teleop_node` 没起/崩了；`/ARM_JOINTS_DATA` 没数据 ⇒ 臂反馈没来 |
-| 臂**乱动 / 特别快 / 不跟手** | **先看发布者数量**（脚本会列）：`/VR_TELEOP` 或 `/ARM_TELEOP` 上有 2 个发布者时两路命令会交替到达（`DEF-041`）。常见原因：起了两个 `vr_teleop_node` |
+| 臂**乱动 / 特别快 / 不跟手** | **先看发布者数量**（脚本会列）：`/VR_TELEOP`、`/ARM_TELEOP`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 上任一有 2 个发布者，两路数据就会交替到达（`DEF-041`；`DEF-045` 实测过一个残留的 `arm_stub_node` 同时发假臂反馈与常量 ee_goal，表现就是"目标读数不变、臂不听使唤"）。常见原因：起了两个 `vr_teleop_node`，或上一次的 `arm_stub_node` / `arm_real_adapter` 没退干净 |
 | `arm_controller` 终端自己没了 | 已加三层兜底不会再死（`DEF-042`）；若是被别的终端 Ctrl+C 连带杀了，注意清理脚本的 `pkill` 范围；把 traceback 贴出来 |
 | 复位后臂被"拽"一下 | 现在已是确定性的"重置到默认位姿"（`DEF-042`）；正常时会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`（真机上没有 `/reset_sim`，会打一条 service not available 的警告，但末端目标仍会重置） |
 | `Policy dim mismatch` / 找不到策略 | 策略目录必须含 `policy.onnx` + `policy_layout.json`；用 `M20_POLICY_DIR` 时**写绝对路径**（按进程 cwd 解析，`DEF-038`） |
@@ -383,6 +384,10 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 * `[ ]` `arm_real_adapter` 的实机联调（只在话题层验证过）；
 * `[ ]` 端到端时延 / 抖动（P2-3）；
 * `[ ]` **VR 跨机链路**：本文假设 VR 节点与 `rl_deploy` **同在**上位机（最稳）。
+* `[ ]` **新映射（DEF-044）的真机复核**：真机上重跑 §6 的 12 个位姿指令（用
+  `scripts/arm_pose_demo.py` 即可，不需要头显），确认跟手与"腕部不再自己甩"。
+* `[ ]` **半径下限（`M20_VR_RADIUS_MIN`）与标定锚点的关系**：下限必须 ≤ 锚点半径
+  （默认站姿 ~0.109 m），否则"手停在标定点"回不到锚点（DEF-044 §6）。
   若改成在开发机上跑 `vr_teleop_node`，需要跨机 DDS 且两边 ROS 版本不同
   （上位机 Foxy vs 开发机 Humble），**不推荐**；
 * `[ ]` 真机急停链路（软件 `r` + 硬件按钮）与固件侧力矩/速度限幅是否与训练一致。

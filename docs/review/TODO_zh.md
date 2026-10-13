@@ -21,6 +21,7 @@
 | 2026-09-20 | **P1-2 完成**（轮子速度伺服阶跃验收）；新增 `--mode wheel_step`；`arm_move` 增加末端位移判据；仿真遥测增加末端位姿与轮速指令列；**DEF-022 修键盘目标限速**，IK 精度实测 0.2 mm | `feat/actuator-accuracy-tests` |
 | 2026-10-09 | 同步仿真新代码：臂增益 300/20 → **300/8**、夹爪 4000/200 → **286/5**、臂速度上限 **3 rad/s**；默认策略切到多地形 `cloud_slowvx20k`；新增 **P1-6**（容器内补跑 L1/L3）与 **P2-6**（真机臂速度上限 3 rad/s 落地） | `sync/2026-10-09-sim-delta` |
 | 2026-10-12 | **DEF-044 修复完成**（VR 臂跟随：柱坐标 + 手腕关节偏移映射、IK 收敛检查、零空间姿态正则、关节限速默认 3 rad/s）、新增回归用例 `tests/vr_arm_chain_check.py`；**P2-7**（`arm` 档判据，DEF-033）仍未动 | `fix/vr-arm-ik-reachability` |
+| 2026-10-13 | 窗口可视化验收（12 个具名位姿指令，跟踪 ~5 mm / 0.8°，`scripts/arm_pose_demo.py` 新增）；补修半径下限钳住标定锚点；新增 **P2-8**（跑用例前先清残留 + 断言"话题只有一个发布者"，DEF-045） | `fix/vr-arm-ik-reachability` |
 | 2026-10-09 | 全代码走查（`docs/review/CODE_REVIEW_2026-10-09_zh.md`）后新增 **P4 代码质量** 一节（安全层接线、单一常量来源、死代码、CMake 警告、并发约定、单元测试）；默认策略已改回**平地**模型 | 同上 |
 
 **优先级定义**：P0 = 挡在"sim2sim 能稳定跑"前面；P1 = 决定 sim2sim 与训练的一致性上限；
@@ -232,6 +233,21 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     `limit` 元组加 `"arm"`，即用同样的"失败率 ≤ 1/2"。
   - 依据：`DEFECT_LOG_zh.md` DEF-018（已定位为策略侧，部署侧对照实验已排除）。
   - 验收：`MODES="arm" SKIP_BUILD=1 bash tests/run_all.sh` 在 6 次里不再因偶发坍塌报红。
+
+- [ ] **P2-8 跑用例/上机前的"残留进程 + 发布者唯一性"检查（2026-10-13 新增）**
+  - 现状：本次演示被一个 **11 小时前残留的 `arm_stub_node.py`** 干扰——它和
+    `arm_controller` 同时发 `/ARM_JOINTS_DATA` 与 `/ARM_TELEOP_STATE`（常量默认位姿），
+    于是 IK 的反馈种子与策略的 `ee_goal` 观测都被掺入常量，表现是"目标读数不变、
+    臂不听使唤、安全网拒发计数猛涨"（DEF-045）。上真机同理：多起一个假臂节点或
+    `arm_real_adapter` 就会踩到。
+  - 建议改法：① `tests/run_all.sh` 开跑前调用 `tests/sim2sim_smoke.py` 里已有的
+    `leftover_processes()` / `force_cleanup()`（把"本仓库节点"清干净）；
+    ② 启动后加一条前置断言：`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE`、`/ARM_TELEOP`、
+    `/VR_TELEOP` **各只有一个发布者**（`scripts/check_vr_arm_chain.py` 已经在打印
+    发布者数量，可直接复用其判定）。
+  - 依据：`DEFECT_LOG_zh.md` DEF-045（与 DEF-041 2026-10-10 同类的"双发布者"坑）。
+  - 验收：故意留一个 `arm_stub_node.py` 在跑时，`run_all.sh` 在启动阶段就报红并指出
+    是哪个话题、哪个进程。
 
 ---
 
