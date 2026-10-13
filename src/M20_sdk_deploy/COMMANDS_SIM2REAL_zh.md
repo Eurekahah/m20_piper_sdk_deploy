@@ -349,6 +349,9 @@ python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 60 \
 ```
 
 * `--duration 0` = 一直录到 `Ctrl+C`（`Ctrl+C` 也会先打印汇总再退出）；
+* **不会覆盖**：`--out` 指向的文件已存在时，脚本自动改写到 `…_2.csv`、`…_3.csv` 并在终端
+  提示（要覆盖得显式加 `--force`）。⚠️ 真机上时钟可能是错的（实测录到 `2024-08-11`），
+  所以**别靠时间戳区分**，文件名用有意义的 tag 更可靠；
 * 终端每 5 s 打印一行"最热的 3 个关节（motion/driver）"，**边录边看**有没有在升温：
   ```
   [  125.3s]  200.0 Hz  n=25060  最热: fl_hipx 87.4(drv 79.1) fl_hipy 71.2(drv 68.0) ...
@@ -402,6 +405,17 @@ idle 从"**零增益不使力**"改成"`kp 80/2` 主动保持"。真机实测（
 
 ### 8.1 三档怎么跑（跑之前先做场景 0.1 同步 + 0.2 编译）
 
+> ⚠️ **开关是代码改动 ⇒ 真机上必须先重新同步 + 重编**（否则开关不起作用）：
+>
+> ```bash
+> # 开发机（仓库根目录）：同步顺手在 M20 上编真机版
+> bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build
+> ```
+>
+> 起来后**先确认开关生效**：`rl_deploy` 启动日志里应出现
+> `[STANDUP] M20_STANDUP_VENDOR=1 ⇒ 厂商原版两段式站立…`（档 B）
+> 或 `[IDLE] M20_IDLE_ZERO_GAIN=1 ⇒ 厂商原版 idle…`（档 C）。**没有这行就是没编进去。**
+
 ```bash
 cd ~/M20_sdk_deploy
 source /opt/ros/foxy/setup.bash && source /opt/robot/scripts/setup_ros2.sh
@@ -414,6 +428,18 @@ M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
 
 # 档 C：厂商原版 idle（零增益、不使力）
 M20_IDLE_ZERO_GAIN=1 ros2 run m20_sdk_deploy rl_deploy
+```
+
+**档 B 的完整录法（两个终端，注意顺序：先开录、再起 rl_deploy、最后按 `z`）**
+
+```bash
+# T1（M20）：先把录制挂上（文件名带 tag；已存在不会覆盖，会写成 …_2.csv）
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 600 \
+        --out ~/joint_logs/standvendor_B1.csv
+
+# T2（M20）：用你平时那条启动命令，**前面加环境变量**（`ros2 run` 或直接跑二进制都行）
+M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
+#   等它打印 [STANDUP] … 之后，按 z 站立；保持 10 分钟（或直到过温趴下 3~4 次）
 ```
 
 **要注意的**（都写进了启动日志）：

@@ -232,11 +232,24 @@ def main() -> int:
                     help="录多少秒；0 = 一直录到 Ctrl+C（默认 600）")
     ap.add_argument("--print-every", type=float, default=5.0, help="终端概览间隔（秒）")
     ap.add_argument("--no-imu", action="store_true", help="不录 /IMU_DATA（默认录，用于看跌倒/倾角）")
+    ap.add_argument("--force", action="store_true",
+                    help="允许覆盖已存在的输出文件（默认**不覆盖**：自动改名为 …_2.csv、…_3.csv）")
     args = ap.parse_args()
 
     out = args.out or os.path.join(
         os.path.expanduser("~"), "joint_logs",
         f"joints_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+    # 防覆盖：真机上时钟可能是错的（实测录到的 meta 是 2024-08-11），
+    # 用 `date +%m%d_%H%M` 起名在"同一分钟里重录"就会把上一次盖掉。
+    if not args.force and os.path.exists(out):
+        stem, ext = os.path.splitext(out)
+        k = 2
+        while os.path.exists("%s_%d%s" % (stem, k, ext)):
+            k += 1
+        new_out = "%s_%d%s" % (stem, k, ext)
+        print(f"[rec] ⚠️ {out} 已存在 ⇒ 这次写到 {new_out}（要覆盖请加 --force）",
+              flush=True)
+        out = new_out
     os.makedirs(os.path.dirname(os.path.abspath(out)), exist_ok=True)
 
     rclpy.init()
