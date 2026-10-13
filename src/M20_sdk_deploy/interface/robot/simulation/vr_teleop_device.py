@@ -24,6 +24,7 @@ import http.server
 import os
 import socket
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -83,6 +84,61 @@ RESET_KEEPS_ACTIVE = os.environ.get("M20_VR_RESET_KEEPS_ACTIVE", "0") != "0"
 def _xyzw_to_wxyz(q):
     """Convert [x,y,z,w] -> [w,x,y,z]."""
     return np.array([q[3], q[0], q[1], q[2]], dtype=np.float64)
+
+
+def _local_ipv4_candidates() -> list[tuple[str, str]]:
+    """列出本机**非回环** IPv4 地址：``[(网卡名, IP), ...]``（WiFi 网卡排在前面）。
+
+    为什么不只用 `socket.connect(("8.8.8.8", 80))` 那个"取出口 IP"的技巧：
+    它**需要默认路由**，而机器人内网通常没有到外网的路由 ⇒ 直接抛
+    `ENETUNREACH` ⇒ 以前就退化打印成 `https://localhost:8443`，头显照这个地址
+    当然连不上（2026-10-13 实测）。这里改成**离线可用**的枚举，并把所有候选都打出来：
+
+      ① `ip -4 -o addr show`（最可靠，不需要外网）
+      ② `hostname -I`
+      ③ 兜底才用 UDP connect 技巧
+
+    HTTPS/WS 服务端本来就绑 `0.0.0.0`，所以"服务能不能被访问"只取决于头显能不能
+    路由到其中某个地址 —— 打印的目的是告诉操作员该用哪一个。
+    """
+    out: list[tuple[str, str]] = []
+
+    def add(iface: str, ip: str) -> None:
+        if not ip or ip.startswith("127.") or ":" in ip:
+            return
+        if all(ip != i for _, i in out):
+            out.append((iface, ip))
+
+    try:                                   # ① ip -4 -o addr show
+        r = subprocess.run(["ip", "-4", "-o", "addr", "show"],
+                           capture_output=True, text=True, timeout=3)
+        for line in r.stdout.splitlines():
+            f = line.split()
+            if len(f) >= 4 and f[2] == "inet":
+                add(f[1], f[3].split("/")[0])
+    except Exception:
+        pass
+    if not out:
+        try:                               # ② hostname -I
+            r = subprocess.run(["hostname", "-I"], capture_output=True, text=True, timeout=3)
+            for ip in r.stdout.split():
+                add("?", ip)
+        except Exception:
+            pass
+    if not out:
+        try:                               # ③ 兜底：UDP connect（需要默认路由）
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            try:
+                s.connect(("8.8.8.8", 80))
+                add("?", s.getsockname()[0])
+            finally:
+                s.close()
+        except Exception:
+            pass
+    # 头显一般挂在 WiFi 上 ⇒ 无线网卡优先
+    order = {"wl": 0, "en": 1, "et": 2}
+    out.sort(key=lambda t: order.get(t[0][:2].lower(), 3))
+    return out
 
 
 # 90-degree rotation around X: VR wrist frame -> sim frame (training-tuned)
@@ -243,16 +299,25 @@ class Se2VRExtendedDevice:
             print(f"[vr_teleop] VR loop failed: {exc}")
 
     def _display_info(self):
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-        except Exception:
-            ip = "localhost"
+        override = os.environ.get("M20_VR_IP", "").strip()
+        cands = _local_ipv4_candidates()
         print("\n" + "=" * 50)
         print("VR teleop ready")
-        print(f"  Open in your headset browser:  https://{ip}:8443")
+        if override:
+            print(f"  Open in your headset browser:  https://{override}:8443"
+                  f"   （由 M20_VR_IP 指定）")
+        elif cands:
+            iface, ip = cands[0]
+            print(f"  Open in your headset browser:  https://{ip}:8443")
+            if len(cands) > 1:
+                rest = "、".join(f"{i} ({n})" for n, i in cands[1:])
+                print(f"  本机其它地址: {rest}")
+                print("  ⇒ 头显和 M20 在**哪个网段**就用哪个地址；"
+                      "也可以用 M20_VR_IP=<ip> 指定后重启本节点")
+        else:
+            print("  ⚠️ 没能自动识别本机 IP（缺 `ip`/`hostname` 命令？）")
+            print("     手动查：`ip -4 addr show`，"
+                  "然后用 `M20_VR_IP=<你的IP>` 重启本节点")
         print("  灵敏度（可用 M20_VR_*_SENS 覆盖）: "
               f"chassis vx {self.v_x_sensitivity:g} / vy {self.v_y_sensitivity:g}"
               f" / wz {self.omega_z_sensitivity:g}; "

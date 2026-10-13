@@ -269,18 +269,28 @@ python3 src/M20_sdk_deploy/interface/robot/simulation/vr_teleop_node.py
 HTTPS server on port 8443
 VR WebSocket server on port 8442
 VR teleop ready
-  Open in your headset browser:  https://<上位机IP>:8443
+  Open in your headset browser:  https://10.21.41.1:8443
+  本机其它地址: 10.21.31.103 (end0)
+  ⇒ 头显和 M20 在**哪个网段**就用哪个地址；也可以用 M20_VR_IP=<ip> 指定后重启本节点
   灵敏度（可用 M20_VR_*_SENS 覆盖）: chassis vx 2 / vy 1 / wz 1; body h 0.5 / p 0.35 / r 0.25; arm pos 0.5 / rot 0.5
 ```
+
+> **地址是自动列出来的**（无线网卡优先），因为上位机有两个网段（有线 `10.21.31.103`、
+> 机器人 WiFi `10.21.41.1`）——**头显在哪个网段就用哪个**。想固定一个就用
+> `M20_VR_IP=10.21.41.1 python3 .../vr_teleop_node.py`。
+> ⚠️ 早先版本在没有外网路由的机器人上会打印成 `https://localhost:8443`（那时 IP 探测用的是
+> "连外网才知道出口 IP"的技巧）—— 服务端其实一直绑的是 `0.0.0.0`，**手输正确 IP 也能连**
+> （页面里的 `wss://<host>:8442` 是跟着页面地址走的，所以 HTTPS 通了 WS 就通）。
 
 ### 5.2 头显侧
 
 1. 头显连上**和上位机同一个 WiFi**（见 §0）；
-2. 浏览器打开打印出来的 `https://<上位机IP>:8443`：
+2. 浏览器打开打印出来的地址（节点会**列出所有候选**、无线网卡优先；
+   `M20_VR_IP=<ip>` 可指定）：
    * 自签证书 → 浏览器会警告，选择"继续 / 信任"；
    * 打不开：先在上位机
      `curl -k -s -o /dev/null -w "%{http_code}\n" https://127.0.0.1:8443` 看是不是 `200`，
-     再确认头显与上位机同网段（`ping <上位机IP>`）；
+     再确认头显与上位机同网段（`ping <上位机IP>`，或在上位机 `ip -4 addr show` 看有哪些网段）；
 3. **右手柄**按 **B**：启动 + 标定（VR 终端会打印 `[VR] Button B -> START + calibrate`）。
 
 ### 5.3 谁控制什么（最容易搞错的一条）
@@ -366,7 +376,8 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 
 | 现象 | 先查什么 |
 |---|---|
-| 头显打不开 `https://<ip>:8443` | 头显与上位机是否同网段（`ping`）；上位机 `curl -k https://127.0.0.1:8443`；防火墙；打印的 IP 是不是**当前网段**那个（第二 WiFi 是 `10.21.41.1`） |
+| 头显打不开 `https://<ip>:8443` | 节点现在会**列出所有候选地址**（无线优先）：头显与上位机在哪个网段就用哪个（第二 WiFi 是 `10.21.41.1`）；不确定就 `M20_VR_IP=<ip>` 指定后重启节点，或用 `ip -4 addr show` 自己看。另外：上位机 `curl -k https://127.0.0.1:8443` 应为 `200`；防火墙 |
+| 节点打印的是 `https://localhost:8443`（旧版本） | 老实现用"连外网取出口 IP"猜本机地址，**机器人内网没有默认路由时会猜失败**，于是退回 `localhost`。服务端其实一直绑 `0.0.0.0`，**手输正确 IP 就能连**；新版本改成离线枚举所有网卡地址 + 支持 `M20_VR_IP` 指定（`DEF-057`） |
 | VR 里**腿和臂都不动** | 头显里按 B 了吗（VR 终端应有 `[VR] Button B -> START + calibrate`）；`ros2 topic hz /VR_TELEOP` 有没有 50 Hz |
 | **只有臂不动** | 跑 `check_vr_arm_chain.py`：`/ARM_TELEOP` 没数据 ⇒ `arm_teleop_node` 没起/崩了；`/ARM_JOINTS_DATA` 没数据 ⇒ 臂反馈没来 |
 | 臂**乱动 / 特别快 / 不跟手** | **先看发布者数量**（脚本会列）：`/VR_TELEOP`、`/ARM_TELEOP`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 上任一有 2 个发布者，两路数据就会交替到达（`DEF-054`；`DEF-045` 实测过一个残留的 `arm_stub_node` 同时发假臂反馈与常量 ee_goal，表现就是"目标读数不变、臂不听使唤"）。常见原因：起了两个 `vr_teleop_node`，或上一次的 `arm_stub_node` / `arm_real_adapter` 没退干净 |

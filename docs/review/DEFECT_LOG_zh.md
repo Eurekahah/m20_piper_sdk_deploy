@@ -32,6 +32,7 @@
 | 2026-10-13 | 开窗口（MuJoCo viewer）对着 12 个具名末端位姿指令做可视化验收（`scripts/arm_pose_demo.py` 新增）：跟踪 5 mm / 0.8°，关节 ≤0.06 rad/s、力矩 ≤4.6 N·m，机器人 RL 站立不接管；顺带修掉**半径下限把标定锚点自己钳住**（floor 0.12 → min(0.05, r_anchor)） | `fix/vr-arm-ik-reachability` |
 | 2026-10-13 | 新增 DEF-045（残留 `arm_stub_node.py` 与 arm_controller **同时发** `/ARM_JOINTS_DATA` + `/ARM_TELEOP_STATE` ⇒ IK 反馈与策略 `ee_goal` 观测被混入常量默认位姿；表现"目标读数不变、臂不听使唤"） | 同上 |
 | 2026-10-13 | 新增 DEF-046（VR 复位只把机身锚点置失效 ⇒ 复位前的偏移被固化成新零点、机身永远回不到默认；按操作员语义改为"机身/臂/速度回默认 + 交还控制权，再按 B 重新标定"，新增回归 `tests/vr_reset_semantics_check.py` 与 A/B 复现） | 工作区（建议 `fix/vr-reset-defaults`） |
+| 2026-10-13 | 新增 DEF-057（VR 节点把地址打印成 `https://localhost:8443`：IP 探测依赖外网默认路由，真机内网没有 ⇒ 改为**离线枚举所有网卡地址**（无线优先）+ `M20_VR_IP` 指定；顺带修 `xlevr/config.py` 的 `config.yaml` 相对路径 ⇒ 警告消失且改 yaml 生效） | `sync/2026-10-13-vr-ip` |
 | 2026-10-13 | **修编号冲突**：10-10 那批（VR 限速 / 手感旋钮 / 双发布者 / 复位与 IK 健壮性 / 离线依赖）与 10-12 真机条目撞了 039、040 两个号 ⇒ 前者重编号为 **DEF-052~DEF-056**（标题里标了"原 DEF-0xx"），并同步更新 DONE / TODO / DEPLOY_REAL_VR / `arm_pose_demo.py` 里的引用；10-12/13 的条目（039/040/044/045/046）**保持原号不动**；**DEF-047 留给 10-13 的 `tests/arm_ik_unreachable_check.py`（IK 够不到目标时的行为回归），该条目尚未在本文登记** | `sync/2026-10-13-defnumber-fix` |
 
 ---
@@ -568,6 +569,47 @@ onnxruntime，容器未起，记为待补跑（`bash tests/run_all.sh` 的 L1）
 > 所以把默认值标定到 1500 N（并在文件头/文档里写明原因）。
 
 **5. 顺带**：插电后实时因子回到 **1.000**（电池时 0.67），印证 DEF-034。
+
+---
+
+### DEF-057 `2026-10-13` VR 节点把地址打印成 `https://localhost:8443`（真机内网没有默认路由）
+
+| 项 | 内容 |
+|---|---|
+| 日期 | `2026-10-13` |
+| 类型 | 缺陷（可用性） |
+| 状态 | `已修` |
+| 影响面 | 真机 / 遥操作 |
+| 关联 | `vr_teleop_device.py::_display_info`（新增 `_local_ipv4_candidates`）、`third_party/XLeVR/xlevr/config.py`、`docs/DEPLOY_REAL_VR_zh.md` §5/§8 |
+
+**1. 现象**：真机上起 `vr_teleop_node.py`，打印
+`Open in your headset browser:  https://localhost:8443` —— 头显照这个地址当然打不开。
+
+**2. 根因**：地址探测用的是"UDP connect 到 8.8.8.8 再看本机出口 IP"这个技巧，
+**它需要默认路由**；机器人内网（WiFi/有线各自一个网段）没有到外网的路由 ⇒
+`connect()` 抛 `ENETUNREACH` ⇒ `except` 里退回 `"localhost"`。
+（顺带：`xlevr/config.py` 的 `load_config()` 用的是相对路径 `config.yaml`，
+不在 XLeVR 目录下启动就打印 `Config file config.yaml not found, using defaults`
+—— 也就是说**改那个 yaml 不生效**，和这个警告是同一个"路径按 cwd 解析"的坑。）
+
+**3. 修正**：
+* 新增 `_local_ipv4_candidates()`：**离线**枚举本机非回环 IPv4，顺序
+  ① `ip -4 -o addr show` ② `hostname -I` ③ 才用 UDP 技巧；**无线网卡排前面**；
+* `_display_info()` 改成打印**所有候选**（首选一行 + "本机其它地址"一行 + 用法提示），
+  并支持 `M20_VR_IP=<ip>` 显式指定；一个都识别不到时打印人工排查指引（不再有误导性的 `localhost`）；
+* `xlevr/config.py` 改成**先找包旁边的 `config.yaml`**（`Path(__file__).parents[1]`），
+  找不到才退回 cwd/默认值 ⇒ 警告消失，而且改 yaml 真的生效。
+* 服务端本来就绑 `0.0.0.0`（HTTPS + WS 都是），页面里的 `wss://<host>:8442`
+  跟着 `window.location.hostname` 走 ⇒ **HTTPS 通了 WS 就通**，用正确 IP 手输也能连。
+
+**4. 验收（本机单测；容器此刻不可用）**：
+
+| 项 | 结果 |
+|---|---|
+| 解析（模拟真机 `ip` 输出：lo + end0 10.21.31.103 + wlan0 10.21.41.1 + docker0） | `wlan0 10.21.41.1` 排第一、回环被跳过、顺序正确 |
+| 打印（无覆盖） | 首选 `https://10.21.41.1:8443` + `本机其它地址: 10.21.31.103 (end0)` + 提示 |
+| 打印（`M20_VR_IP=10.21.31.103`） | `https://10.21.31.103:8443 （由 M20_VR_IP 指定）` |
+| 打印（三个手段都拿不到地址） | 打印 `⚠️ 没能自动识别本机 IP … 用 M20_VR_IP=<你的IP>`（不再是 localhost） |
 
 ---
 
