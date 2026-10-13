@@ -369,9 +369,9 @@ VR 是**绝对偏移**（目标 = 标定锚点 + 手柄位移 × 灵敏度）⇒
 | 头显打不开 `https://<ip>:8443` | 头显与上位机是否同网段（`ping`）；上位机 `curl -k https://127.0.0.1:8443`；防火墙；打印的 IP 是不是**当前网段**那个（第二 WiFi 是 `10.21.41.1`） |
 | VR 里**腿和臂都不动** | 头显里按 B 了吗（VR 终端应有 `[VR] Button B -> START + calibrate`）；`ros2 topic hz /VR_TELEOP` 有没有 50 Hz |
 | **只有臂不动** | 跑 `check_vr_arm_chain.py`：`/ARM_TELEOP` 没数据 ⇒ `arm_teleop_node` 没起/崩了；`/ARM_JOINTS_DATA` 没数据 ⇒ 臂反馈没来 |
-| 臂**乱动 / 特别快 / 不跟手** | **先看发布者数量**（脚本会列）：`/VR_TELEOP`、`/ARM_TELEOP`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 上任一有 2 个发布者，两路数据就会交替到达（`DEF-041`；`DEF-045` 实测过一个残留的 `arm_stub_node` 同时发假臂反馈与常量 ee_goal，表现就是"目标读数不变、臂不听使唤"）。常见原因：起了两个 `vr_teleop_node`，或上一次的 `arm_stub_node` / `arm_real_adapter` 没退干净 |
-| `arm_controller` 终端自己没了 | 已加三层兜底不会再死（`DEF-042`）；若是被别的终端 Ctrl+C 连带杀了，注意清理脚本的 `pkill` 范围；把 traceback 贴出来 |
-| 复位后臂被"拽"一下 | 现在已是确定性的"重置到默认位姿"（`DEF-042`）；正常时会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`（真机上没有 `/reset_sim`，会打一条 service not available 的警告，但末端目标仍会重置） |
+| 臂**乱动 / 特别快 / 不跟手** | **先看发布者数量**（脚本会列）：`/VR_TELEOP`、`/ARM_TELEOP`、`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE` 上任一有 2 个发布者，两路数据就会交替到达（`DEF-054`；`DEF-045` 实测过一个残留的 `arm_stub_node` 同时发假臂反馈与常量 ee_goal，表现就是"目标读数不变、臂不听使唤"）。常见原因：起了两个 `vr_teleop_node`，或上一次的 `arm_stub_node` / `arm_real_adapter` 没退干净 |
+| `arm_controller` 终端自己没了 | 已加三层兜底不会再死（`DEF-055`）；若是被别的终端 Ctrl+C 连带杀了，注意清理脚本的 `pkill` 范围；把 traceback 贴出来 |
+| 复位后臂被"拽"一下 | 现在已是确定性的"重置到默认位姿"（`DEF-055`；复位语义在 2026-10-13 又按操作员要求改过，见 `DEF-046`）；正常时会打印 `[reset] /reset_sim 完成；EE 目标已重置到默认位姿`（真机上没有 `/reset_sim`，会打一条 service not available 的警告，但末端目标仍会重置） |
 | 复位（左 X/Y）后机身姿态/高度没回默认 | **已修**（`DEF-046`）。现在的复位语义 = 机身姿态回默认 `0.513 / 0 / 0` + 臂末端位姿回默认 + 速度归 0 + **VR 交还控制权**：`rl_deploy` 应打印 `[VR] RESET -> 机身姿态回默认 (0.513 / 0 / 0)...`，键盘侧打印 `[RESET] 外部源（VR）交还控制权：机身姿态 -> 默认 ...`。回归用例：`python3 tests/vr_reset_semantics_check.py --scenario both`（旧实现在 `keepactive` 场景会 FAIL） |
 | 复位后手柄"不管用"了 | 新默认语义就是这样：复位即交还控制权（`/VR_TELEOP` 持续发全 0 + `active=0`），**再按一次右 B** 就会把当前左右手柄位姿重新采成校准原点并重新接管。想要 2026-10-10 的"复位后保持激活、不用再按 B"：`M20_VR_RESET_KEEPS_ACTIVE=1`（`DEF-046`） |
 | `Policy dim mismatch` / 找不到策略 | 策略目录必须含 `policy.onnx` + `policy_layout.json`；用 `M20_POLICY_DIR` 时**写绝对路径**（按进程 cwd 解析，`DEF-038`） |

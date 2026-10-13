@@ -245,7 +245,7 @@ P1 是仿真与训练的一致性（armature 仍未生效 = DEF-011）。
     ② 启动后加一条前置断言：`/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE`、`/ARM_TELEOP`、
     `/VR_TELEOP` **各只有一个发布者**（`scripts/check_vr_arm_chain.py` 已经在打印
     发布者数量，可直接复用其判定）。
-  - 依据：`DEFECT_LOG_zh.md` DEF-045（与 DEF-041 2026-10-10 同类的"双发布者"坑）。
+  - 依据：`DEFECT_LOG_zh.md` DEF-045（与 DEF-054 2026-10-10 同类的"双发布者"坑）。
   - 验收：故意留一个 `arm_stub_node.py` 在跑时，`run_all.sh` 在启动阶段就报红并指出
     是哪个话题、哪个进程。
 
