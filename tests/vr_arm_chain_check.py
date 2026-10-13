@@ -193,9 +193,16 @@ def parse_ik_log(path: Path):
     for line in path.read_text().splitlines():
         m = pat.search(line)
         if m:
+            rej = max(rej, int(m.group(3)))
+            # 带 `REJECT` 标记的采样 = "这一拍没下发（目标不可达）"，那时的残差是
+            # "目标离工作空间有多远"的真实值，不是跟踪精度 —— 2026-10-13 起
+            # arm_controller 去掉了"把目标拉回实际位姿"的归位逻辑，所以这些拍
+            # 会打出大残差。判精度只统计**真的下发过**的那些拍；拒发拍数由
+            # `rej`（单独断言 ≤ MAX_REJECTS）兜着，不会被漏掉。
+            if "REJECT" in line:
+                continue
             perr.append(float(m.group(1)))
             aerr.append(float(m.group(2)))
-            rej = max(rej, int(m.group(3)))
     return perr, aerr, rej
 
 

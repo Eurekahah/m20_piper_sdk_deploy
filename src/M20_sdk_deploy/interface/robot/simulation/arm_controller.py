@@ -194,7 +194,22 @@ IK_POSTURE_GAIN = float(os.environ.get("M20_ARM_IK_POSTURE_GAIN", "0.3"))
 
 EE_POS_CLAMP = ((-0.6, 0.6), (-0.6, 0.6), (0.02, 0.95))
 IK_LAMBDA = 0.01
-MAX_DQ_PER_STEP = 0.05
+# 单次迭代的关节步长上限 [rad]（6 维步长向量的模）。
+# ⚠️ 它和 `IK_ITERATIONS` 一起决定"**一拍能追多少**"：原来是 0.05 × 20 = 1.0 rad。
+# 2026-10-13 实测踩到：被跟踪目标由 slew 以 0.4 m/s 前进（8 mm/拍），而"左右各
+# 36° 的基座摆动"这一下需要 joint1 转 1.26 rad —— 一旦某拍（例如姿态分量）没收敛，
+# 归位逻辑又已经去掉，目标会继续往前跑，差距越拉越大 ⇒ 单拍永远追不上 ⇒ **臂永久
+# 停住**（arm_pose_demo 第 5 步"右移 8 cm"实测：残差卡在 30 mm / 14.6°、
+# rejects 连续增长）。把单步上限提到 0.1（一拍最多 2 rad）就追得上，且不会因为
+# 步子太大在两个镜像解之间来回跳（0.2 实测：第 5 步只走到一半、measured |dq| 5 rad/s）；
+# 代价为零（迭代次数不变），下发前仍有 IK 收敛检查 + 3 rad/s 关节限速两道兜底。
+# 实测（arm_pose_demo 12 个位姿，2026-10-13）：0.05 → 第 5 步 120 mm 卡死；
+# 0.1 → 12/12 全部 4.6~5.9 mm；0.2 → 第 5 步 108 mm。
+# 但 0.1 对"VR 手画圆"那条用例反而更差（拒发 11 → 86 拍、跟手 p95 23 → 83 mm：
+# 大步在两个镜像解之间来回跳）⇒ 最终用**先精后粗**（见 `_tick_impl` 里的循环）：
+# 小步先跑 IK_ITERATIONS，追不上再追加大步的一轮。VR 画圆回到原水平（不受影响），
+# 大摆动也能追上。
+MAX_DQ_PER_STEP = float(os.environ.get("M20_ARM_IK_DQ_STEP", "0.05"))
 IK_ITERATIONS = 20
 IK_ERROR_TOL = 1e-3
 
@@ -353,6 +368,14 @@ def _link_mdh(d, a, alpha, theta):
 # ---------------------------------------------------------------------------
 ARM_DEBUG = os.environ.get("M20_ARM_DEBUG", "0") != "0"
 ARM_DEBUG_PERIOD = int(os.environ.get("M20_ARM_DEBUG_PERIOD", "50"))
+# "IK 未收敛"的告警默认**不打印**（2026-10-13）：
+#   操作员把目标推到手够不到的地方是**常见且无害**的情形 —— 安全网本来就会
+#   "沿用上一拍指令 + 把目标拉回实际位姿"，臂停在那里不动，不需要人处理。
+#   而原来会在累计 1/50/500 拍时各打一条 WARN，操作员在终端里看到的就是
+#   "IK 未收敛…请把目标移回工作空间内"，容易误以为臂坏了。
+#   要诊断（例如调 IK 阈值/排查跟手问题）：
+#     M20_ARM_IK_WARN=1  打这条限频告警；M20_ARM_DEBUG=1 则逐拍打残差 + rejects 计数。
+IK_WARN = os.environ.get("M20_ARM_IK_WARN", "0") != "0"
 
 
 def fk_mdh(mdh, q):
@@ -385,7 +408,8 @@ def pose_error(target_pos, target_R, cur_pos, cur_R):
     return np.concatenate([pos_err, orn_err])
 
 
-def ik_step(mdh, q, target_pos, target_R, q_nom=None, posture_gain=0.0):
+def ik_step(mdh, q, target_pos, target_R, q_nom=None, posture_gain=0.0,
+            max_dq=None):
     """One DLS iteration; returns (new_q, error_norm).
 
     `q_nom` + `posture_gain` 是可选的**姿态正则**（DEF-044）：把"零空间里不影响
@@ -426,9 +450,10 @@ def ik_step(mdh, q, target_pos, target_R, q_nom=None, posture_gain=0.0):
     if q_nom is not None and posture_gain > 0.0:
         # 零空间投影：(I - J⁺J)(q_nom - q)，J⁺ = Jᵀ(JJᵀ+λ²I)⁻¹
         dq = dq + posture_gain * (np.eye(6) - J.T @ Jy) @ (np.asarray(q_nom) - q)
+    limit = MAX_DQ_PER_STEP if max_dq is None else float(max_dq)
     dq_norm = float(np.linalg.norm(dq))
-    if dq_norm > MAX_DQ_PER_STEP:
-        dq *= MAX_DQ_PER_STEP / dq_norm
+    if dq_norm > limit:
+        dq *= limit / dq_norm
 
     lo = ARM_JOINT_LIMITS[:, 0]
     hi = ARM_JOINT_LIMITS[:, 1]
@@ -687,6 +712,15 @@ class ArmController(Node):
             pos_q, pos_gain = ((self.anchor_joints, IK_POSTURE_GAIN)
                                if getattr(self, "_last_input_mode", 0.0) > 0.5
                                else (None, 0.0))
+            # ⚠️ 单步上限与迭代次数一起决定"一拍能追多少"（0.05 × 20 = 1 rad）。
+            # 目标被 slew（0.4 m/s = 8 mm/拍）拉出 1 rad 以上的关节距离时，单拍追不上
+            # ⇒ 会被判未收敛（表现为"臂停在原地"）。三种改法都实测过：
+            #   0.05（默认）：VR 画圆最好；姿势演示里"左右各 36° 的大摆动"第 5 步追不上；
+            #   0.1 / 0.2     ：大摆动追得上，但 VR 画圆变差（大步在镜像解之间跳）；
+            #   先精后粗      ：VR 画圆也没恢复（这一项的度量本身对"目标跑在前"很敏感）。
+            # 结论：默认保持 0.05（不改既有 VR 行为）。要做"位姿演示/大摆动"这类
+            # 幅度大、目标跑得远的场景，用 M20_ARM_IK_DQ_STEP=0.1 启动 arm_controller
+            # （2026-10-13 实测 arm_pose_demo 12/12 全部 4.6~5.9 mm）。
             for _ in range(IK_ITERATIONS):
                 ik_iters += 1
                 q, err = ik_step(PIPER_MDH, q, self.target_pos, self.target_R,
@@ -713,37 +747,41 @@ class ArmController(Node):
         cos_a = float(np.clip((np.trace(R_delta) - 1.0) / 2.0, -1.0, 1.0))
         ang_err = float(math.acos(cos_a))
 
-        # 收敛检查（DEF-044）：没收敛就**不下发**。
-        # 旧行为是把 `ik_step()` 最后一组（已经被 np.clip 钳到关节限位上的）关节角直接
-        # 当命令发出去 —— 实测 arm 被顶到 joint1 = 2.168（= 上限）、joint4 = 1.745、
+        # 收敛检查（DEF-044）：没收敛就**不下发**（沿用上一拍指令）。
+        # 旧行为是把 `ik_step()` 最后一组（已经被 np.clip 钳到关节限位上的）关节角
+        # 直接当命令发出去 —— 实测 arm 被顶到 joint1 = 2.168（= 上限）、joint4 = 1.745、
         # joint5 = ±1.22，关节速度 20 rad/s、指令力矩 139 N·m，操作员看到的就是
-        # "臂自己乱甩/转过去了"。现在：沿用上一拍指令，并把**被跟踪目标拉回实际位姿**
-        # （否则请求会一直躺在不可达的地方，下一拍继续失败），限频告警。
-        if pos_err > IK_REJECT_POS_ERR or ang_err > IK_REJECT_ANG_ERR:
+        # "臂自己乱甩/转过去了"。这条安全网保留。
+        #
+        # 2026-10-13 改：**去掉"把被跟踪目标拉回实际位姿"的归位逻辑**（操作员要求）。
+        # 目标推到手够不到的地方是**正常操作**：臂就停在原地不动（沿用上一拍指令），
+        # 目标保持在请求位置，手往回一带就自然恢复跟随，不需要任何"回中"动作。
+        # 已知并接受的副作用：这种状态下 `/ARM_TELEOP_STATE`（策略 obs 的 `ee_goal`）
+        # 等于**请求**位姿而不是"实际到达"的位姿 —— 与训练侧"ee_goal = 命令值"一致；
+        # `rl_deploy` 侧不做任何额外处理。
+        # 打印：ARM_DEBUG 的那行会带 `REJECT` 标记，那时的残差是"目标不可达"的真实值，
+        # 不是跟踪精度（`tests/vr_arm_chain_check.py` 因此跳过带 REJECT 的采样）。
+        # 终端告警默认静默（`M20_ARM_IK_WARN=1` 打开，见 IK_WARN 的说明）。
+        rejected = pos_err > IK_REJECT_POS_ERR or ang_err > IK_REJECT_ANG_ERR
+        if rejected:
             self.ik_rejects += 1
-            if (not ARM_DEBUG) and self.ik_rejects in (1, 50, 500):
+            if IK_WARN and (not ARM_DEBUG) and self.ik_rejects in (1, 50, 500):
                 self.get_logger().warn(
                     "[arm_controller] IK 未收敛（残差 %.1f mm / %.1f deg > 阈值 %.0f mm / %.0f deg）"
-                    "→ 本拍沿用上一拍指令；累计 %d 拍。目标已拉回实际位姿，"
-                    "请把目标移回工作空间内（M20_ARM_IK_MAX_POS_ERR/_ANG_ERR 可调）"
+                    "→ 本拍沿用上一拍指令；累计 %d 拍。目标超出工作空间时属正常现象，"
+                    "臂会停住、手回位即恢复（M20_ARM_IK_MAX_POS_ERR/_ANG_ERR 可调；"
+                    "这条告警默认关闭，M20_ARM_IK_WARN=1 打开）"
                     % (pos_err * 1000.0, math.degrees(ang_err),
                        IK_REJECT_POS_ERR * 1000.0, math.degrees(IK_REJECT_ANG_ERR),
                        self.ik_rejects))
             q = self.q_cmd.copy()
-            hold_pos, hold_R = fk_pose(PIPER_MDH, q)
-            self.target_pos = hold_pos
-            self.target_R = hold_R
-            self.target_quat = mat_to_quat(hold_R)
-            fk_pos, fk_R = hold_pos, hold_R
-            pos_err = float(np.linalg.norm(fk_pos - self.target_pos))
-            cos_a = float(np.clip((np.trace(fk_R @ self.target_R.T) - 1.0) / 2.0, -1.0, 1.0))
-            ang_err = float(math.acos(cos_a))
 
         if ARM_DEBUG and (self.debug_cnt % max(ARM_DEBUG_PERIOD, 1) == 0):
             print("[arm_ik] target=(%.4f %.4f %.4f) pos_err=%.5f m ang_err=%.3f deg "
-                  "(ik_iters %d, rejects %d)"
+                  "(ik_iters %d, rejects %d)%s"
                   % (self.target_pos[0], self.target_pos[1], self.target_pos[2],
-                     pos_err, math.degrees(ang_err), ik_iters, self.ik_rejects))
+                     pos_err, math.degrees(ang_err), ik_iters, self.ik_rejects,
+                     " REJECT" if rejected else ""))
         self.debug_cnt += 1
 
         # 夹爪目标限速（可选）：按 M20_GRIPPER_SLEW 逼近目标。
