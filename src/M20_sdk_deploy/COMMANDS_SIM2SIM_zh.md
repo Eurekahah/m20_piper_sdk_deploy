@@ -56,6 +56,40 @@ docker exec m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/hum
 
 ## 1. 场景 A：全仿真（腿 + 臂都来自 MuJoCo）—— 最常用
 
+### 1.0 一条命令看完整流程：**开始 → 站立 → RL**（开窗口，最省事）
+
+`tests/sim2sim_smoke.py` 自己就会起 MuJoCo（带窗口）+ `rl_deploy`，并自动按键
+（`z` 站立 → 过 4 s 按 `c` 进 RL），所以不用开两个终端：
+
+```bash
+# 宿主机（只做一次）：放行容器连 X11
+DISPLAY=:1 xhost +local:
+
+# 宿主机一条命令（窗口出现在 :1 上；时长 150 s，到期自动收工）
+docker exec -d m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && M20_SIM_INIT_POSE=M20 M20_IDLE_ZERO_GAIN=1 M20_STANDUP_VENDOR=1 python3 tests/sim2sim_smoke.py --mode rl --viewer --duration 150 --out /root/m20_piper_ws/tmp/temp_probe/visual'
+```
+
+**你会看到的时序**（= 厂商流程）：
+
+1. 打开就在**原版初始坐姿**上趴着（高度 ≈0.10 m、`hipx ∓0.438 / knee ±2.76`）、腿不使力（idle 零增益）；
+2. `z` → 站立状态机**厂商两段式**：先蹲到 `pre_height 0.12 m`，再升到 `stand_height 0.48 m`；
+3. `c` → 进 RL，停在站高 ≈0.51 m、`fl_hipx τ ≈ +15 N·m`（机器人保持水平，pitch ≈0°）。
+
+三个环境变量就是要复现"完全和原版一致"的那三处（见 `docs/review/DEFECT_LOG_zh.md` DEF-060 §5.5/§5.6）：
+
+| 变量 | 这里设成 | 含义 |
+|---|---|---|
+| `M20_SIM_INIT_POSE` | `M20` | 初始关节角 = 厂商原版折叠坐姿（`training` = 训练站姿） |
+| `M20_IDLE_ZERO_GAIN` | `1` | idle 不使力（机器人就地塌着，按 `z` 再起） |
+| `M20_STANDUP_VENDOR` | `1` | 站立 = 厂商两段式（想从**训练站姿**进 RL 就设 `0`） |
+
+> 想换成"训练姿态档进 RL"（= 策略的入口姿态，DEF-018 入口瞬态更稳）：
+> `M20_STANDUP_VENDOR=0 M20_SIM_INIT_POSE=training`。
+> 收工：`pkill -INT -f rl_deploy`（窗口会一起退），或等 `--duration` 到期。
+> 实时因子看仿真终端里的 `[SIM-RT]`：开着窗口也应是 **≈1.00**（真慢了就把
+> `M20_SIM_RENDER_INTERVAL` 调大，例如 200）。
+
+
 | 终端 | 说明 |
 |---|---|
 | A1 | MuJoCo（同时提供腿和臂的数据，带窗口） |
