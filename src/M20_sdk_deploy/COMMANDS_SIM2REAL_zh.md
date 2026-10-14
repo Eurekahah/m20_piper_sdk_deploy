@@ -305,6 +305,29 @@ python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py
 
 ## 场景 7：录关节数据（`torque` + 两个温度）—— 排查"某关节长期顶力矩 / 过温"
 
+### 7.0 最省事：一条命令（**以后就用这条**）
+
+```bash
+# M20 上，仓库根目录 —— tag 自己起（这里用 vendorstand），时长单位秒（0 = 录到 Ctrl+C）
+bash src/M20_sdk_deploy/scripts/record_joint_data.sh vendorstand 600
+```
+
+这个封装脚本（`src/M20_sdk_deploy/scripts/record_joint_data.sh`）会：
+
+1. 自动 source `/opt/ros/foxy/setup.bash` + `/opt/robot/scripts/setup_ros2.sh`（有
+   `install/setup.bash` 也会 source），并打印当前的 `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION`
+   ——**它自己不设 `ROS_DOMAIN_ID`**（机器人自带服务在默认域，设错就"一帧都收不到"）；
+2. 先检查 `/JOINTS_DATA` 在不在，不在就按"服务没起 / domain / RMW / daemon"四条给你提示并退出；
+3. 录到 `~/joint_logs/<tag>.csv`（+ `.meta.json`），**已存在不覆盖**，自动改 `_2`、`_3`；
+4. 结束时打印**下一步**（开发机上的 `scp` 与分析命令），照抄即可。
+
+> **原厂控制器撑着腿（不进 SDK 模式）时照样能录** —— 本脚本只订阅、不控制，
+> 也不要求进 SDK 模式。原厂档录下来的数据用同一套 `joint_dir` 换算（那是关节的硬件属性），
+> 所以能直接和我们的"档 A / 档 B"对比。
+>
+> 排查用到的开关（`M20_STANDUP_VENDOR` / `M20_IDLE_ZERO_GAIN` / `M20_STANDUP_HEIGHT_M` /
+> `M20_STANDUP_HIPX_DEG`）都在 §8，跟本录制脚本互不干扰。
+
 用途：核对真机上"某个关节（如左前侧摆 `fl_hipx`）站久了温度冲到 100 ℃ ⇒ 安全接管趴下 ⇒
 10 s 后恢复"这类现象（背景与判读口径见 `docs/review/DEFECT_LOG_zh.md` **DEF-059**、
 待办 `docs/review/TODO_zh.md` **P1-7 / P1-8**）。
@@ -332,6 +355,9 @@ python3 -c "from drdds.msg import JointsData; print('drdds ok')"   # 脚本要�
 > ⇒ 用 7.4 的 `ros2 bag` 兜底。
 
 ### 7.2 录制（M20 上；脚本随仓库同步，见场景 0.1）
+
+> 现在推荐用 **§7.0** 那条封装命令（自动 source / 检查话题 / 防覆盖 / 打印下一步）；
+> 下面这组是等价的底层写法，想手调参数时用。
 
 ```bash
 # A）站立状态机：按 z 站起来、**不要**按 c，录 10 分钟
