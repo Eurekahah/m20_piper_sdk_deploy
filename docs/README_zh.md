@@ -29,6 +29,7 @@
 | [`DEPLOY_REAL_VR_zh.md`](DEPLOY_REAL_VR_zh.md) | **真机 + VR 完整部署流程**（执行版）：编译 arm 版 → scp → SDK 模式 → 只上腿 → 接真臂 → 接 VR（头显/按键分工/复位语义）→ 手感与工作空间调参 → 安全回滚 → 排障 |
 | [`OFFLINE_ASSETS_zh.md`](OFFLINE_ASSETS_zh.md) | **离线资源清单：要下载哪些东西**（开发机/上位机/头显都没有外网）：A-Frame `aframe.min.js`、上位机的 `PyYAML`/`websockets` wheel、明确**不用**下的（scipy / numpy / pynput / torch）、放哪、怎么自检、缺了的症状、换机器后重做哪些 |
 | [`deploy_code_delta_2026-10-09_zh.md`](deploy_code_delta_2026-10-09_zh.md) | **仿真新代码 → 部署代码的同步说明**（2026-10-09）：臂/夹爪增益与速度上限、换到多地形策略，逐条对照"要改 / 已满足 / 不适用" |
+| [`vendor_consult_overheat_zh.md`](vendor_consult_overheat_zh.md) | **发给厂商的咨询材料（可直接复制）**：站立保持时前腿侧摆/膝关节过温 100 ℃ 的现象、三方实测数据（内置控制器 / 我们 SDK 训练姿态 / 我们 SDK 厂商轨迹）、已排除项、要问厂商的 6 个问题（电机连续额定/绝缘等级、静态保持是否在设计工况内、内置控制器的做法、hipx 限幅历史、保护阈值、推荐站姿）与附件清单。背景见 `review/DEFECT_LOG_zh.md` DEF-059/DEF-060 |
 
 ## 3. 历史归档
 
