@@ -329,6 +329,13 @@ def main() -> int:
     # 所以**本脚本默认钉住训练姿态档**（= RL 入口姿态，用例当初就是按它标定的，也就能继续
     # 当 RL 回归用）；想跑厂商档请显式传 `M20_STANDUP_VENDOR=1`，那时"t≈5 s 摔倒"是故意的蹲姿。
     env.setdefault("M20_STANDUP_VENDOR", "0")
+    # 初始位姿：部署侧**默认**现在是厂商原版的折叠坐姿（`M20_SIM_INIT_POSE` 默认 M20），
+    # 配合 idle 零增益（默认）时机器人会就地坐着 —— 这是厂商流程，但本脚本的判据
+    # （高度 ≥0.30 m、站立高度 ≈0.51 m）是按"训练站姿起步"标定的，所以用例钉 training。
+    env.setdefault("M20_SIM_INIT_POSE", "training")
+    # idle：默认已改回厂商原版零增益（机器人就地塌着）。用例要的是"站起来并保持"，
+    # 所以钉回主动保持档；这也让 hold/rl 用例与之前的基线可比。
+    env.setdefault("M20_IDLE_ZERO_GAIN", "0")
     if args.mode in ("arm_move", "arm_only"):
         env.setdefault("M20_ARM_DEBUG", "1")   # arm_controller 打印 IK 残差
     if args.mode in ("no_arm", "arm_mixed"):

@@ -21,9 +21,11 @@ namespace qw {
         bool first_enter_flag_ = true;
         VecXf joint_pos_, joint_vel_, joint_tau_;
         VecXf hold_joint_pos_;
-        // M20_IDLE_ZERO_GAIN=1 ⇒ 厂商原版 idle：发零增益（完全不使力）。
-        //   默认 0 = 本项目行为（kp 80/2 主动保持进入 idle 时的姿态）。见 DEF-060 / TODO P1-9。
-        bool zero_gain_ = false;
+        // M20_IDLE_ZERO_GAIN ⇒ 厂商原版 idle：发零增益（完全不使力，机器人就地塌着，
+        //   等按 z 由站立状态机拉起来）。**默认 1 = 厂商原版**（2026-10-14 按操作员确认改的：
+        //   "idle 状态就应该是塌的"）。设 `M20_IDLE_ZERO_GAIN=0` 回到本项目行为
+        //   （kp 80/2 主动保持进入 idle 时的姿态，sim2sim 里用它防塌）。见 DEF-060。
+        bool zero_gain_ = true;
         Vec3f rpy_, acc_, omg_;
         double enter_state_time_ = 10000.;
         double last_print_time = 0;
@@ -131,8 +133,12 @@ namespace qw {
                 zero_gain_ = (std::string(e) != "0");
             }
             if (zero_gain_) {
-                std::cout << "[IDLE] M20_IDLE_ZERO_GAIN=1 ⇒ 厂商原版 idle：发零增益、"
-                             "完全不使力（机器人需要别的东西撑着，否则会塌）" << std::endl;
+                std::cout << "[IDLE] 厂商原版 idle（M20_IDLE_ZERO_GAIN 默认 1）：发零增益、完全不使力；"
+                             "机器人会就地塌下，按 z 由站立状态机拉起（厂商流程）。"
+                             "要改用主动保持请设 M20_IDLE_ZERO_GAIN=0。" << std::endl;
+            } else {
+                std::cout << "[IDLE] 主动保持档（M20_IDLE_ZERO_GAIN=0）：腿 kp 80/kd 2、"
+                             "轮 kp 0/kd 0.6 保持进入 idle 时的姿态" << std::endl;
             }
         }
 
@@ -165,7 +171,12 @@ namespace qw {
             // not collapse while waiting for the user command
             MatXf cmd = MatXf::Zero(16, 5);
             if (!zero_gain_) {
-                VecXf hold_kp = Vec4f(80, 80, 80, 10.).replicate(4, 1);
+                // 腿 80/2、轮 kp=0 / kd=0.6 —— 与真机**完全一致**（DEF-060）：
+                // 真机 `M20Interface::SetJointCommand` 对 i%4==3 强制 kp=0（轮子是
+                // 速度/阻尼模式），所以"轮子位置保持 kp=10"只在仿真里成立、真机从来
+                // 收不到。仿真也发 kp=0 之后，轮子的语义在两边都是
+                // `tau = 0.6 * (0 - v)`（速度目标 0 + 阻尼）。
+                VecXf hold_kp = Vec4f(80, 80, 80, 0.).replicate(4, 1);
                 VecXf hold_kd = Vec4f(2, 2, 2, 0.6).replicate(4, 1);
                 cmd.col(0) = hold_kp;
                 cmd.col(1) = hold_joint_pos_;
