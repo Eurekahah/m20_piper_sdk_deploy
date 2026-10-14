@@ -91,7 +91,7 @@ namespace qw {
         // 机身姿态的默认底座 = keyboard_interface.hpp 的 body_height_ 初值 / 'l' 复位值
         // = UserCommand 的默认值（0.513, 0, 0）。VR 复位要把机身拉回**这里**，
         // 而不是把复位前的偏移固化成新零点（DEF-046）。
-        static constexpr float kBodyHeightDefault_ = 0.513f;
+        const float kBodyHeightDefault_ = DefaultBodyHeight();   // 见 common_types.h
 
         Eigen::MatrixXf acc_rot = Eigen::MatrixXf::Zero(20, 3);
         int acc_rot_count = 0;

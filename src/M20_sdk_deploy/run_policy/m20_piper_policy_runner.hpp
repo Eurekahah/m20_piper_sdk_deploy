@@ -402,6 +402,40 @@ private:
                           0.0,  0.6, -1.0, 0.0,
                           0.0, 0.5, -0.5, 0.0, 0.0, 0.0,
                           0.0, 0.0;
+        // ---- 可选：把"默认关节角"换成站立状态机结束的位姿（2026-10-14，DEF-059/P1-9）----
+        //   M20_RL_DEFAULT_POSE=vendor      厂商两段式站立结束位姿：
+        //                                   hipx 0 / hipy ∓0.283794 / knee ±0.567588
+        //                                   （= GetHipY/KneePosByHeight(stand_height_ 0.48)）
+        //   M20_RL_DEFAULT_POSE=hx,hy,knee  自己给（弧度，前腿；后腿自动镜像）
+        //   （不设 / training = 训练默认姿态，行为不变）
+        // 说明：这个量同时是**观测基准**（q − default，见 joint_pos_obs_）与**动作中心**
+        //     （default + scale·a，见 action_default_pos_），所以整体平移是自洽的；
+        //     但策略训练时没见过这个偏移 ⇒ **属于分布外操作点，必须小范围验证再用**。
+        if (const char *e = std::getenv("M20_RL_DEFAULT_POSE")) {
+            std::string v(e);
+            float hx = 0.f, hy = -1e9f, kn = 0.f;
+            if (v == "vendor") {
+                hx = 0.f; hy = -0.283794f; kn = 0.567588f;
+            } else if (v != "training") {
+                if (std::sscanf(v.c_str(), "%f,%f,%f", &hx, &hy, &kn) != 3) {
+                    std::cout << "[DEFAULT-POSE] ⚠️ 解析失败（应为 vendor / training / hx,hy,knee）：" << v
+                              << " ⇒ 保持训练默认姿态" << std::endl;
+                    hy = -1e9f;
+                }
+            }
+            if (hy > -1e8f) {
+                for (int leg = 0; leg < 4; ++leg) {
+                    const float s = (leg < 2) ? 1.f : -1.f;      // fl/fr 用给定值，hl/hr 镜像
+                    default_robot_(leg * 4 + 0) = s * hx;
+                    default_robot_(leg * 4 + 1) = s * hy;
+                    default_robot_(leg * 4 + 2) = s * kn;
+                }
+                std::cout << "[DEFAULT-POSE] ⚠️ 默认关节角已换成 '" << v
+                          << "'：前腿 hipx " << hx << " / hipy " << hy << " / knee " << kn
+                          << "（后腿镜像）。观测基准与动作中心同步平移 ⇒ RL 站立位姿会变成这个姿态；"
+                             "**这是分布外操作点**，请小范围验证（DEF-059 P1-9）。" << std::endl;
+            }
+        }
         default_native_.resize(kRobotDof);
         for (int i = 0; i < kRobotDof; ++i) {
             default_native_(i) = default_robot_(robot2native_idx_[i]);
