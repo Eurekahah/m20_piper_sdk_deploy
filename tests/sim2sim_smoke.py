@@ -323,6 +323,12 @@ def main() -> int:
     env["M20_USE_VIEWER"] = "1" if args.viewer else "0"
     env["M20_SIM_TELEMETRY"] = str(telemetry)
     env.setdefault("M20_JVEL_DEBUG", "0")
+    # 站立档：部署侧**默认**现在是厂商原版两段式（`M20_STANDUP_VENDOR` 默认 1，2026-10-14
+    # 按操作员要求改的默认，见 DEFECT_LOG DEF-060 §5.5）。但厂商档第一段要蹲到
+    # `pre_height_ = 0.12 m`，低于本脚本"高度 < 0.30 m = 摔倒"的判据 ⇒ 每个用例都会被误判。
+    # 所以**本脚本默认钉住训练姿态档**（= RL 入口姿态，用例当初就是按它标定的，也就能继续
+    # 当 RL 回归用）；想跑厂商档请显式传 `M20_STANDUP_VENDOR=1`，那时"t≈5 s 摔倒"是故意的蹲姿。
+    env.setdefault("M20_STANDUP_VENDOR", "0")
     if args.mode in ("arm_move", "arm_only"):
         env.setdefault("M20_ARM_DEBUG", "1")   # arm_controller 打印 IK 残差
     if args.mode in ("no_arm", "arm_mixed"):

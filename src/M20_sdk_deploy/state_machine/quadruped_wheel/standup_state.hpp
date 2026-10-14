@@ -20,10 +20,12 @@ private:
     VecXf goal_joint_pos_, kp_, kd_;
     MatXf joint_cmd_;
     double stand_duration_ = 2.;
-        // M20_STANDUP_VENDOR=1 ⇒ 用厂商原版（046b72d）的两段式站立：
+        // M20_STANDUP_VENDOR ⇒ 用厂商原版（046b72d）的两段式站立：
         //   第一段折到 pre_height_ 蹲姿、第二段按高度规划升到 stand_height_，轮子 kp=0。
-        //   默认 0 = 本项目行为（一步到训练默认姿态并保持）。见 DEF-060 / TODO P1-9。
-        bool vendor_mode_ = false;
+        //   **默认 1 = 厂商原版**（2026-10-14 按操作员要求把默认切回原厂，便于在 SDK 模式下
+        //   做"完全和原版一致"的站立测试）；设 `M20_STANDUP_VENDOR=0` 则回到本项目行为
+        //   （一步到训练默认姿态并保持，= RL 的入口姿态）。见 DEF-060 / TODO P1-9。
+        bool vendor_mode_ = true;
         // M20_STANDUP_HIPX_DEG=<度>：给四个 hipx 目标加一个**镜像对称**的偏置
         //   （fl/hl += d，fr/hr -= d），用来在真机上做"站姿 → 侧摆静力矩"的扫描
         //   （DEF-059 §7：厂商姿态把侧摆从 29 N·m 降到 10.7，但膝盖仍然过热）。
@@ -90,11 +92,23 @@ public:
                 goal_joint_pos_(10) = -goal_joint_pos_(10);
                 goal_joint_pos_(13) = -goal_joint_pos_(13);
                 goal_joint_pos_(14) = -goal_joint_pos_(14);
-                std::cout << "[STANDUP] M20_STANDUP_VENDOR=1 ⇒ 厂商原版两段式站立"
-                             "（pre_height " << cp_ptr_->pre_height_ << " m → stand_height "
-                          << cp_ptr_->stand_height_ << " m，轮子 kp=0/kd=1）。"
-                             "注意：结束站位与训练默认姿态不同，进 RL 前建议先把开关去掉。"
-                          << std::endl;
+                // 把关键数字打出来，方便与厂商原版逐项核对（第二段的目标角用同一个 IK 反算）
+                std::cout << "[STANDUP] 厂商原版档（M20_STANDUP_VENDOR 默认 1）\n"
+                          << "          第一段 " << cp_ptr_->stand_duration_ << " s → 蹲姿 pre_height "
+                          << cp_ptr_->pre_height_ << " m：hipx " << init_hipx_pos_
+                          << " / hipy " << GetHipYPosByHeight(cp_ptr_->pre_height_)
+                          << " / knee " << GetKneePosByHeight(cp_ptr_->pre_height_) << "\n"
+                          << "          第二段 " << cp_ptr_->stand_duration_ << " s → 站高 stand_height "
+                          << (stand_height_m_ > 0.f ? stand_height_m_ : cp_ptr_->stand_height_) << " m：hipx "
+                          << init_hipx_pos_ << " / hipy "
+                          << GetHipYPosByHeight(stand_height_m_ > 0.f ? stand_height_m_ : cp_ptr_->stand_height_)
+                          << " / knee "
+                          << GetKneePosByHeight(stand_height_m_ > 0.f ? stand_height_m_ : cp_ptr_->stand_height_)
+                          << "\n          腿 kp/kd " << cp_ptr_->swing_leg_kp_(0) << "/"
+                          << cp_ptr_->swing_leg_kd_(0)
+                          << "，轮 kp/kd 0/0（第一段）→ 0/" << set_wheel_kd_ << "（第二段）\n"
+                          << "          ⚠️ 结束站位**不是**训练默认姿态；若随后要按 c 进 RL，"
+                             "请改设 M20_STANDUP_VENDOR=0（或用完即撤）。" << std::endl;
             } else {
                 // goal = the policy default standing pose (matches the Isaac Lab
                 // init_state / USD default: hipy +/-0.6, knee -/+1.0, wheels 0),
@@ -103,6 +117,9 @@ public:
                 goal_joint_pos_(4) = 0.0; goal_joint_pos_(12) = 0.0;
                 goal_joint_pos_(9) = 0.6; goal_joint_pos_(10) = -1.0;
                 goal_joint_pos_(13) = 0.6; goal_joint_pos_(14) = -1.0;
+                std::cout << "[STANDUP] 训练默认姿态档（M20_STANDUP_VENDOR=0）："
+                             "hipx 0 / hipy ∓0.6 / knee ±1.0 → 永久保持（= RL 入口姿态）"
+                          << std::endl;
             }
             Vec4f one_leg_kp, one_leg_kd;
             if (vendor_mode_) {
@@ -110,8 +127,11 @@ public:
                 one_leg_kp << cp_ptr_->swing_leg_kp_, 0;
                 one_leg_kd << cp_ptr_->swing_leg_kd_, 0;
             } else {
-                // wheels: position-hold at 0 (kp 10) so the robot does not roll
-                one_leg_kp << cp_ptr_->swing_leg_kp_, 10;
+                // 轮子 kp=0 / kd=1 —— 与真机一致（DEF-060）：真机 `M20Interface`
+                // 对 i%4==3 强制 kp=0，所以旧的"轮子位置保持 kp=10"只有仿真里存在，
+                // 真机收到的本来就是 0/1。kd=1 与厂商第二段相同；轮速目标恒为 0
+                // ⇒ 两边都是纯阻尼 `tau = 1 * (0 - v)`，不会再"仿真刹住、真机滚动"。
+                one_leg_kp << cp_ptr_->swing_leg_kp_, 0;
                 one_leg_kd << cp_ptr_->swing_leg_kd_, 1;
             }
             kp_ = one_leg_kp.replicate(4, 1);

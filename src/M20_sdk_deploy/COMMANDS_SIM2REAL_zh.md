@@ -447,10 +447,13 @@ cd ~/M20_sdk_deploy
 source /opt/ros/foxy/setup.bash && source /opt/robot/scripts/setup_ros2.sh
 
 # 档 A：本仓库行为（默认，什么都不用设）—— 对照组
-ros2 run m20_sdk_deploy rl_deploy            # 按 z 站立，录 10 分钟（场景 7.2）
+ros2 run m20_sdk_deploy rl_deploy            # ⚠️ 2026-10-14 起**默认已改为厂商原版档**（见下）
 
 # 档 B：厂商原版站立（蹲 0.12 m → 升到 0.48 m，轮子 kp=0）
 M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
+
+# 档 A'：训练默认姿态档（hipx 0 / hipy ∓0.6 / knee ±1.0 → 永久保持）= 进 RL 前的入口姿态
+M20_STANDUP_VENDOR=0 ros2 run m20_sdk_deploy rl_deploy
 
 # 档 C：厂商原版 idle（零增益、不使力）
 M20_IDLE_ZERO_GAIN=1 ros2 run m20_sdk_deploy rl_deploy
