@@ -121,9 +121,65 @@ def build_child_specs(args: argparse.Namespace) -> list[ChildSpec]:
     return specs
 
 
+def topic_publisher_count(topic: str) -> int | None:
+    try:
+        result = subprocess.run(
+            ["ros2", "topic", "info", topic],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=2.0,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    for line in result.stdout.splitlines():
+        if not line.startswith("Publisher count:"):
+            continue
+        try:
+            return int(line.rsplit(":", 1)[1].strip())
+        except ValueError:
+            return None
+    return None
+
+
+def wait_for_topic_publishers(topic: str, timeout_s: float) -> int | None:
+    """Wait until a ROS topic has a publisher and return its count."""
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        count = topic_publisher_count(topic)
+        if count:
+            return count
+        time.sleep(0.25)
+    return None
+
+
+def existing_node_processes() -> list[str]:
+    markers = (
+        "/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy",
+        "/interface/robot/simulation/arm_controller.py",
+        "/interface/robot/simulation/arm_teleop_node.py",
+    )
+    found = []
+    for proc_path in Path("/proc").iterdir():
+        if not proc_path.name.isdigit() or int(proc_path.name) == os.getpid():
+            continue
+        try:
+            cmdline = (proc_path / "cmdline").read_bytes().replace(
+                b"\0", b" ").decode(errors="replace").strip()
+        except OSError:
+            continue
+        if any(marker in cmdline for marker in markers):
+            found.append(f"{proc_path.name} {cmdline}")
+    return found
+
+
 class KeyboardSupervisor:
-    def __init__(self, specs: Iterable[ChildSpec]):
+    def __init__(self, specs: Iterable[ChildSpec], readiness_topics: Iterable[str],
+                 readiness_timeout_s: float):
         self._specs = list(specs)
+        self._readiness_topics = list(readiness_topics)
+        self._readiness_timeout_s = readiness_timeout_s
         self._children: dict[str, Child] = {}
         self._pending = list(self._specs)
         self._selector = selectors.DefaultSelector()
@@ -323,6 +379,34 @@ class KeyboardSupervisor:
             print("[supervisor] 没有需要启动的节点", file=sys.stderr)
             return 2
 
+        for topic in self._readiness_topics:
+            print(f"[supervisor] 等待 {topic} 就绪...", flush=True)
+            count = wait_for_topic_publishers(topic, self._readiness_timeout_s)
+            if count is None:
+                print(
+                    f"[supervisor] 等待 {topic} 超时 "
+                    f"({self._readiness_timeout_s:.1f} s)，未启动任何节点",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 2
+            if count != 1:
+                print(
+                    f"[supervisor] {topic} 有 {count} 个发布者；"
+                    "请先清理残留节点",
+                    file=sys.stderr,
+                    flush=True,
+                )
+                return 2
+            print(f"[supervisor] {topic} 已就绪（1 个发布者）", flush=True)
+
+        existing = existing_node_processes()
+        if existing:
+            print("[supervisor] 检测到已运行的控制节点；请先清理：", file=sys.stderr)
+            for line in existing:
+                print("  " + line, file=sys.stderr)
+            return 2
+
         old_handlers = {}
         for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
             old_handlers[sig] = signal.getsignal(sig)
@@ -387,6 +471,17 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=1.0,
         help="启动 adapter/IK/arm_teleop 后，延迟多少秒再启动 rl_deploy（默认 1.0）",
     )
+    parser.add_argument(
+        "--readiness-timeout",
+        type=float,
+        default=10.0,
+        help="等待 /JOINTS_DATA 等关键话题的最长时间（默认 10 s）",
+    )
+    parser.add_argument(
+        "--no-readiness-check",
+        action="store_true",
+        help="跳过启动前的话题发布者检查",
+    )
     parser.add_argument("--no-deploy", action="store_true", help="不启动 rl_deploy")
     parser.add_argument(
         "--no-arm-controller", action="store_true", help="不启动 IK 节点")
@@ -424,13 +519,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     args = parser.parse_args(argv)
     if args.startup_delay < 0:
         parser.error("--startup-delay 不能小于 0")
+    if args.readiness_timeout < 0:
+        parser.error("--readiness-timeout 不能小于 0")
     return args
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     specs = build_child_specs(args)
-    return KeyboardSupervisor(specs).run()
+    readiness_topics = [] if args.no_readiness_check else ["/JOINTS_DATA"]
+    if not args.no_readiness_check and args.profile in ("sim", "arm"):
+        readiness_topics.append("/ARM_JOINTS_DATA")
+    return KeyboardSupervisor(
+        specs, readiness_topics, args.readiness_timeout).run()
 
 
 if __name__ == "__main__":

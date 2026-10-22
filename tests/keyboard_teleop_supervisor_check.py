@@ -89,6 +89,7 @@ def check_process_routing() -> list[str]:
                 str(SUPERVISOR),
                 "--profile", "sim",
                 "--startup-delay", "0",
+                "--no-readiness-check",
                 "--rl-deploy", command("rl"),
                 "--arm-controller", command("ik"),
                 "--arm-teleop", command("arm"),

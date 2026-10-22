@@ -28,6 +28,16 @@ source /opt/ros/humble/setup.bash
 source install/setup.bash
 export ROS_DOMAIN_ID="${M20_ROS_DOMAIN_ID:-1}"
 
+if [ "${M20_SIM2SIM_ALLOW_STALE:-0}" != "1" ]; then
+  stale_nodes="$(pgrep -af '[m]ujoco_simulation_ros2.py|install/m20_sdk_deploy/lib/m20_sdk_deploy/[r]l_deploy' || true)"
+  if [ -n "$stale_nodes" ]; then
+    echo "[run_sim2sim] 检测到残留仿真或策略进程，拒绝启动第二个实例：" >&2
+    echo "$stale_nodes" >&2
+    echo "[run_sim2sim] 先结束这些进程，或显式设置 M20_SIM2SIM_ALLOW_STALE=1" >&2
+    exit 2
+  fi
+fi
+
 CONFIG="${1:-full}"
 SIM=src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 STUB=src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py
