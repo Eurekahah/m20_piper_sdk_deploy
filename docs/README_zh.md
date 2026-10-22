@@ -1,37 +1,61 @@
-# 文档索引
+# M20 + Piper 文档索引
 
-本目录分两类文档：
+文档按“做决策、部署、开发、查历史”组织，不再按日期拆分。
 
-## 1. `docs/review/` —— 长期维护的状态文档（按训练仓库的规范）
+| 文档 | 用途 | 什么时候看 |
+|---|---|---|
+| [STATUS_zh.md](STATUS_zh.md) | 当前状态、验收摘要、唯一待办清单、推荐工作顺序 | 开始任何工作前 |
+| [DEPLOY_zh.md](DEPLOY_zh.md) | sim2sim/sim2real 部署、离线资源、阶段 A/B/C、VR、回滚和排障 | 实际运行或上真机 |
+| [CONTRACT_zh.md](CONTRACT_zh.md) | 策略接口、history、动作、关节顺序、执行器、仿真/真机差异 | 修改策略、接口、模型或控制参数 |
+| [DEVELOPMENT_zh.md](DEVELOPMENT_zh.md) | 分支、测试层、合并门槛、调试约定、代码质量缺口 | 开发、提测、合并前 |
+| [DEFECTS_zh.md](DEFECTS_zh.md) | 历史缺陷的现象、根因、修复、关键实测 | 追查“为什么这样改” |
 
-| 文件 | 管什么 |
-|---|---|
-| [`review/WORKFLOW_zh.md`](review/WORKFLOW_zh.md) | 分支模型、提交规范、模块边界、测试分层（L0/L1/L2/L3/L4）、合并门槛、debug 开关登记表 |
-| [`review/TODO_zh.md`](review/TODO_zh.md) | **唯一**的未完成清单（P0→P3） |
-| [`review/DONE_zh.md`](review/DONE_zh.md) | 已完成（带日期 + commit + 实测数字） |
-| [`review/DEFECT_LOG_zh.md`](review/DEFECT_LOG_zh.md) | 每个缺陷/特性的现象→根因→修正→结果（`DEF-0xx`） |
-| [`review/NEXT_SESSION_PROMPT.md`](review/NEXT_SESSION_PROMPT.md) | 下个 session 的开工 prompt（整段可复制） |
-| [`review/ACCEPTANCE_2026-10-09_zh.md`](review/ACCEPTANCE_2026-10-09_zh.md) | **验收报告（2026-10-09 夜）**：平地 vs 多地形 —— 22 命令组合 × 3 遍、10 档 L3、单命令阶跃；含"侧移/转向方向不对称"等发现 |
-| [`review/CODE_REVIEW_2026-10-09_zh.md`](review/CODE_REVIEW_2026-10-09_zh.md) | **全代码走查**：缺漏（安全层未接线、限位夹取失效、单位混淆）与不优雅（常量抄 8 遍、死代码 ~700 行、`-w` 关警告）；每条带 `文件:行` |
-| [`review/templates/`](review/templates/) | 文档模板与缺陷条目模板 |
+## 推荐阅读路径
 
-规范要点：每次改动都要更新 `TODO`/`DONE` 的"更新记录"、给新缺陷加一条 `DEF-0xx`；
-**`main` 必须始终能编译 + 过 sim2sim 冒烟**。
+### 第一次接手项目
 
-## 2. 专题文档
+1. [STATUS_zh.md](STATUS_zh.md)
+2. [CONTRACT_zh.md](CONTRACT_zh.md)
+3. [DEPLOY_zh.md](DEPLOY_zh.md)
 
-| 文件 | 管什么 |
-|---|---|
-| [`sim2sim_layout_contract_zh.md`](sim2sim_layout_contract_zh.md) | **接口契约**：观测/动作布局、关节顺序、坐标系、增益、命令语义、MuJoCo 参数，以及每条说法的核对状态（✅/⚠️/❓/❌） |
-| [`../src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md`](../src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md) | **sim2sim 命令速查（宿主机一行式）**：命令都带 `docker exec`，直接粘不用进容器；全仿真 / 只调腿 / 只调臂 / 腿仿真+臂独立传输 / VR / 一键验收 / 换策略 + 键盘速查 + 实时因子与残留进程排障 |
-| [`../src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md`](../src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md) | **sim2real 命令速查**：只部署 M20 / 只调臂 / 只感知真臂 / IK+键盘合并 / DDS 不通的两种修法 / 排障 |
-| [`sim2real_checklist_zh.md`](sim2real_checklist_zh.md) | **真机上线检查单**：仿真↔真机接口差异表、分阶段步骤（只上腿 → 接臂 → 测量回填）、回滚顺序、"没做过"清单 |
-| [`DEPLOY_REAL_VR_zh.md`](DEPLOY_REAL_VR_zh.md) | **真机 + VR 完整部署流程**（执行版）：编译 arm 版 → scp → SDK 模式 → 只上腿 → 接真臂 → 接 VR（头显/按键分工/复位语义）→ 手感与工作空间调参 → 安全回滚 → 排障 |
-| [`OFFLINE_ASSETS_zh.md`](OFFLINE_ASSETS_zh.md) | **离线资源清单：要下载哪些东西**（开发机/上位机/头显都没有外网）：A-Frame `aframe.min.js`、上位机的 `PyYAML`/`websockets` wheel、明确**不用**下的（scipy / numpy / pynput / torch）、放哪、怎么自检、缺了的症状、换机器后重做哪些 |
-| [`deploy_code_delta_2026-10-09_zh.md`](deploy_code_delta_2026-10-09_zh.md) | **仿真新代码 → 部署代码的同步说明**（2026-10-09）：臂/夹爪增益与速度上限、换到多地形策略，逐条对照"要改 / 已满足 / 不适用" |
+### 跑仿真
 
-## 3. 历史归档
+1. [DEPLOY_zh.md](DEPLOY_zh.md) 的编译和同步部分。
+2. [COMMANDS_SIM2SIM_zh.md](../src/M20_sdk_deploy/COMMANDS_SIM2SIM_zh.md)。
+3. [DEVELOPMENT_zh.md](DEVELOPMENT_zh.md) 的测试层和判据。
 
-| 文件 | 说明 |
-|---|---|
-| `M20_Piper_deploy_6commits_zh.md` | 最早 6 个提交（`9095957`~`2fcab7c`，2026-08-20~09-04）的工作总结。**已加历史归档横幅**：里面的策略文件与接口都已不在 `main` 上，现行状态看 `review/DONE_zh.md` |
+### 上真机
+
+1. [STATUS_zh.md](STATUS_zh.md) 确认当前阻塞。
+2. [DEPLOY_zh.md](DEPLOY_zh.md) 按只上腿、机械臂、VR 分阶段执行。
+3. [COMMANDS_SIM2REAL_zh.md](../src/M20_sdk_deploy/COMMANDS_SIM2REAL_zh.md) 复制现场命令。
+4. 站立热风险的处理状态见 [STATUS_zh.md](STATUS_zh.md)，历史证据见
+   [DEFECTS_zh.md](DEFECTS_zh.md) 的 DEF-059/DEF-060。
+
+### 修改策略或接口
+
+1. [CONTRACT_zh.md](CONTRACT_zh.md)。
+2. [src/M20_sdk_deploy/policy/README.md](../src/M20_sdk_deploy/policy/README.md)。
+3. [DEVELOPMENT_zh.md](DEVELOPMENT_zh.md) 的最低测试和合并门槛。
+
+## 文档边界
+
+- `STATUS_zh.md` 是唯一的当前任务清单。
+- 根目录 [AGENTS.md](../AGENTS.md) 是后续 Codex session 的必读工作说明。
+- 不再创建按日期命名的 DONE、TODO、验收报告或下个 session prompt。
+- 新缺陷只追加到 `DEFECTS_zh.md`，并同步更新 `STATUS_zh.md` 的当前影响。
+- 接口和真机参数变化必须同步 `CONTRACT_zh.md`。
+- 部署步骤变化必须同步 `DEPLOY_zh.md`。
+- 历史实验细节保留在 git 和 `DEFECTS_zh.md`，不再复制到多个文档。
+
+## 历史说明
+
+原 `docs/review/` 文档、早期六提交总结、验收报告、全代码走查和离线资源清单已在
+2026-10-22 合并或删除。关键结论已经迁入上述长期文档；需要追溯原始上下文时使用 git：
+
+```bash
+git log --all -- docs/
+git show 659dc86:docs/review/DONE_zh.md
+git show 659dc86:docs/review/TODO_zh.md
+git show 659dc86:docs/review/WORKFLOW_zh.md
+```

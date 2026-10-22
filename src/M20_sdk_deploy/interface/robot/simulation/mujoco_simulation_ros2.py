@@ -169,6 +169,17 @@ ARM_OFFSET_RAD = np.zeros(ARM_DOF, dtype=np.float32)
 # Initial pose: M20 legs start at the Isaac Lab default standing pose
 # (hipy +/-0.6, knee -/+1.0 -> base height ~0.53 with wheels on the ground),
 # the Piper arm starts at its default (arm2=0.5, arm3=-0.5, gripper closed).
+# ---------------------------------------------------------------------------
+# 初始关节角（"打开 sim 时机器人是什么姿势"）
+#   M20_SIM_INIT_POSE=M20            （默认）**厂商原版**的初始位姿（与厂商 PyBullet 脚本一致）：
+#                                    折叠坐姿 hipx ∓0.438 / hipy ∓1.16 / knee ±2.76 / 轮 0
+#   M20_SIM_INIT_POSE=training      训练默认站姿 hipx 0 / hipy ∓0.6 / knee ±1.0 / 轮 0
+# 来源：厂商 `046b72d` 的 `mujoco_simulation_ros2.py` 里 `URDF_INIT = {"M20": [...折叠坐姿...]}`
+#       （原注释：关节位置设置为与 PyBullet 脚本一致的初始角度）。
+# 注：厂商原版 sim 启动时**不使力**（kp/kd/pos 全 0），所以机器人就那样趴着，
+#     等 `/JOINTS_CMD`（我们的 rl_deploy / 厂商示例程序）来驱动 —— 与"idle 是软的、
+#     按 z 才站起来"的原版流程一致（我们的 idle 默认也已改回零增益）。
+# ---------------------------------------------------------------------------
 LEG_INIT = {
     "M20": np.array([-0.438, -1.16, 2.76, 0,
                      0.438, -1.16, 2.76, 0,
@@ -180,7 +191,9 @@ LEG_INIT = {
                                 0.0, 0.6, -1.0, 0], dtype=np.float32)
 }
 ARM_INIT = np.array([0.0, 0.5, -0.5, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-JOINT_INIT = np.concatenate([LEG_INIT["M20_Piper_own"], ARM_INIT]).astype(np.float32)
+SIM_INIT_POSE = os.environ.get("M20_SIM_INIT_POSE", "M20").strip().lower()
+SIM_INIT_KEY = "M20" if SIM_INIT_POSE in ("m20", "vendor", "folded") else "M20_Piper_own"
+JOINT_INIT = np.concatenate([LEG_INIT[SIM_INIT_KEY], ARM_INIT]).astype(np.float32)
 
 # Default arm hold (used until the first /ARM_JOINTS_CMD message arrives, so the
 # arm does not flop around during idle/standup). Gains must equal the training
@@ -221,10 +234,12 @@ class MuJoCoSimulationNode(Node):
         LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
         self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
         self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
-        # 保持目标必须与初始 qpos（JOINT_INIT = M20_Piper_own 的训练默认姿态）
-        # 用同一份常量。用 LEG_INIT["M20"]（旧机型站立位姿）会把腿驱动到一个
-        # 训练里从未见过的姿态，底盘直接坐到地上（DEF-012，实测 height 0.095 m）。
-        self.pos_cmd = LEG_INIT["M20_Piper_own"].reshape(-1, 1)
+        # 保持目标必须与初始 qpos（JOINT_INIT）用同一份常量，否则"没收到命令时"会被
+        # 驱动到另一个姿态。默认用厂商原版的初始位姿（折叠坐姿，见文件头 M20_SIM_INIT_POSE）；
+        # 用 M20_SIM_INIT_POSE=training 则回到训练站姿（旧行为，--mode hold 的基线）。
+        # 历史坑：DEF-012 曾把保持目标写成 LEG_INIT["M20"] 而初始 qpos 是训练站姿，两者不一致，
+        # 结果底盘直接坐到地上（height 0.095 m）——现在两者由同一个 key 决定。
+        self.pos_cmd = LEG_INIT[SIM_INIT_KEY].reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 
@@ -268,7 +283,13 @@ class MuJoCoSimulationNode(Node):
         # ROS Publishers
         self.imu_pub = self.create_publisher(ImuData, IMU_TOPIC, 200)
         self.joints_pub = self.create_publisher(JointsData, LEG_DATA_TOPIC, 200)
-        self.arm_joints_pub = self.create_publisher(JointsData, ARM_DATA_TOPIC, 200)
+        # mixed/legs 配置由 arm_stub 或真机 adapter 提供臂反馈。此时连 publisher
+        # endpoint 也不要创建，否则 ros2 topic info 会看到两个发布者，虽然后者
+        # 不发消息，仍会让现场排障误判为 DEF-045 的双发布者。
+        self.arm_joints_pub = None
+        if not NO_ARM_DATA:
+            self.arm_joints_pub = self.create_publisher(
+                JointsData, ARM_DATA_TOPIC, 200)
 
         # ROS Subscribers
         self.cmd_sub = self.create_subscription(
@@ -361,7 +382,7 @@ class MuJoCoSimulationNode(Node):
         LEG_HOLD_KD = np.tile(np.array([2., 2., 2., 0.6], dtype=np.float32), 4)
         self.kp_cmd = LEG_HOLD_KP.reshape(-1, 1)
         self.kd_cmd = LEG_HOLD_KD.reshape(-1, 1)
-        self.pos_cmd = LEG_INIT["M20_Piper_own"].reshape(-1, 1)
+        self.pos_cmd = LEG_INIT[SIM_INIT_KEY].reshape(-1, 1)
         self.vel_cmd = np.zeros_like(self.kp_cmd)
         self.tau_ff = np.zeros_like(self.kp_cmd)
 

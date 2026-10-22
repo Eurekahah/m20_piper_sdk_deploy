@@ -18,6 +18,34 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <cstdlib>
+
+// ---------------------------------------------------------------------------
+// 机身高度指令的默认值 / 允许上限
+//   默认 0.513 m = 训练课程 s0 的锚点（DEF-009）；上限 0.55 m = 训练 `body_pose.height` 终值区间
+//   （`WBCCommandsCfg.body_pose.height_range = (0.33, 0.55)`）。
+//   环境变量（**手动手动标定用**，见 DEF-059 / TODO P1-9）：
+//     M20_BODY_HEIGHT_DEFAULT=<m>  RL 站立的高度指令默认值（键盘 'l' 复位也用它）
+//     M20_BODY_HEIGHT_MAX=<m>      键盘 H/J 的上限（>0.55 会超出训练区间，只用于扫范围）
+//   用途：把"RL 站立位姿"顶到与"站立状态机结束位姿"一致（否则按 c 进 RL 时机器人会
+//         自己挪一下 —— 入口瞬态）。0.513 是按**训练默认站姿**标定的，站立状态机走厂商
+//         两段式（0.48 m）时两者不同，需要按实测调。
+// ---------------------------------------------------------------------------
+inline float DefaultBodyHeight() {
+    static const float v = []() {
+        const char *e = std::getenv("M20_BODY_HEIGHT_DEFAULT");
+        return e ? static_cast<float>(std::atof(e)) : 0.513f;
+    }();
+    return v;
+}
+
+inline float MaxBodyHeight() {
+    static const float v = []() {
+        const char *e = std::getenv("M20_BODY_HEIGHT_MAX");
+        return e ? static_cast<float>(std::atof(e)) : 0.55f;
+    }();
+    return v;
+}
 #include <unistd.h>
 #include <stdint.h>
 #include <arpa/inet.h>
@@ -98,7 +126,7 @@ struct UserCommand {
     // ---- body pose targets (absolute, accumulated by the keyboard) ----
     // NOTE: this struct is memset() to zero by the command interfaces, so the
     // keyboard/gamepad must re-initialise these after the memset.
-    float body_height = 0.513f;   // base height target (m)
+    float body_height = DefaultBodyHeight();   // base height target (m)
     float body_pitch  = 0.0f;     // base pitch target (rad)
     float body_roll   = 0.0f;     // base roll target (rad)
 

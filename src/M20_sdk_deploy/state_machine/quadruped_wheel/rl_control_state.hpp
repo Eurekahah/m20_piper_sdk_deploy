@@ -91,7 +91,7 @@ namespace qw {
         // 机身姿态的默认底座 = keyboard_interface.hpp 的 body_height_ 初值 / 'l' 复位值
         // = UserCommand 的默认值（0.513, 0, 0）。VR 复位要把机身拉回**这里**，
         // 而不是把复位前的偏移固化成新零点（DEF-046）。
-        static constexpr float kBodyHeightDefault_ = 0.513f;
+        const float kBodyHeightDefault_ = DefaultBodyHeight();   // 见 common_types.h
 
         Eigen::MatrixXf acc_rot = Eigen::MatrixXf::Zero(20, 3);
         int acc_rot_count = 0;
@@ -263,7 +263,7 @@ namespace qw {
                 fs::path base = fs::path(__FILE__).parent_path();
                 // 策略目录（含 policy.onnx + policy_layout.json）；环境变量可覆盖
                 // 当前默认 = 2026-09-30_19-36-00_cloud_cap12_20k 的导出（**平地**；
-                // 训练侧 docs/deploy_code_delta_2026-10-09_zh.md §5.4 指定平地用这个）。
+                // 训练侧指定平地模型；当前接口与参数见 docs/CONTRACT_zh.md）。
                 // 另有多地形 m20_piper_rough_20261002（2026-10-02 cloud_slowvx20k）与
                 // 更早的平地 m20_piper_history_20260920，接口与它逐字段相同。
                 fs::path policy_dir = base / ".." / ".." / "policy" / "m20_piper_flat_20260930";
@@ -446,7 +446,7 @@ namespace qw {
         }
 
         bool PostureUnsafeCheck() {
-            // 接管阈值取训练的终止阈值（docs/sim2sim_layout_contract_zh.md）：
+            // 接管阈值取训练的终止阈值（docs/CONTRACT_zh.md）：
             //   倾角 = acos(-g_z) = acos(cos(roll)cos(pitch)) > 0.8 rad (45.8°)
             // 触发后由 StateMachineBase 切到 kJointDamping（在 JointDampingState 里
             // 零增益 + 阻尼，和训练里"终止后不再执行策略"的语义一致）。

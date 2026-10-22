@@ -3,7 +3,7 @@
 **这份文档只管"在仿真里跑，在宿主机粘哪条命令"。** 真机请用
 [`COMMANDS_SIM2REAL_zh.md`](COMMANDS_SIM2REAL_zh.md)。
 
-> **与旧版的区别**：主命令全是**宿主机一行式**（前面带 `docker exec`），
+> **与旧版的区别**：主命令全是**宿主机一行式**（前面带 `docker exec -it`），
 > 不用先 `docker exec -it bash` 进容器再敲。原理/接口/缺陷见
 > [`docs/README_zh.md`](../../docs/README_zh.md)，本文不重复。
 
@@ -34,32 +34,88 @@ DISPLAY=:1 xhost +local:
 `Authorization required, but no authorization protocol specified` /
 `Failed to open display :1` 就是这条被清掉了，重跑一次即可。
 
-### 0.2 少打字：定义 `m20()` 函数（**可选**）
+### 0.2 改过 C++ 之后重编
 
 ```bash
-m20() { docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec "$@"' _ "$@"; }
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && colcon build --packages-up-to m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON'
 ```
 
-定义之后就能写 `m20 ros2 topic hz /JOINTS_DATA` 这种短形式（等价于把 `m20` 换成
-`docker exec -it m20_piper_ros bash -lc '...'` 那一长串）。
-**本文所有命令都给的是完整形式，不定义这个函数也能直接粘**；
-用 `"$@"` 透传是为了让**带空格的参数**（例如
-`m20 env MODES="hold rl" bash tests/run_all.sh`）也能正确送到容器里。
+### 0.3 统一键盘控制终端
 
-### 0.3 改过 C++ 之后重编
+`rl_deploy` 和 `arm_teleop_node.py` 不能同时直接读同一个终端。统一监督器只读一次
+stdin，再按业务分流：
+
+| 按键 | 转发目标 |
+|---|---|
+| `W/S/A/D/Q/E`、`Z/C/R/X`、`H/J/B/N/[/]` | `rl_deploy`（腿、状态机、机身姿态） |
+| 小键盘 `0~9 . + -` | `arm_teleop_node.py`（机械臂末端） |
+| `G/L` | 两边都发（夹爪切换 / 整体复位） |
+
+查看帮助：
 
 ```bash
-docker exec m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && colcon build --packages-up-to m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --help'
 ```
+
+默认 `--profile sim` 会启动 `arm_controller`、`arm_teleop_node` 和 `rl_deploy`。
+日志分别带 `[ik]`、`[arm]`、`[rl]` 前缀；任一子节点异常退出时，其余节点会一起停止。
+`Ctrl+C` 或 `ESC` 统一退出。
+
+正式启动前监督器会：
+
+- 等待 `/JOINTS_DATA`、`/ARM_JOINTS_DATA` 就绪；
+- 要求关键反馈话题只有一个发布者；
+- 检查本次 profile 真正要启动的 `rl_deploy`/IK/臂键盘是否已有同名进程。
+
+`run_sim2sim.sh` 也会拒绝在残留 MuJoCo 或 `rl_deploy` 存在时启动第二套实例。
+调试时可用 `--readiness-timeout` 调整等待时间；只在明确知道风险时才用
+`--no-readiness-check` 跳过检查。
 
 ---
 
 ## 1. 场景 A：全仿真（腿 + 臂都来自 MuJoCo）—— 最常用
 
+### 1.0 一条命令看完整流程：**开始 → 站立 → RL**（开窗口，最省事）
+
+`tests/sim2sim_smoke.py` 自己就会起 MuJoCo（带窗口）+ `rl_deploy`，并自动按键
+（`z` 站立 → 过 4 s 按 `c` 进 RL），所以不用开两个终端：
+
+```bash
+# 宿主机（只做一次）：放行容器连 X11
+DISPLAY=:1 xhost +local:
+
+# 宿主机一条命令（窗口出现在 :1 上；时长 150 s，到期自动收工）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && M20_SIM_INIT_POSE=M20 M20_IDLE_ZERO_GAIN=1 M20_STANDUP_VENDOR=1 exec python3 tests/sim2sim_smoke.py --mode rl --viewer --duration 150 --out /root/m20_piper_ws/tmp/temp_probe/visual'
+```
+
+**你会看到的时序**（= 厂商流程）：
+
+1. 打开就在**原版初始坐姿**上趴着（高度 ≈0.10 m、`hipx ∓0.438 / knee ±2.76`）、腿不使力（idle 零增益）；
+2. `z` → 站立状态机**厂商两段式**：第一段 1.5 s 折腿，第二段 1.5 s 按高度样条抬升；
+   这是修改前已验证速度快、观感连续的行为；
+3. `c` → 进入 RL，策略从厂商站姿收敛到训练默认姿态；稳定后站高 ≈0.51 m、
+   `fl_hipx τ ≈ +15 N·m`（机器人保持水平，pitch ≈0°）。
+
+三个环境变量就是要复现"完全和原版一致"的那三处（见
+[`docs/DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-060）：
+
+| 变量 | 这里设成 | 含义 |
+|---|---|---|
+| `M20_SIM_INIT_POSE` | `M20` | 初始关节角 = 厂商原版折叠坐姿（`training` = 训练站姿） |
+| `M20_IDLE_ZERO_GAIN` | `1` | idle 不使力（机器人就地塌着，按 `z` 再起） |
+| `M20_STANDUP_VENDOR` | `1` | 站立 = 厂商两段式（想从**训练站姿**进 RL 就设 `0`） |
+
+> 想换成"训练姿态档进 RL"（= 策略的入口姿态，DEF-018 入口瞬态更稳）：
+> `M20_STANDUP_VENDOR=0 M20_SIM_INIT_POSE=training`。
+> 收工：`pkill -INT -f rl_deploy`（窗口会一起退），或等 `--duration` 到期。
+> 实时因子看仿真终端里的 `[SIM-RT]`：开着窗口也应是 **≈1.00**（真慢了就把
+> `M20_SIM_RENDER_INTERVAL` 调大，例如 200）。
+
+
 | 终端 | 说明 |
 |---|---|
 | A1 | MuJoCo（同时提供腿和臂的数据，带窗口） |
-| A2 | 策略 + 状态机：键盘 `z` 站立 → `c` 进 RL |
+| A2 | 统一控制：策略 + IK + 臂键盘 |
 
 **A1：**
 
@@ -70,12 +126,11 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec bash src/M
 **A2：**
 
 ```bash
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ./install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile sim'
 ```
 
-> A2 直接调编译出来的二进制，不用 `ros2 run`：`ros2 run` 是个包装进程，
-> `kill` 它**不会**杀掉真正的 `rl_deploy`，会留下孤儿实例继续发 `/JOINTS_CMD`
-> （表现：机器人自己乱动、必倒）。配 `exec` 用 `Ctrl+C` 收工最干净。
+> 监督器直接启动编译产物，不经过 `ros2 run` 包装进程。按 `z` 站立 → `c` 进 RL；
+> 小键盘直接控制机械臂，不需要切换终端。
 
 **检查点**（另开一个终端）：
 
@@ -87,7 +142,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ros2 topic echo --once /ARM_TELEOP_STATE'   # 默认位姿 ≈ (0.3492,0,0.4327,-0.7373,0,-0.6756,0)（四元数=训练/链式 FK 的符号分支，DEF-039）
 ```
 
-**想动臂**：A2 的 numpad 键**不驱动臂**，臂只认独立的 `arm_teleop_node`（见场景 C/D）。
+**想动臂**：在 A2 直接按小键盘。`G/L` 会同时作用于腿侧状态和臂侧目标。
 
 ---
 
@@ -100,7 +155,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec bash src/M20_sdk_deploy/scripts/run_sim2sim.sh legs'
 
 # A2
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ./install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile legs'
 ```
 
 **检查点**：策略第一拍观测里的 8 个臂项应为 0（= 默认姿态）、`ee_goal` = 默认位姿。
@@ -114,11 +169,11 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 开着窗口看最舒服。
 
 ```bash
-# A1：仿真 + arm_controller(IK)
+# A1：只启动仿真
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec bash src/M20_sdk_deploy/scripts/run_sim2sim.sh arm'
 
-# A2：臂键盘（numpad）
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py'
+# A2：IK + 臂键盘（不起 rl_deploy）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile arm'
 ```
 
 **检查点**：轻点一次 numpad 后，另开终端看 `ros2 topic echo --once /ARM_TELEOP_STATE` 数值应变化：
@@ -137,11 +192,8 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 # A1：腿来自 MuJoCo，臂走假 CAN 驱动
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed'
 
-# A2：策略
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ./install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'
-
-# A3：臂键盘
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py'
+# A2：策略 + IK + 臂键盘（同一个 stdin，不再切终端）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile sim'
 ```
 
 想用真臂替代假 CAN 驱动：A1 前面加 `M20_ARM_TRANSPORT=real`（需要先起
@@ -153,7 +205,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ## 5. 场景 E：VR 遥操作（腿/机身 + 臂）
 
-四个终端都要开，全部是宿主机一行式。
+开三个终端。VR 节点保持独立；策略、IK 和臂键盘合并到同一个控制终端。
 
 **A1：MuJoCo（带窗口）**
 
@@ -163,25 +215,19 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec bash src/M
 
 > 想和真机拓扑一致（腿来自仿真、臂走"独立传输"）就把结尾的 `full` 换成 `mixed`。
 
-**A2：策略 + 状态机（键盘 `z` 站立 → `c` 进 RL；VR 接管速度/机身）**
+**A2：统一控制终端（键盘 `z` 站立 → `c` 进 RL；VR 接管速度/机身，同时保留臂键盘节点）**
 
 ```bash
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ./install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile sim'
 ```
 
-**A3：臂 IK（不动臂的话可以不起）**
-
-```bash
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
-```
-
-**A4：VR 节点（会打印 `https://<ip>:8443`，用头显打开这个地址）**
+**A3：VR 节点（会打印 `https://<ip>:8443`，用头显打开这个地址）**
 
 ```bash
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/vr_teleop_node.py'
 ```
 
-**首次使用要先装 VR 依赖**（下面这条只需跑一次；装完再起 A4）：
+**首次使用要先装 VR 依赖**（下面这条只需跑一次；装完再起 A3）：
 
 ```bash
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && exec pip3 install -r src/M20_sdk_deploy/requirements_teleop.txt'
@@ -196,7 +242,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 > bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check  # 自检
 > ```
 >
-> 起 A4 时终端还会打印 `头显页面: 已自带离线 A-Frame（xxxx KB）`（缺了会打 ⚠️ + 修法）。
+> 起 A3 时终端还会打印 `头显页面: 已自带离线 A-Frame（xxxx KB）`（缺了会打 ⚠️ + 修法）。
 
 操作：头显里按**右 B** 启动 / 重标定（把 VR 坐标系锚到**当前左右手柄位姿**），
 **左 X/Y** 复位。
@@ -257,15 +303,15 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 | 想改什么 | 环境变量 | 默认 | 加在**哪个终端** |
 |---|---|---|---|
-| **速度上限**（削峰，手感变"钝"） | `M20_VR_MAX_LIN_SPEED` / `M20_VR_MAX_ANG_SPEED` | `0.4` m/s / `1.0` rad/s | **A3 `arm_controller`** |
-| **灵敏度**（整体缩放，更细腻） | `M20_VR_ARM_POS_SENS` / `M20_VR_ARM_ROT_SENS` | `0.5` / `0.5` | **A4 `vr_teleop_node`** |
-| 底盘/机身灵敏度（可选） | `M20_VR_VX_SENS` / `_VY_SENS` / `_WZ_SENS`、`_HEIGHT_SENS` / `_PITCH_SENS` / `_ROLL_SENS` | `2.0` / `1.0` / `1.0`、`0.5` / `0.35` / `0.25` | A4 |
-| 夹爪"像真夹爪"（默认直接阶跃） | `M20_GRIPPER_SLEW` [stroke/s] | `0`（建议 `0.15~0.2`） | A3 |
-| 关节指令限速（= 真机驱动器口径） | `M20_ARM_MAX_JOINT_VEL` [rad/s] | `3.0`（`0` = 不限，不建议） | A3 |
-| VR 臂映射（见 §5.2；一般不要动） | `M20_VR_ARM_MAP` | `cylindrical`（`cartesian` = 旧行为） | A3 |
-| 臂摆动角度上限 | `M20_VR_SWING_MAX_DEG` | `60` | A3 |
-| IK 拒绝阈值（解不出来就不下发） | `M20_ARM_IK_MAX_POS_ERR` / `_ANG_ERR` | `0.010` m / `3.0` ° | A3 |
-| IK 姿态正则（压手腕漂移） | `M20_ARM_IK_POSTURE_GAIN` | `0.3`（`0` = 关） | A3 |
+| **速度上限**（削峰，手感变"钝"） | `M20_VR_MAX_LIN_SPEED` / `M20_VR_MAX_ANG_SPEED` | `0.4` m/s / `1.0` rad/s | **A2（启动 `arm_controller` 前）** |
+| **灵敏度**（整体缩放，更细腻） | `M20_VR_ARM_POS_SENS` / `M20_VR_ARM_ROT_SENS` | `0.5` / `0.5` | **A3 `vr_teleop_node`** |
+| 底盘/机身灵敏度（可选） | `M20_VR_VX_SENS` / `_VY_SENS` / `_WZ_SENS`、`_HEIGHT_SENS` / `_PITCH_SENS` / `_ROLL_SENS` | `2.0` / `1.0` / `1.0`、`0.5` / `0.35` / `0.25` | A3 |
+| 夹爪"像真夹爪"（默认直接阶跃） | `M20_GRIPPER_SLEW` [stroke/s] | `0`（建议 `0.15~0.2`） | A2 |
+| 关节指令限速（= 真机驱动器口径） | `M20_ARM_MAX_JOINT_VEL` [rad/s] | `3.0`（`0` = 不限，不建议） | A2 |
+| VR 臂映射（见 §5.2；一般不要动） | `M20_VR_ARM_MAP` | `cylindrical`（`cartesian` = 旧行为） | A2 |
+| 臂摆动角度上限 | `M20_VR_SWING_MAX_DEG` | `60` | A2 |
+| IK 拒绝阈值（解不出来就不下发） | `M20_ARM_IK_MAX_POS_ERR` / `_ANG_ERR` | `0.010` m / `3.0` ° | A2 |
+| IK 姿态正则（压手腕漂移） | `M20_ARM_IK_POSTURE_GAIN` | `0.3`（`0` = 关） | A2 |
 
 > 上面这组默认值是 **2026-10-10 操作员实测确认手感合适** 后固化进代码的（原来是
 > 2.0 m/s / 5.0 rad/s、灵敏度 1.0/1.0、油门 5.0）。要回到训练侧原值：
@@ -274,11 +320,11 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 **想让仿真的臂/夹爪更像真机**（可选，默认都不限速）：
 
 ```bash
-# A3 臂 IK：夹爪按真夹爪的行程时间走（关节限速现在默认就是真机的 3 rad/s）
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_GRIPPER_SLEW=0.2 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
+# A2 统一控制：夹爪按真夹爪的行程时间走（关节限速默认就是真机的 3 rad/s）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_GRIPPER_SLEW=0.2 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile sim'
 ```
 
-起 A4 时 VR 节点会打印一行 `灵敏度（可用 M20_VR_*_SENS 覆盖）: ...`，可以核对是否生效。
+起 A3 时 VR 节点会打印一行 `灵敏度（可用 M20_VR_*_SENS 覆盖）: ...`，可以核对是否生效。
 
 ### 5.2 VR 臂的映射（2026-10-12 改，DEF-044）
 
@@ -315,32 +361,33 @@ joint6 同轴 ⇒ **手腕正好在奇异位形**。旧实现把 VR 偏移当"�
 # A1 仿真（开窗口；实时因子要 ~1.00）
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_USE_VIEWER=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py'
 
-# A2 臂 IK
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_ARM_DEBUG=1 && exec python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py'
+# A2 腿策略 + 臂 IK。这里必须关掉臂键盘，避免 /ARM_TELEOP 出现第二个发布者。
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_ARM_DEBUG=1 && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile sim --no-arm-teleop'
 
-# A3 腿：必须起 rl_deploy 并按 z（站立）→ c（进 RL）
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ros2 run m20_sdk_deploy rl_deploy'
-
-# A4 依次下发 12 个具名位姿指令（默认一直循环；每步 2.5 s）
+# A3 依次下发 12 个具名位姿指令（默认一直循环；每步 2.5 s）
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec python3 src/M20_sdk_deploy/scripts/arm_pose_demo.py --hold 2.5'
 ```
 
-指令序列（相对按下 A4 那一刻的实际位姿）：中位 → 前伸 8 cm → 后收 4 cm →
+在 A2 按 `z` 站立、`c` 进 RL。
+
+指令序列（相对按下 A3 那一刻的实际位姿）：中位 → 前伸 8 cm → 后收 4 cm →
 **左移 8 cm（基座摆动）** → 右移 8 cm → 抬高 6 cm → 降低 6 cm →
 手腕自转/俯仰/侧倾各 +25° → 组合（前伸+左移+自转）→ 回中位。
-A4 每步结束会打印 `目标 / 实际 / 位置误差 / 姿态误差 / max|dq| / max|tau|`；
+A3 每步结束会打印 `目标 / 实际 / 位置误差 / 姿态误差 / max|dq| / max|tau|`；
 2026-10-13 的实测是 **~5 mm / ~0.8°**（IK 残差 0.1~1.6 mm）、关节 ≤0.06 rad/s、
 力矩 ≤4.6 N·m。
 
 > ⚠️ **三个坑（都踩过）**：
-> 1. **A3 必须真的进 RL**：只靠仿真自己的腿部默认保持，机器人会**缓慢摔倒**
+> 1. **A2 必须真的进 RL**：只靠仿真自己的腿部默认保持，机器人会**缓慢摔倒**
 >    （窗口里表现为高度慢慢掉、最后趴下）。进 RL 后窗口里应看到它站住（高度 ~0.51 m）。
-> 2. **不要同时起 `arm_teleop_node` / `arm_stub_node` / `arm_real_adapter`**：会和
+> 2. **A2 已用 `--no-arm-teleop`**。不要再同时起 `arm_teleop_node` / `arm_stub_node` /
+>    `arm_real_adapter`：会和
 >    `arm_controller` 在 `/ARM_TELEOP`（或 `/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE`）
 >    上形成**两个发布者**，两路数据交替到达 —— 表现是"目标读数不变、臂不听使唤"，
->    见 `DEFECT_LOG_zh.md` DEF-045（本次就是一个 11 小时前残留的 `arm_stub_node` 干的）。
+>    见 [`DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-045
+>    （本次就是一个 11 小时前残留的 `arm_stub_node` 干的）。
 >    起之前可以先 `python3 src/M20_sdk_deploy/scripts/check_vr_arm_chain.py` 看发布者数量。
-> 3. 想看"腿也在走"的组合：A3 里按住 `w`（每 0.2 s 重复一次，键盘是"按住"语义）。
+> 3. 想看"腿也在走"的组合：A2 里按住 `w`（每 0.2 s 重复一次，键盘是"按住"语义）。
 
 ---
 
@@ -372,7 +419,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 | `--mode no_arm` | 无臂部署口径 | 观测里的臂项 = 0、`ee_goal` = 默认 |
 | `--mode arm_only` | 只调臂（无策略） | 末端位移 >0.03 m、IK 残差中位数 <3 mm |
 | `--mode arm_mixed` | 臂走独立传输 | 按键后观测里的臂项变化 >0.05 rad |
-| `--mode rl` / `walk` / `arm_move` | 进 RL / 行走 / 动臂 | 见 `docs/review/DONE_zh.md`（按失败率判，含入口瞬态） |
+| `--mode rl` / `walk` / `arm_move` | 进 RL / 行走 / 动臂 | 见 [`docs/STATUS_zh.md`](../../docs/STATUS_zh.md)（按失败率判，含入口瞬态） |
 | `--mode push` | **1500 N** 侧推 | 必须触发 `[TAKEOVER!]` 并切 `joint_damping`（800 N 打不倒当前平地模型，见 §9.3） |
 
 ---
@@ -390,10 +437,10 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 # 3) L1 验收（路径按容器内 cwd 写，即 /root/m20_piper_ws 下的相对路径）
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && exec python3 src/M20_sdk_deploy/scripts/check_policy_interface.py src/M20_sdk_deploy/policy/<新目录>'
 
-# 4) 试跑（把 §1 的 A2 换成下面这条）
+# 4) 试跑（把 §1 的 A2 换成下面这条；M20_POLICY_DIR 会传给监督器里的 rl_deploy）
 # ⚠️ M20_POLICY_DIR 是**按进程 cwd 解析**的（代码默认目录却是按 __FILE__ 解析的，
 #    两者口径不同）—— 所以这里必须写绝对路径，写 `policy/xxx` 会找不到：
-docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec env M20_POLICY_DIR=/root/m20_piper_ws/src/M20_sdk_deploy/policy/<目录> ./install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 M20_POLICY_DIR=/root/m20_piper_ws/src/M20_sdk_deploy/policy/<目录> && exec python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile sim'
 
 # 5) 确认无误后改 rl_control_state.hpp 里的默认目录，再跑 tests/run_all.sh
 ```
@@ -402,7 +449,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ## 8. 键盘速查
 
-### 8.1 腿 / 机身（在 `rl_deploy` 的终端里按）
+### 8.1 腿 / 机身（在统一控制终端里按）
 
 | 键 | 作用 |
 |---|---|
@@ -418,7 +465,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 ⚠️ **速度键是阶跃的**：按一下就立刻给到满量程，没有渐变。想"柔和"就别按它们
 （只动 `h/j/b/n/[/]` 这类增量键），或者点一下马上松开、隔一会儿再点。
 
-### 8.2 臂（在 `arm_teleop_node.py` 的终端里按，NumLock 打开）
+### 8.2 臂（仍在同一个统一控制终端里按，NumLock 打开）
 
 | 键 | 作用 |
 |---|---|
@@ -436,8 +483,9 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ### 8.3 两个通用注意
 
-* 键盘只认**当前焦点终端**：要按 `rl_deploy` 的键，先点一下 A2 那个终端。
-* 臂必须**先起 `arm_controller`**（IK）才会动。
+* A2 是唯一键盘焦点，不需要在腿和臂之间切换终端；监督器按上表自动分流。
+* `--profile sim` 先等待仿真话题单发布者就绪，再启动 `arm_controller` 和
+  `arm_teleop_node`，延迟 1 s 后启动 `rl_deploy`；不要绕过就绪检查。
 
 ---
 
@@ -465,10 +513,10 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ```bash
 # 有没有残留（空 = 干净）
-docker exec m20_piper_ros bash -lc 'ps -eo pid,args | grep -E "rl_deploy|mujoco_simulation|arm_controller|arm_teleop|run_sim2sim" | grep -v grep'
+docker exec -it m20_piper_ros bash -lc 'ps -eo pid,args | grep -E "rl_deploy|mujoco_simulation|arm_controller|arm_teleop|run_sim2sim" | grep -v grep'
 
 # 全清（按精确路径杀；^ 锚点很关键）
-docker exec m20_piper_ros bash -lc "pkill -9 -f '^/root/m20_piper_ws/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'; pkill -9 -f '^python3 src/M20_sdk_deploy/interface/robot/simulation/'"
+docker exec -it m20_piper_ros bash -lc "pkill -9 -f '^/root/m20_piper_ws/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'; pkill -9 -f '^python3 src/M20_sdk_deploy/interface/robot/simulation/'"
 ```
 
 > ⚠️ 用 `pkill -f <关键字>` 时，如果关键字也出现在**你自己这条命令**里，会把执行这条
@@ -494,7 +542,7 @@ docker exec m20_piper_ros bash -lc "pkill -9 -f '^/root/m20_piper_ws/install/m20
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ros2 service call /reset_sim std_srvs/srv/Empty'
 ```
 
-**相关文档**：接口契约 [`docs/sim2sim_layout_contract_zh.md`](../../docs/sim2sim_layout_contract_zh.md)、
-缺陷与实测 [`docs/review/DEFECT_LOG_zh.md`](../../docs/review/DEFECT_LOG_zh.md) /
-[`docs/review/DONE_zh.md`](../../docs/review/DONE_zh.md)、开关登记
-[`docs/review/WORKFLOW_zh.md`](../../docs/review/WORKFLOW_zh.md) §6.1。
+**相关文档**：接口契约 [`docs/CONTRACT_zh.md`](../../docs/CONTRACT_zh.md)、
+当前状态 [`docs/STATUS_zh.md`](../../docs/STATUS_zh.md)、开发约定
+[`docs/DEVELOPMENT_zh.md`](../../docs/DEVELOPMENT_zh.md)、
+历史缺陷 [`docs/DEFECTS_zh.md`](../../docs/DEFECTS_zh.md)。

@@ -5,7 +5,7 @@
 #   SKIP_BUILD=1 bash tests/run_all.sh
 #   MODES="hold rl" bash tests/run_all.sh
 #
-# 判据（详细口径见 docs/review/WORKFLOW_zh.md）：
+# 判据（详细口径见 docs/DEVELOPMENT_zh.md）：
 #   * L1  check_policy_interface.py   —— 布局/形状/名字/原生序/数值对照
 #   * L3' check_mjcf_contract.py      —— MJCF 与训练配置逐项对照（不允许 FAIL）
 #   * L3  每档：按契约文档的高度/倾角判据；
@@ -31,6 +31,10 @@ fi
 step "L1 离线策略验收"
 python3 "$SCRIPTS/check_policy_interface.py"
 report $? "check_policy_interface.py"
+
+step "L1 统一键盘控制终端"
+python3 tests/keyboard_teleop_supervisor_check.py
+report $? "keyboard_teleop_supervisor_check.py"
 
 step "L3' MJCF 与训练配置对照"
 python3 "$SCRIPTS/check_mjcf_contract.py"

@@ -4,16 +4,21 @@
 [`COMMANDS_SIM2SIM_zh.md`](COMMANDS_SIM2SIM_zh.md)。
 
 > 每个场景都是"**一个标题 + 一张终端表 + 检查点**"，照抄即可。
-> 原理/接口/排障细节见 [`docs/sim2real_checklist_zh.md`](../../docs/sim2real_checklist_zh.md)。
+> 部署流程、检查单和排障见 [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)，
+> 接口参数见 [`docs/CONTRACT_zh.md`](../../docs/CONTRACT_zh.md)。
 >
 > **用 VR 操作真机**（腿 + 臂）请走这条完整流程：
-> [`docs/DEPLOY_REAL_VR_zh.md`](../../docs/DEPLOY_REAL_VR_zh.md)。
+> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)。
 
 ## 0. 硬件拓扑与通用约定
 
 ```
 [Jetson AGX Orin  10.21.31.201]            [M20 电脑  10.21.31.103]
-  agx_arm_ctrl（CAN → Piper 臂）             rl_deploy（策略）/ arm_controller（IK）
+  agx_arm_ctrl（CAN → Piper 臂）             统一控制监督器
+                                                   ├─ rl_deploy（策略）
+                                                   ├─ arm_controller（IK）
+                                                   ├─ arm_teleop_node（键盘）
+                                                   └─ arm_real_adapter（真臂桥接）
       ↑ /control/joint_states  (sensor_msgs)      ↑ /ARM_JOINTS_DATA (drdds)
       ↓ /feedback/joint_states (sensor_msgs)      ↑ /ARM_TELEOP_STATE (std_msgs)
             └───────── 有线网络 / 同一个 DDS domain ─────────┘
@@ -89,7 +94,7 @@ grep -c SIM2SIM build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make   # 应
 ### 0.3 M20 上的 Python 依赖（**离线**，只装一次）
 
 > 📥 本节与 §0.1 的备注（还有头显要的 `aframe.min.js`）汇总在
-> [`docs/OFFLINE_ASSETS_zh.md`](../../docs/OFFLINE_ASSETS_zh.md)：
+> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md) 的离线资源一节：
 > 「要下什么 / 放哪 / 怎么下 / 怎么自检 / 缺了什么症状 / 换机器后重做哪些」，一页看完。
 
 VR 节点要 `yaml` 与 `websockets`（`xlevr/config.py`、`xlevr/inputs/vr_ws_server.py` 各用一个）。
@@ -124,7 +129,7 @@ python3 -c "import numpy, yaml, websockets; print('deps ok')"     # 两条路都
 > ```
 >
 > 细节（含"没有 pip 时怎么装"的更多说明）见
-> [`docs/DEPLOY_REAL_VR_zh.md`](../../docs/DEPLOY_REAL_VR_zh.md) §1.5。
+> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)。
 
 ### 0.4 只更新某个 Python 脚本（不用重编）
 
@@ -147,6 +152,43 @@ ros2 topic hz /JOINTS_DATA          # 应 ~200 Hz
 若只看到 `/rosout`、`/parameter_events` → `ROS_DOMAIN_ID` 不一致（`unset ROS_DOMAIN_ID` 再试）、
 RMW 不一致、或机器人服务没起。
 
+### 0.6 上位机统一控制终端
+
+真机上位机原来要分别开 adapter、IK、臂键盘和 `rl_deploy`。现在这四者由一个监督器
+按顺序启动，仍只占一个终端：
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+source install/setup.bash
+
+python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py \
+  --profile real
+```
+
+按键分工：
+
+* `W/S/A/D/Q/E`、`Z/C/R/X`、`H/J/B/N/[/]` → `rl_deploy`
+* 小键盘 → `arm_teleop_node.py`
+* `G/L` → 腿和臂同时处理
+
+日志带 `[adapter]`、`[ik]`、`[arm]`、`[rl]` 前缀。任一节点异常退出会一起收工；
+正常收工仍应先按 `r` 阻尼、按 `x` 趴下，再按 `Ctrl+C` 或 `ESC`。
+
+启动前监督器会等待 `/JOINTS_DATA` 有且只有一个发布者，并只检查本次 profile
+真正准备启动的节点。比如使用 `--no-arm-controller` 复用已经手动启动的 IK 时，
+不会因为已有 `arm_controller` 而误拒绝；但如果不加该参数，检测到已有 IK 就会停止。
+
+常见裁剪：
+
+| 场景 | 参数 |
+|---|---|
+| 只调臂，不跑策略 | `--profile real --no-deploy` |
+| 只感知臂，策略仍运行 | `--profile real --no-arm-controller --no-arm-teleop` |
+| 已经手动起了 IK | `--profile real --no-arm-controller` |
+| 已经手动起了 adapter | `--profile real --no-arm-adapter` |
+
 ---
 
 ## 场景 1：只部署 M20（**没装机械臂**）
@@ -156,7 +198,7 @@ RMW 不一致、或机器人服务没起。
 | 终端 | 命令 | 说明 |
 |---|---|---|
 | T1 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py` | 假臂：200 Hz 发 `/ARM_JOINTS_DATA`（默认姿态）+ 50 Hz 发 `/ARM_TELEOP_STATE` |
-| T2 | `ros2 run m20_sdk_deploy rl_deploy` | `z` 站立 → `c` 进 RL |
+| T2 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile legs` | `z` 站立 → `c` 进 RL |
 
 **检查点**
 
@@ -178,9 +220,7 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # (0.3492,0,0.4327,-0.7373,0,-0.6756
 | 终端 | 机器 | 命令 |
 |---|---|---|
 | T1 | Jetson | `ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true` |
-| T2 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T3 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py`（IK；不给输入时把臂带到默认位姿并保持） |
-| T4 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py`（键盘；`Ctrl+C` 或 `ESC` 退出） |
+| T2 | M20 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real --no-deploy`（adapter + IK + 键盘） |
 
 **腿怎么办（真机特有）**：
 
@@ -209,8 +249,7 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # ≈ (0.349,0,0.433,0.737,0,0.676,0
 |---|---|---|
 | T1 | Jetson | agx 驱动（同场景 2 的 T1） |
 | T2 | Jetson | 你原来的 agx 键盘/示教（保持不变） |
-| T3 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T4 | M20 | `ros2 run m20_sdk_deploy rl_deploy`（`z` → `c`） |
+| T3 | M20 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real --no-arm-controller --no-arm-teleop`（adapter + 策略） |
 
 **检查点**：手动画臂时 `/ARM_JOINTS_DATA` 与 `/ARM_TELEOP_STATE` 都跟着变
 （`M20_ADAPTER_PUBLISH_EE=0` 可关掉 FK 那条）。
@@ -225,13 +264,13 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # ≈ (0.349,0,0.433,0.737,0,0.676,0
 | 终端 | 机器 | 命令 |
 |---|---|---|
 | T1 | Jetson | agx 驱动（同场景 2 的 T1） |
-| T2 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T3 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py` |
-| T4 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py` |
-| T5 | M20 | `ros2 run m20_sdk_deploy rl_deploy`（`z` → `c`） |
+| T2 | M20 | `M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real` |
 
 **注意**：进 RL 时 `rl_deploy` **不会**再抢 `/ARM_JOINTS_CMD`（检测到 `arm_controller`
-在发就跳过"默认位姿保持"命令，`DEF-026`），日志里会打印那一行。
+在发就跳过"默认位姿保持"命令，`DEF-026`），日志里会打印那一行。监督器会先启动
+adapter/IK/臂键盘，再延迟 1 s 启动策略，保持这个检测时序。
+
+需要 VR 时只为 `vr_teleop_node.py` 另开 T3；它不要和其余节点挤在监督器里。
 
 **安全**：臂大幅摆动时底盘会被扰动（训练里 s3 阶段本身有 9~15% 的 20 s 摔倒率），
 先从**小幅度、慢速**开始；出现持续倾斜或 `[TAKEOVER!]` 就停手。
@@ -300,3 +339,224 @@ python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py
 | 臂不在默认位姿 | 起 `arm_controller`（不给输入时会回到默认位姿），或用 agx 键盘/示教摆到 `0, 0.5, -0.5, 0, 0, 0` |
 | `rl_deploy` 卡在 `joint data update is not finished` | 旧版本；现已改为有限等待 + 诊断（`DEF-024`），会告诉你是不是收不到 `/JOINTS_DATA` |
 | `arm_teleop_node.py` 按 Ctrl+C 关不掉 | 旧版本（`raw` 模式吃掉了 Ctrl+C）；新版本用 `setcbreak`，`Ctrl+C` 或 `ESC` 都能退（`DEF-028`） |
+
+---
+
+## 场景 7：录关节数据（`torque` + 两个温度）—— 排查"某关节长期顶力矩 / 过温"
+
+### 7.0 最省事：一条命令（**以后就用这条**）
+
+```bash
+# M20 上，仓库根目录 —— tag 自己起（这里用 vendorstand），时长单位秒（0 = 录到 Ctrl+C）
+bash src/M20_sdk_deploy/scripts/record_joint_data.sh vendorstand 600
+```
+
+这个封装脚本（`src/M20_sdk_deploy/scripts/record_joint_data.sh`）会：
+
+1. 自动 source `/opt/ros/foxy/setup.bash` + `/opt/robot/scripts/setup_ros2.sh`（有
+   `install/setup.bash` 也会 source），并打印当前的 `ROS_DOMAIN_ID` / `RMW_IMPLEMENTATION`
+   ——**它自己不设 `ROS_DOMAIN_ID`**（机器人自带服务在默认域，设错就"一帧都收不到"）；
+2. 先检查 `/JOINTS_DATA` 在不在，不在就按"服务没起 / domain / RMW / daemon"四条给你提示并退出；
+3. 录到 `~/joint_logs/<tag>.csv`（+ `.meta.json`），**已存在不覆盖**，自动改 `_2`、`_3`；
+4. 结束时打印**下一步**（开发机上的 `scp` 与分析命令），照抄即可。
+
+> **原厂控制器撑着腿（不进 SDK 模式）时照样能录** —— 本脚本只订阅、不控制，
+> 也不要求进 SDK 模式。原厂档录下来的数据用同一套 `joint_dir` 换算（那是关节的硬件属性），
+> 所以能直接和我们的"档 A / 档 B"对比。
+>
+> 排查用到的开关（`M20_STANDUP_VENDOR` / `M20_IDLE_ZERO_GAIN` / `M20_STANDUP_HEIGHT_M` /
+> `M20_STANDUP_HIPX_DEG`）都在 §8，跟本录制脚本互不干扰。
+
+用途：核对真机上"某个关节（如左前侧摆 `fl_hipx`）站久了温度冲到 100 ℃ ⇒ 安全接管趴下 ⇒
+10 s 后恢复"这类现象（当前状态见
+[`docs/STATUS_zh.md`](../../docs/STATUS_zh.md)，判读证据见
+[`docs/DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) **DEF-059**）。
+
+**录什么**：`/JOINTS_DATA` 的 16 个关节 `position / velocity / torque / motion_temp / driver_temp`
+（两个温度**都要**：代码判的是 `motion_temp`，`driver_temp` 是驱动器板温，混淆会判错病因），
+外加 `/IMU_DATA`（看有没有摔倒/被抬动）。
+
+> 为什么只能在真机录：仿真侧**没有电机热模型**（`mujoco_simulation_ros2.py` 把
+> `motion_temp/driver_temp` 写死 40/45 ℃），温度这条路在 sim2sim 里根本走不到。
+
+### 7.1 前置检查（在 M20 上）
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+
+ros2 topic hz /JOINTS_DATA                                   # 应 ~200 Hz
+python3 -c "from drdds.msg import JointsData; print('drdds ok')"   # 脚本要用
+```
+
+> 提示：**用与跑 `rl_deploy` 相同的终端环境**（domain/RMW 一致）。
+> 若第二条报 `No module named drdds`，说明这个 shell 没 source 到带 drdds 的 overlay
+> ⇒ 用 7.4 的 `ros2 bag` 兜底。
+
+### 7.2 录制（M20 上；脚本随仓库同步，见场景 0.1）
+
+> 现在推荐用 **§7.0** 那条封装命令（自动 source / 检查话题 / 防覆盖 / 打印下一步）；
+> 下面这组是等价的底层写法，想手调参数时用。
+
+```bash
+# A）站立状态机：按 z 站起来、**不要**按 c，录 10 分钟
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 600 \
+        --out ~/joint_logs/stand_$(date +%m%d_%H%M).csv
+
+# B）RL 站立、零速度命令：另一个终端跑 rl_deploy 按 z 再按 c，这里录 10 分钟
+#    （过温 → 接管趴下 → 冷却恢复 会完整落在这一份里）
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 600 \
+        --out ~/joint_logs/rl_$(date +%m%d_%H%M).csv
+
+# C）过温趴下之后，继续录 60 s 的**冷却段**（看温度多久掉回阈值以下）
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 60 \
+        --out ~/joint_logs/cool_$(date +%m%d_%H%M).csv
+```
+
+* `--duration 0` = 一直录到 `Ctrl+C`（`Ctrl+C` 也会先打印汇总再退出）；
+* **不会覆盖**：`--out` 指向的文件已存在时，脚本自动改写到 `…_2.csv`、`…_3.csv` 并在终端
+  提示（要覆盖得显式加 `--force`）。⚠️ 真机上时钟可能是错的（实测录到 `2024-08-11`），
+  所以**别靠时间戳区分**，文件名用有意义的 tag 更可靠；
+* 终端每 5 s 打印一行"最热的 3 个关节（motion/driver）"，**边录边看**有没有在升温：
+  ```
+  [  125.3s]  200.0 Hz  n=25060  最热: fl_hipx 87.4(drv 79.1) fl_hipy 71.2(drv 68.0) ...
+  ```
+* 退出时打印每个关节的 τ 均值/极值 + 温度首/末/峰，并标出 `motion_temp > 100 ℃`
+  的区段（第几秒开始、持续多久）。
+
+**录制期间**：急停别离手；B 档一定要亲眼看到"过温 → 趴下 → 恢复"这一轮（这才是要复现的），
+顺便记下操作员看到的**时间点**（对照 CSV 里的 `wall` 列）。
+
+### 7.3 取回 + 分析（开发机上）
+
+```bash
+# 下载（M20 的 SSH 密码是一个单引号 '）
+mkdir -p tmp/real_logs
+scp user@10.21.31.103:'~/joint_logs/*.csv' tmp/real_logs/
+scp user@10.21.31.103:'~/joint_logs/*.meta.json' tmp/real_logs/
+
+# 分析（容器里跑；也可以用开发机上带 numpy 的 python）
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws &&
+  python3 src/M20_sdk_deploy/scripts/joint_log_report.py tmp/real_logs/rl_xxxx.csv --ref rl --spectrum'
+```
+
+报告直接给四刀（对应 DEF-059 的排查清单）：
+
+1. **逐关节 `τ` / `q` 与仿真参考值并列**（`--ref rl` 或 `--ref standup`）⇒ 差得多 = 负载/标定问题；
+2. **两个温度分开看 + >100 ℃ 事件时序** ⇒ 是电机绕组还是驱动器板；
+3. **谁最热 vs 谁力矩最大**（若不是一个关节 ⇒ 纯铜损解释不了）+ 左右镜像对比
+   （`|左|/|右| > 1.5` 会标出来）；
+4. `--spectrum`：`τ` 的高频带能量（仿真里 >5 Hz 都 < 0.001 N·m；真机若有 ⇒
+   纹波/极限环，仿真测不到）。
+
+### 7.4 兜底：`ros2 bag`（Python 端 import 不到 drdds 时）
+
+```bash
+# M20 上录（只依赖 ROS 自带的 ros2bag）
+ros2 bag record -o ~/joint_logs/bag_rl /JOINTS_DATA /IMU_DATA
+# 开发机上取回，再把 .db3 给需要的人（我们这边可以转成上面的 CSV 格式）
+scp -r user@10.21.31.103:'~/joint_logs/bag_rl' tmp/real_logs/
+```
+
+---
+
+## 场景 8：站立/idle 用"**厂商原版档**"做 A/B（DEF-060 / TODO P1-9）
+
+**背景**：本仓库曾把厂商状态机改成“训练姿态 + 主动保持”，真机实测因此出现明显温升。
+2026-10-14 起默认已切回厂商流程：idle 零增益、站立两段式高度规划；
+RL 仍使用训练默认姿态。站立刚度和训练初始姿态尚未最终对齐，当前状态详见
+[`STATUS_zh.md`](../../docs/STATUS_zh.md)，历史证据见
+[`DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-059/DEF-060。
+
+### 8.1 三档怎么跑（跑之前先做场景 0.1 同步 + 0.2 编译）
+
+> ⚠️ **开关是代码改动 ⇒ 真机上必须先重新同步 + 重编**（否则开关不起作用）：
+>
+> ```bash
+> # 开发机（仓库根目录）：同步顺手在 M20 上编真机版
+> bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build
+> ```
+>
+> 起来后先确认日志与所选档一致：厂商站立应出现
+> `[STANDUP] 厂商原版档（M20_STANDUP_VENDOR 默认 1）`，
+> 训练姿态档应出现 `[STANDUP] 训练默认姿态档（M20_STANDUP_VENDOR=0）`，
+> idle 零增益应出现 `[IDLE] 厂商原版 idle`。**日志和预期不一致就是没有编进去。**
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash && source /opt/robot/scripts/setup_ros2.sh
+
+# 档 A：训练默认姿态站立（用于复现历史热工况）
+M20_STANDUP_VENDOR=0 ros2 run m20_sdk_deploy rl_deploy
+
+# 档 B：厂商原版两段式站立（当前默认，可不再显式设置）
+M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
+
+# 档 C：厂商原版 idle（零增益、不使力）
+M20_IDLE_ZERO_GAIN=1 ros2 run m20_sdk_deploy rl_deploy
+```
+
+**档 B 的完整录法（两个终端，注意顺序：先开录、再起 rl_deploy、最后按 `z`）**
+
+```bash
+# T1（M20）：先把录制挂上（文件名带 tag；已存在不会覆盖，会写成 …_2.csv）
+python3 src/M20_sdk_deploy/scripts/record_joint_data.py --duration 600 \
+        --out ~/joint_logs/standvendor_B1.csv
+
+# T2（M20）：用你平时那条启动命令，**前面加环境变量**（`ros2 run` 或直接跑二进制都行）
+M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
+#   等它打印 [STANDUP] … 之后，按 z 站立；保持 10 分钟（或直到过温趴下 3~4 次）
+```
+
+**要注意的**：
+
+* 档 B 的结束站位不是训练默认姿态（仿真实测约 0.559 m vs 训练姿态约 0.514 m）。
+  只做热基线时不要按 `c`；若要验证真实的“厂商站立 → RL”流程，按 `c` 后机器人会主动调整
+  到训练姿态。该切换有入口瞬态风险，必须吊装或清场并准备急停。
+* 档 C 进 SDK 模式后**腿就没人撑了**（厂商原版就是零增益，它假定站着的是别人）⇒
+  机器人会塌。想复现厂商整条链路，应该在**不进 SDK 模式**的情况下用机器人自带控制器站
+  （这也就是 P1-9 步骤 1 的"厂商模式 A/B"，不需要我们的代码）；
+* 仿真里跑 `--mode stand` 时，档 B 会被冒烟脚本判成"摔倒 @ t≈4.6 s"——那是**故意的蹲姿**
+  （0.12 m < 0.30 m 的摔倒阈值），不是异常。
+
+### 8.2 仿真侧的对照结果（2026-10-13，`--mode stand`，t≥25 s 稳态）
+
+| | 档 A（训练姿态） | 档 B（厂商两段式，当前默认） |
+|---|---|---|
+| 站高（判据口径 root_z−mean(轮 z)+0.09） | 0.514 m | **0.559 m** |
+| `fl_hipx` / `fr_hipx` | +11.99 / −11.89 N·m | **+11.78 / −11.68 N·m** |
+| `hl_hipx` / `hr_hipx` | +8.02 / −7.94 | **+8.50 / −8.42** |
+| `fl_knee` / `fr_knee` | −9.52 / −9.46 | **−7.07 / −7.02** |
+| 前/后轮接触力 | 106.2 / 85.9 N | 104.2 / 87.9 N |
+
+> 读法：仿真里两档的**侧摆力矩几乎一样**（差 1.8%），膝盖轻了 ~26%，站位高了 4.5 cm。
+> 所以**站立改动解释不了真机那 2.0~3.7 倍**（那是真机负载/几何/摩擦 vs 模型的差异）；
+> 但膝盖那 26% 在真机上值不值得，只有真机 A/B 能给答案——这也是这个开关存在的意义。
+
+### 8.3 站姿扫描（A/B 的后续：找"哪一站最省电机"）
+
+**真机 A/B 的结论**（两档各录一份，操作员 2026-10-13，详见
+[`DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-059）：
+
+| | 档 A（训练姿态，站高 0.514 m） | 档 B（厂商姿态，站高 0.559 m） |
+|---|---|---|
+| `fl_hipx` / `fr_hipx` | +29.0 / −29.3 N·m | **+10.7 / −12.2**（−63%） |
+| `fl_knee` / `fr_knee` | +22.1 / −25.6 | **+16.1 / −18.9**（−27%） |
+| `fl_hipy` / `fr_hipy` | −5.2 / −10.3 | **−9.2 / −8.4**（变重） |
+| 过温 | 已经很热时 **65 s 内 3 次** | 冷起 **~4.4 min 一次**（跳 `fr_knee`） |
+
+⇒ 姿态能大幅降侧摆负载**但不够**（膝盖/髋前后仍远高于仿真）。下一步在真机上扫站姿：
+
+```bash
+# 每个站高录 3~5 分钟（够看出升温斜率就行），一个一个来，别并行
+for h in 0.42 0.45 0.48 0.51 0.54; do
+  M20_STANDUP_VENDOR=1 M20_STANDUP_HEIGHT_M=$h ros2 run m20_sdk_deploy rl_deploy
+done
+
+# 想单独扫"侧摆目标"（镜像 +/-d 度）：
+M20_STANDUP_HIPX_DEG=-6 ros2 run m20_sdk_deploy rl_deploy     # 或 +6、+3…
+```
+
+> 选点原则：**看"最热的那个关节"**（仿真里站高越高膝盖越轻、侧摆几乎不变，但真机已经证明
+> 侧摆对姿态**很敏感**、和仿真相反 ⇒ 真机上以实测为准）。每次记下"稳态 τ + 升温速率"。

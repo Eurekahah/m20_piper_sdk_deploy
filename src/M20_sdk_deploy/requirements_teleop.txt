@@ -5,9 +5,9 @@
 #   third_party/XLeVR/xlevr/_rotation_compat.py（纯 numpy，与 scipy 逐项数值一致）。
 # 有 scipy 就用 scipy，没有也能跑 —— 真机（上位机）不能联网，这一条很关键。
 # 若你确实要装 scipy（可选）：它必须与已装 numpy 的大版本配套（numpy 2.x ⇒ scipy>=1.12），
-# 取消下面这行的注释即可（真机离线装法见 docs/DEPLOY_REAL_VR_zh.md §1.5）：
+# 取消下面这行的注释即可（真机离线装法见 docs/DEPLOY_zh.md）：
 # scipy>=1.12
 # yaml 与 websockets 是**必需**的（xlevr/config.py 与 xlevr/inputs/vr_ws_server.py）。
-# 真机离线装法见 docs/DEPLOY_REAL_VR_zh.md §1.5。
+# 真机离线装法见 docs/DEPLOY_zh.md。
 websockets>=12
 PyYAML

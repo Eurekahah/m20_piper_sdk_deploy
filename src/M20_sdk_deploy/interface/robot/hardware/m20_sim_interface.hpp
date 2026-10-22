@@ -36,18 +36,13 @@ public:
      * pose so the robot does not collapse while waiting for the first data.
      */
     void Start() override {
-        MatXf cmd = MatXf::Zero(dof_num_, 5);
-        // wheels are position-held at 0 so the robot does not roll before RL
-        VecXf kp = Vec4f(80, 80, 80, 10.).replicate(4, 1);
-        VecXf kd = Vec4f(2, 2, 2, 0.6).replicate(4, 1);
-        VecXf pos = Vec4f(0.0, -0.6, 1.0, 0.0).replicate(4, 1);
-        // rear legs are mirrored (hl/hr hipy +0.6, knee -1.0)
-        pos(9) = 0.6;  pos(10) = -1.0;
-        pos(13) = 0.6; pos(14) = -1.0;
-        cmd.col(0) = kp;
-        cmd.col(1) = pos;
-        cmd.col(2) = kd;
-        SetJointCommand(cmd);
+        // 发**零增益**（= 厂商原版流程：收到第一条命令之前不使力，机器人就着初始位姿待着）。
+        // ⚠️ 之前这里发的是"训练默认站姿 + kp 80/2"的保持命令，导致 sim2sim 里
+        // rl_deploy 一起来机器人就自己站起来了（按 z 之前），与真机/厂商流程不符。
+        // 现在保持"不使力"：MuJoCo 节点自己的默认保持（kp 80/2、目标 = 初始位姿
+        // `M20_SIM_INIT_POSE`）已经保证机器人不会乱塌 —— 与厂商 sim（启动时
+        // kp/kd/pos 全 0、机器人就着 `URDF_INIT` 趴着）一致。
+        SetJointCommand(MatXf::Zero(dof_num_, 5));
 
         // wait until the sim feedback arrives (max ~1 s)
         for (int i = 0; i < 200 && !IsDataUpdatedFinished(); ++i) {
