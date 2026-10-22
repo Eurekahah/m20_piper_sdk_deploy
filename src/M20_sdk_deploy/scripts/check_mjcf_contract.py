@@ -5,7 +5,7 @@
   * `logs/rsl_rl/history_adaptation/2026-09-20_00-50-31/params/env.yaml`
     —— init_state 默认角、执行器 stiffness/damping/armature/effort/velocity 限幅、
        observations 的 scale/clip、sim.dt、decimation
-  * 本仓库 `docs/sim2sim_layout_contract_zh.md` —— 人工核对过的接口契约
+  * 本仓库 `docs/CONTRACT_zh.md` —— 人工核对过的接口契约
 
 本脚本只读 MJCF，输出"训练侧期望 vs MJCF 实际"，并给出 PASS/FAIL/UNKNOWN：
   PASS    两边一致（容差见各条）

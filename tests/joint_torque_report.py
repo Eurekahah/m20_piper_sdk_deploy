@@ -16,7 +16,7 @@
 列口径（别用错）：CSV 的 `q/dq/tau` 24 列是 **MJCF 序**，每腿 `hipx/hipy/knee/wheel`
 连续（`fl fr hl hr`），后面接 `arm_joint1..6 + gripper_joint1/2`。
 **不是**策略观测的 articulation 原生序，也不是动作序（见
-`docs/sim2sim_layout_contract_zh.md` §3）。
+`docs/CONTRACT_zh.md`）。
 """
 
 from __future__ import annotations

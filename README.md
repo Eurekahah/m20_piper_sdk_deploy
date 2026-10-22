@@ -16,7 +16,9 @@ Before using the Lite3 SDK, please refer to the [Lite3 SDK Service Guide](src/li
 ### M20
 - `src/M20_sdk_deploy`: The source code for the M20 SDK deploy.  
 
-For the M20 SDK deployment process, please refer to the [M20 SDK Deployment Guide](/src/M20_sdk_deploy/README.md).  
+For the M20 SDK deployment process, see the [M20 documentation index](docs/README_zh.md)
+and [deployment guide](docs/DEPLOY_zh.md). The package overview is in
+[src/M20_sdk_deploy/README.md](src/M20_sdk_deploy/README.md).
 ## Contributors
 See the [Contributors](Contributors.md) page for a list of contributors.
 
@@ -37,6 +39,7 @@ See the [Contributors](Contributors.md) page for a list of contributors.
 ### M20
 - `src/M20_sdk_deploy`：M20 SDK部署的源代码。
 
-M20 SDK部署流程请查看[M20 SDK部署说明](/src/M20_sdk_deploy/README.md)。
+M20 文档入口请查看[文档索引](docs/README_zh.md)，部署流程见[部署说明](docs/DEPLOY_zh.md)，
+包级说明见[src/M20_sdk_deploy/README.md](src/M20_sdk_deploy/README.md)。
 ## 贡献者
 请参阅[贡献者](Contributors.md)页面查看贡献者列表。

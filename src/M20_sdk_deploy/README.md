@@ -1,585 +1,168 @@
 # M20 SDK Deploy
 
-> **命令速查（推荐先看这两个）**：
-> [sim2sim 运行命令](COMMANDS_SIM2SIM_zh.md) ｜ [sim2real 运行命令](COMMANDS_SIM2REAL_zh.md)
-> —— 每个场景一张"哪个终端敲什么"的表。
->
-> **只想录一段真机关节数据（torque + 电机/驱动器温度）** —— 一条命令，**原厂控制器撑着腿时也能用**
-> （只订阅、不控制、不用进 SDK 模式）：
-> ```bash
-> bash src/M20_sdk_deploy/scripts/record_joint_data.sh <tag> 600     # → ~/joint_logs/<tag>.csv
-> ```
-> 详见 [sim2real 命令 §7.0](COMMANDS_SIM2REAL_zh.md#70-最省事一条命令以后就用这条)（含取回与分析命令）。
->
-> **文档索引（M20 + Piper 部署）**：状态看 [`docs/review/`](../../docs/README_zh.md)——
-> 待办 `review/TODO_zh.md`、已完成 `review/DONE_zh.md`、缺陷记录 `review/DEFECT_LOG_zh.md`、
-> 开发/测试规范 `review/WORKFLOW_zh.md`；
-> **接口契约**（观测/动作布局、关节顺序、坐标系、MuJoCo 参数）
-> `docs/sim2sim_layout_contract_zh.md`。
-> 改任何接口（关节顺序、坐标系、增益、观测维度）都必须同步更新契约文档。
+M20 轮足机器人 + AgileX Piper 机械臂的 ROS 2 部署包，覆盖 sim2sim、sim2real、
+策略部署、机械臂 IK、键盘和 VR 遥操作。
 
-[![Discord](https://img.shields.io/badge/-Discord-5865F2?style=flat&logo=Discord&logoColor=white)](https://discord.gg/gdM9mQutC8)
-## Overview
-This repository uses ROS2 to implement the entire Sim-to-sim and Sim-to-real workflow. Therefore, ROS2 must first be installed on your computer, such as installing [ROS2 Humble](https://docs.ros.org/en/humble/index.html) on Ubuntu 22.04. We've also released an introduction [video](https://www.youtube.com/watch?v=FNaxsDBtD7A), please check it out! Please go through the whole process on a Ubuntu system.
-```mermaid
-graph LR
-    A["/rl_deploy"] -->|/JOINTS_CMD| B["/mujoco_simulation"]
-    B -->|/IMU_DATA| A
-    B -->|/JOINTS_DATA| A
+## 文档入口
+
+- [文档索引](../../docs/README_zh.md)
+- [当前状态与待办](../../docs/STATUS_zh.md)
+- [部署运行](../../docs/DEPLOY_zh.md)
+- [接口契约](../../docs/CONTRACT_zh.md)
+- [开发与测试](../../docs/DEVELOPMENT_zh.md)
+- [缺陷历史](../../docs/DEFECTS_zh.md)
+- [策略目录约定](policy/README.md)
+
+日常复制命令：
+
+- [sim2sim 命令速查](COMMANDS_SIM2SIM_zh.md)
+- [sim2real 命令速查](COMMANDS_SIM2REAL_zh.md)
+
+## 主要能力
+
+| 模块 | 说明 |
+|---|---|
+| 策略 | 83 维观测、10×70 history、16 维动作；平地为默认模型 |
+| 状态机 | idle、站立、RL、趴下、关节阻尼和安全接管 |
+| 腿部接口 | 真机 drdds 接口与 MuJoCo 恒等标定接口 |
+| 机械臂 | Piper 6 关节 + 两指夹爪，DLS IK，键盘和 VR 命令 |
+| 真机臂 | `arm_real_adapter.py` 连接 `agx_arm_ros` |
+| VR | XLeVR 页面、离线 A-Frame、机身 + 机械臂遥操作 |
+| 工具 | 预检、同步、遥测、命令扫描、关节温度录制和离线分析 |
+
+当前接口和参数以 [CONTRACT_zh.md](../../docs/CONTRACT_zh.md) 为准。
+
+## 目录
+
+```text
+src/M20_sdk_deploy/
+  interface/                 机器人、DDS、MuJoCo、机械臂和 VR 节点
+  state_machine/             idle/standup/RL/liedown/damping 状态机
+  run_policy/                策略加载、观测和动作映射
+  policy/                    训练部署产物
+  scripts/                   预检、同步、测试和数据分析
+  M20_Piper_description/     MJCF 与 mesh
+  third_party/               XLeVR、Eigen、ONNX Runtime、手柄等
 ```
-```bash
-# ros2 topic list
-/BATTERY_DATA
-/IMU_DATA
-/JOINTS_CMD
-/JOINTS_DATA
-/parameter_events
-/rosout
 
+## 环境
 
-# ros2 node info /mujoco_simulation 
-/mujoco_simulation
-  Subscribers:
-    /JOINTS_CMD: drdds/msg/JointsDataCmd
-  Publishers:
-    /IMU_DATA: drdds/msg/ImuData
-    /JOINTS_DATA: drdds/msg/JointsData
-    /parameter_events: rcl_interfaces/msg/ParameterEvent
-    /rosout: rcl_interfaces/msg/Log
-  Service Servers:
-    /mujoco_simulation/describe_parameters: rcl_interfaces/srv/DescribeParameters
-    /mujoco_simulation/get_parameter_types: rcl_interfaces/srv/GetParameterTypes
-    /mujoco_simulation/get_parameters: rcl_interfaces/srv/GetParameters
-    /mujoco_simulation/list_parameters: rcl_interfaces/srv/ListParameters
-    /mujoco_simulation/set_parameters: rcl_interfaces/srv/SetParameters
-    /mujoco_simulation/set_parameters_atomically: rcl_interfaces/srv/SetParametersAtomically
-  Service Clients:
+- 开发机建议 ROS 2 Humble 容器。
+- M20 上位机使用 ROS 2 Foxy。
+- 策略文件必须成对存在：
+  `policy.onnx` + `policy_layout.json`。
+- 真机版必须显式使用 `-DSIM2SIM=OFF`。
 
-  Action Servers:
+## 编译
 
-  Action Clients:
-
-
-# ros2 node info /rl_deploy 
-/rl_deploy
-  Subscribers:
-    /BATTERY_DATA: drdds/msg/BatteryData
-    /IMU_DATA: drdds/msg/ImuData
-    /JOINTS_DATA: drdds/msg/JointsData
-    /parameter_events: rcl_interfaces/msg/ParameterEvent
-  Publishers:
-    /JOINTS_CMD: drdds/msg/JointsDataCmd
-    /parameter_events: rcl_interfaces/msg/ParameterEvent
-    /rosout: rcl_interfaces/msg/Log
-  Service Servers:
-    /rl_deploy/describe_parameters: rcl_interfaces/srv/DescribeParameters
-    /rl_deploy/get_parameter_types: rcl_interfaces/srv/GetParameterTypes
-    /rl_deploy/get_parameters: rcl_interfaces/srv/GetParameters
-    /rl_deploy/list_parameters: rcl_interfaces/srv/ListParameters
-    /rl_deploy/set_parameters: rcl_interfaces/srv/SetParameters
-    /rl_deploy/set_parameters_atomically: rcl_interfaces/srv/SetParametersAtomically
-  Service Clients:
-
-  Action Servers:
-
-  Action Clients:
-
-```
-## Contribution 
-
-Everyone is welcome to contribute to this repo. If you discover a bug or optimize our training config, just submit a pull request and we will look into it.
-## Sim-to-sim
+### sim2sim
 
 ```bash
-pip install "numpy < 2.0" mujoco
-git clone https://github.com/DeepRoboticsLab/sdk_deploy.git
-
-# Compile
-cd sdk_deploy
-source /opt/ros/<ros-distro>/setup.bash
+cd /root/m20_piper_ws
+source /opt/ros/humble/setup.bash
 colcon build --packages-up-to m20_sdk_deploy \
   --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON
+source install/setup.bash
 ```
 
-`-DSIM2SIM=ON` selects the identity-calibration `M20SimInterface`, which is
-required for this sim (the M20_Piper MJCF is already in the policy frame).
+### 真机
 
 ```bash
-# Run (Open 2 terminals)
-# Terminal 1
-export ROS_DOMAIN_ID=1
-source install/setup.bash
+colcon build --packages-select m20_sdk_deploy \
+  --cmake-args -DBUILD_PLATFORM=arm -DSIM2SIM=OFF
+```
+
+确认构建类型：
+
+```bash
+grep -c SIM2SIM build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make
+# 真机应为 0
+```
+
+## 快速运行
+
+### 全仿真
+
+宿主机一行式命令：
+
+```bash
+docker exec -it m20_piper_ros bash -lc '
+  cd /root/m20_piper_ws &&
+  source /opt/ros/humble/setup.bash &&
+  source install/setup.bash &&
+  export ROS_DOMAIN_ID=1 &&
+  exec python3 tests/sim2sim_smoke.py --mode rl --viewer --duration 60
+'
+```
+
+启动后按：
+
+- `z`：站立。
+- `c`：进入 RL。
+- `w/s/a/d/q/e`：速度命令。
+- `r`：关节阻尼。
+- `x`：趴下。
+
+完整多终端流程见 [COMMANDS_SIM2SIM_zh.md](COMMANDS_SIM2SIM_zh.md)。
+
+### 真机
+
+先完成编译、同步、SDK 模式和预检：
+
+```bash
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
+python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py
 ros2 run m20_sdk_deploy rl_deploy
-
-# Terminal 2 
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
 ```
 
-Notes for the M20_Piper sim:
+真机首跑、机械臂和 VR 的完整步骤见
+[DEPLOY_zh.md](../../docs/DEPLOY_zh.md)。
 
-- `mujoco_simulation_ros2.py` integrates the physics at 0.2 ms (5 substeps per
-  1 ms control tick) because the USD-derived MJCF has a lightly damped ~500 Hz
-  rocking mode that is numerically unstable at a plain 1 ms step. The topic
-  rates and 200 Hz feedback are unchanged.
-- The MJCF arm/wheel actuators now carry the same armature values as the Isaac
-  Lab actuator configs (arm/gripper 0.01, wheel 0.00243216); without this the
-  arm/gripper PD loop is unstable in MuJoCo.
-- `M20PiperPolicyRunner` clamps raw ONNX actions to ±3 as a deployment safety
-  net. This keeps commands bounded if the history encoder is pushed out of
-  distribution, and prevents the previous wheel-position runaway/NaN.
-
-### Control (Terminal 2)
-
-<span style="color: red;">**Note:**</span>
-> - Right click simulator window and select "always on top"
-> - When the robot dog stands up, it may become stuck due to self-collision in the simulation. This is not a bug; please try again.
-> - z： default position
-> - c： rl control default position
-> - wasd：forward/leftward/backward/rightward
-> - qe：clockwise/counter clockwise
-
-## Sim-to-sim with M20 + Piper arm (new RL policy)
-
-This variant deploys the new Isaac Lab policy that controls the M20 legs/wheels
-while a separate node drives the AgileX Piper arm through end-effector IK
-(pyAgxArm MDH + DLS, matching the training's `DifferentialIKController`).
-
-```
-graph LR
-    A["/rl_deploy"] -->|/JOINTS_CMD (16 legs)| B["/mujoco_simulation"]
-    D["/arm_teleop (keyboard/VR hub)"] -->|/ARM_TELEOP| C["/arm_controller"]
-    D -->|/reset_sim| B
-    E["/vr_teleop (XLeVR)"] -->|/VR_TELEOP| A
-    E -->|/VR_TELEOP| D
-    C -->|/ARM_JOINTS_CMD (8 arm/gripper)| B
-    B -->|/IMU_DATA, /JOINTS_DATA, /ARM_JOINTS_DATA| A
-    B -->|/ARM_JOINTS_DATA| C
-    C -->|/ARM_TELEOP_STATE (ee goal for obs)| A
-```
-
-The drdds messages are **unchanged** (16 joints); the arm uses separate topics,
-so the same build stays compatible with the real M20 SDK path.
-
-### Prerequisites
-
-**策略是"一个目录"**，`M20PiperPolicyRunner` 从目录里的 `policy_layout.json`
-读接口维度，并与 ONNX 的形状/名字交叉断言（不再写死任何维度）。当前默认目录是
-`policy/m20_piper_flat_20260930/`（**平地** run `2026-09-30_19-36-00_cloud_cap12_20k`，
-checkpoint `model_19999.pt`，rsl_rl `ActorCriticHistory`）；多地形用
-`policy/m20_piper_rough_20261002/`（run `2026-10-02_00-44-42_cloud_slowvx20k`），
-更早的 `policy/m20_piper_history_20260920/`（run `2026-09-20_00-50-31`）也保留着。
-三者接口逐字段相同、只是权重不同：
-
-- `policy.onnx`：输入 `policy_obs (batch,83)` + `history_flat (batch,700)`，
-  输出 `action (batch,16)`（12 腿位置 + 4 轮速度；**没有机械臂动作**）
-- `policy.pt`：TorchScript，接口同上（离线数值对照用）
-- `policy_layout.json`：维度、ONNX 输入输出名/形状、history 语义、
-  **24 维原生关节序**、动作序
-
-观测（83）：base 角速度 ×0.25 (3) + 重力投影 (3) + 速度命令 (3)
-+ `joint_pos` 24 维原生序（**4 个轮子列置零**）+ `joint_vel` 24 维 ×0.05
-+ 上一步动作 (16) + `ee_goal`（root 系 pos+quat wxyz，clip ±3）+ `body_pose` (3)。
-history 每步 70 维（原始值，含轮子），最旧→最新。
-
-**换策略**：把训练侧 `<run>/exported_deploy/` 整个目录复制成
-`policy/<run 名>/`，然后用 `M20_POLICY_DIR=policy/<run 名>` 启动
-（或直接改 `RLControlState` 里的默认目录）。目录里必须同时有
-`policy.onnx` 与 `policy_layout.json`。
-
-**别用 `play.py` 导出的 actor-only `policy.pt`**：那里面没有 history encoder，
-输入是 `[policy_obs, latent]`，latent 没有来源；`policy_layout.json` 的
-`kind` 字段会拦住它（runner 只接受 `kind=history`）。
-
-### sim2sim 的三种配置（腿和臂的数据来源分开调）
-
-真机上"腿的数据"来自机器人 SDK、"臂的数据"来自 CAN 传输，两条路是独立的。
-sim2sim 里也按这个结构拆开，方便**先分开调、再合并调**：
-
-| 配置 | 腿的数据 | 臂的数据 | 用途 |
-|---|---|---|---|
-| `full`（默认） | MuJoCo | MuJoCo（同一个节点） | 最接近训练时的闭环，回归/整体验证 |
-| `legs` | MuJoCo | `arm_stub_node`：**默认姿态**（等价"臂没装"） | 只调腿；和真机"没装臂"完全同构 |
-| `mixed` | MuJoCo | `arm_stub_node --follow`（**假 CAN 驱动**，按 `/ARM_JOINTS_CMD` 一阶跟随）或真机 `arm_real_adapter` | 分开调臂链路：`arm_controller`(IK) + `arm_teleop`(键盘) 全在跑 |
+## 测试
 
 ```bash
-# 一键起（每个配置一个终端；再开一个终端跑 rl_deploy）
-bash src/M20_sdk_deploy/scripts/run_sim2sim.sh full     # 全仿真
-bash src/M20_sdk_deploy/scripts/run_sim2sim.sh legs     # 只调腿（臂=默认姿态）
-bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed    # 腿仿真 + 臂走独立传输
+# 完整仿真验收
+bash tests/run_all.sh
 
-# mixed 想接真臂（先起 agx_arm_ctrl）：
-M20_ARM_TRANSPORT=real bash src/M20_sdk_deploy/scripts/run_sim2sim.sh mixed
-
-# 策略（另一个终端，所有配置都一样）
-ros2 run m20_sdk_deploy rl_deploy      # z 站立 → c 进 RL
-```
-
-关键点：**三种配置下 `rl_deploy` 看到的接口完全一样**（腿 `/JOINTS_DATA`、
-臂 `/ARM_JOINTS_DATA`），只是"谁在发布"不同 —— 所以分开调得到的结论可以直接
-用到合并调和真机上。
-
-自动化验证（每档一个用例）：
-
-```bash
-python3 tests/sim2sim_smoke.py --mode no_arm     # legs：断言策略看到的臂=默认姿态
-python3 tests/sim2sim_smoke.py --mode arm_mixed  # mixed：断言按键后策略观测里的臂真的变了
-```
-
-### 臂还没装怎么部署（只跑 M20）
-
-这条策略的观测里**有机械臂**（24 关节的 `joint_pos/joint_vel` + 7 维 `ee_goal`），
-所以"没有臂"意味着**两个输入没有来源**，不能不管：
-
-| 情况 | 会发生什么 | 怎么做 |
-|---|---|---|
-| 臂没装，什么都不起 | `PiperArmInterface` 找不到 `/ARM_JOINTS_DATA`，会把 8 个臂关节当成**训练默认姿态**（arm2 0.5 / arm3 -0.5），并打印一条 `[ARM] 没有收到 /ARM_JOINTS_DATA` 警告 | 能用，但策略看到的臂状态是"假设值"。短测可以，长跑建议用下面的假臂节点 |
-| 臂没装 + **假臂节点**（推荐） | 假臂节点以 200 Hz 发默认姿态的 `/ARM_JOINTS_DATA`、50 Hz 发默认位姿的 `/ARM_TELEOP_STATE`，观测与目标**自洽** | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py`（见下） |
-| 臂装上了但没上电 | `arm_real_adapter` 没有反馈，等价于上表第一行 | 要么让 `agx_arm_ctrl` 上电，要么临时用假臂节点 |
-| 臂要动 | 需要 `arm_controller` + `arm_teleop_node`（或 VR） | 见上面的 4~5 终端流程 |
-
-```bash
-# 无臂部署（腿 + 假臂）：
-export ROS_DOMAIN_ID=1; source install/setup.bash
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py   # 假臂（可调姿态）
-ros2 run m20_sdk_deploy rl_deploy                                        # 正常 z 站立 → c 进 RL
-```
-
-假臂节点可调：
-
-```bash
-M20_ARM_STUB_POSE="0,0.5,-0.5,0,0,0,0,0"   # 8 关节角（rad）
-M20_ARM_STUB_EE="0.3492,0,0.4327,-0.7373,0,-0.6756,0"   # ee_goal（root 系 pos+quat wxyz；四元数用训练/链式 FK 的符号分支，见 DEF-039）
-M20_ARM_STUB_DEBUG=1                        # 1 Hz 打印收到的 /ARM_JOINTS_CMD（丢弃）
-```
-
-> ⚠️ 假臂节点是"**假装臂在默认姿态**"，不是"把臂从观测里拿掉"。真要拿掉臂，
-> 必须改**训练侧**观测口径并重训 —— 部署侧单方面改观测等于换了策略
-> （见 [policy/README.md](policy/README.md) 的硬性约束）。
-
-仿真里等价场景用 `M20_SIM_NO_ARM_DATA=1`（仿真照常跑，但不发臂反馈），
-一键验证：`python3 tests/sim2sim_smoke.py --mode no_arm`。
-
-### 真机部署前先跑一遍检查
-
-```bash
-python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py            # 容器/真机都行
-python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py --offline  # 不看 ROS 话题
-```
-
-它会回答：策略**要不要机械臂数据**（从观测构成反推）、当前编译产物是不是
-`SIM2SIM`（真机必须**不带** `-DSIM2SIM`）、四个臂相关脚本是否齐全、
-`/JOINTS_DATA` 等话题有没有发布者，最后列出"必须处理"的阻断项与该敲的命令。
-
-### 测试（改任何模块后都要跑）
-
-```bash
-# 容器内，仓库根目录
-source /opt/ros/humble/setup.bash && source install/setup.bash
-
-# L1：离线验收（维度/名字/原生序交叉断言 + ONNX↔TorchScript 相对误差）
+# 策略接口
 python3 src/M20_sdk_deploy/scripts/check_policy_interface.py
 
-# L3'：MJCF 与训练配置逐项对照（关节集合/限位/力矩/armature/FK/高度度量）
+# MJCF 与训练参数对照
 python3 src/M20_sdk_deploy/scripts/check_mjcf_contract.py
 
-# L3：端到端 sim2sim 冒烟（无头 + 遥测 + PASS/FAIL）
-python3 tests/sim2sim_smoke.py --mode hold --duration 12   # 裸模型站立
-python3 tests/sim2sim_smoke.py --mode rl   --duration 25   # 站立 → 进 RL
-python3 tests/sim2sim_smoke.py --mode walk --duration 25   # 按住 w 前进
-python3 tests/sim2sim_smoke.py --mode arm  --duration 25   # 带 IK 节点
-python3 tests/sim2sim_smoke.py --mode arm_move --duration 25  # 按住 numpad 动臂
-python3 tests/sim2sim_smoke.py --mode push --duration 25   # 侧推 → 安全接管
-
-# 或者一键全跑（L0 编译 + L1 + L3' + 上面六档）：
-bash tests/run_all.sh
+# 22 阶段命令扫描
+python3 tests/command_sweep.py --repeat 3
 ```
 
-真机上线流程见 [`docs/sim2real_checklist_zh.md`](../../docs/sim2real_checklist_zh.md)。
+测试判据、实时因子要求和当前测试口径问题见
+[DEVELOPMENT_zh.md](../../docs/DEVELOPMENT_zh.md)。
 
-判据与开发约定见 [`docs/review/WORKFLOW_zh.md`](../../docs/review/WORKFLOW_zh.md)；
-接口契约（含关节顺序、坐标系、每条说法的核对状态）见
-[`docs/sim2sim_layout_contract_zh.md`](../../docs/sim2sim_layout_contract_zh.md)。
+## 真机关节数据
 
-`arm_controller.py` uses the Piper MDH table from `pyAgxArm` when installed and
-falls back to an embedded copy otherwise.
-
-添加宿主机图像传递
-```
-xhost +local:docker
-```
-
-创建容器
-```
-docker run -it \
-    --name m20_piper_ros \
-    --network host \
-    --privileged \
-    --gpus all \
-    --env="DISPLAY=$DISPLAY" \
-    --env="QT_X11_NO_MITSHM=1" \
-    --env="MUJOCO_GL=glfw" \
-    --volume="/tmp/.X11-unix:/tmp/.X11-unix:rw" \
-    --volume="/home/eureka/code/m20_piper_sdk_deploy:/root/m20_piper_ws" \
-    --workdir="/root/m20_piper_ws" \
-    m20-piper-deploy:latest
-```
-进入容器
-```
-docker exec -it m20_piper_ros bash
-```
-
-### Run (teleop variant: 4 terminals, plus VR if needed)
+只订阅、不控制，因此原厂控制器站立时也可录制：
 
 ```bash
-# Terminal 1
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-source /opt/ros/humble/setup.bash
-ros2 run m20_sdk_deploy rl_deploy
-
-# Terminal 2
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-source /opt/ros/humble/setup.bash
-python3 src/M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py
-
-# Terminal 3
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-source /opt/ros/humble/setup.bash
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py
-
-# Terminal 4 (arm keyboard; required to move the arm)
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py
+bash src/M20_sdk_deploy/scripts/record_joint_data.sh <tag> 600
 ```
 
-The arm is driven by the standalone `arm_teleop` hub, not by rl_deploy, so it
-can be moved even before the legs enter RL mode. rl_deploy only reads the
-`/ARM_TELEOP_STATE` EE goal for the policy observation.
-
-### VR teleoperation (optional, Terminal 5)
+输出位于 `~/joint_logs/<tag>.csv`。分析：
 
 ```bash
-# Terminal 5 (only when using the VR headset)
-export ROS_DOMAIN_ID=1
-source install/setup.bash
-python3 src/M20_sdk_deploy/interface/robot/simulation/vr_teleop_node.py
+python3 src/M20_sdk_deploy/scripts/joint_log_report.py \
+  tmp/real_logs/<tag>.csv --ref standup
 ```
 
-Install the Python deps first (container):
+## 已知限制
 
-```bash
-pip3 install -r src/M20_sdk_deploy/requirements_teleop.txt
-```
+- 站立热安全尚未完全闭环，见 [STATUS_zh.md](../../docs/STATUS_zh.md)
+  和 [DEFECTS_zh.md](../../docs/DEFECTS_zh.md) 的 DEF-059/DEF-060。
+- 厂商站立到训练 RL 姿态仍存在入口瞬态。
+- 安全层的低电量、命令心跳和部分超时保护未完整接线。
+- 真机标定、时延、急停和机械臂实机联调仍待验收。
 
-Open the printed `https://<ip>:8443` page in the headset browser. Press right B
-to start and re-calibrate; left X/Y reset the simulation to its default pose
-via the `/reset_sim` service.
+完整状态和优先级见 [STATUS_zh.md](../../docs/STATUS_zh.md)。
 
-### Simulation reset service
+## 上游与许可证
 
-```bash
-ros2 service call /reset_sim std_srvs/srv/Empty
-```
-
-Restores the robot to the default standing pose, zeroes velocities and clears
-the leg/arm command buffers inside the MuJoCo node.
-
-### Arm keyboard mapping (arm_teleop terminal)
-
-- Numpad (NumLock ON): 8/2 EE x, 4/6 EE y, 7/9 EE z,
-  1/3 EE roll, 0/. EE pitch, +/− EE yaw
-- G: gripper open/close toggle
-- L: reset body pose + arm teleop target
-
-### Leg/body keyboard mapping (rl_deploy terminal)
-
-- R/Z/C/X: joint damping / stand up / RL control / lie down
-- WASD/QE: forward/back, left/right, turn left/right
-- H/J: body height up/down; B/N: body pitch ±; `[`/`]`: body roll ±
-
-When VR is active after pressing B, the arm hub follows the VR controller and
-ignores keyboard arm keys, and rl_deploy follows VR for legs/body.
-
-### 真机 + 真臂：两台机器怎么接线（M20 电脑 + Jetson）
-
-真机布局是**两台机器**：
-
-```
-[Jetson AGX Orin  10.21.31.201]                 [M20 电脑  10.21.31.103]
-  agx_arm_ctrl（CAN → Piper 臂）                  rl_deploy（策略）
-       ↑ /control/joint_states  (sensor_msgs)      ↑ /ARM_JOINTS_DATA (drdds)
-       ↓ /feedback/joint_states (sensor_msgs)      ↑ /ARM_TELEOP_STATE (std_msgs)
-             └──────────── 有线网络 / DDS ────────┘
-```
-
-**桥接节点 `arm_real_adapter.py` 放在 M20 电脑上**（不是 Jetson）：它收发的是
-**drdds** 消息，M20 上已经装好；Jetson 只需要跑 agx 驱动，不装 drdds。
-
-```bash
-# ---- Jetson（10.21.31.201）：只起臂驱动 ----
-source /opt/ros/<distro>/setup.bash
-ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py \
-  can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true
-
-# ---- M20（10.21.31.103）：桥接 + IK + 键盘 + 策略（都在同一网络/domain）----
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py   # 桥接通路
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py     # IK（方案 A）
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py    # 键盘（另一个终端）
-ros2 run m20_sdk_deploy rl_deploy
-```
-
-**两种用法**（取决于你还想不想用 agx 自带的那套键盘）：
-
-| 方案 | 谁在下发臂命令 | `ee_goal` 从哪来 | 说明 |
-|---|---|---|---|
-| **A（推荐）** | 我们的 `arm_controller`(IK) + `arm_teleop_node`(键盘) | `arm_controller` 用 IK 目标发布 | 和 sim2sim 的 `mixed` 配置**完全同构**，先在仿真里调好再上真机 |
-| **B（保留你原来的键盘）** | agx 自带的键盘/示教 | `arm_real_adapter` 用 **FK** 从当前关节角算出末端位姿并发布 | 只想让策略"感知"臂、不改控制方式时用；`M20_ADAPTER_PUBLISH_EE=0` 可关掉 |
-
-> ⚠️ 方案 B 里那步 FK **不能不接**：策略观测里有 7 维 `ee_goal`，臂动了而没人更新它，
-> 策略就会一直以为臂在默认位姿 —— 观测与真机不一致（分布外）。
-
-**网络/环境要求**（跨机器最容易卡在这里）：
-
-1. 两边 **`ROS_DOMAIN_ID` 相同**（在你的机器人上就是 `unset` 后的默认值）；
-2. 两边 **`RMW_IMPLEMENTATION` 一致**（都用默认 fastrtps 最省事）；
-3. `ROS_LOCALHOST_ONLY` 不能是 1；
-4. 有线直连/同一交换机时组播默认可用；若发现不了，改用静态对端：
-   * CycloneDDS：`CYCLONEDDS_URI` 里写 `<Peers><Peer address="10.21.31.201"/></Peers>`
-   * Fast DDS：用 `FASTRTPS_DEFAULT_PROFILES_FILE` 指定 initial peers
-5. 在 M20 上确认能看到 agx 的话题：
-
-```bash
-ros2 topic list | grep -E "control/joint_states|feedback/joint_states"
-ros2 topic hz /feedback/joint_states      # 有频率
-```
-
-**验证桥接（不需要真臂也能先跑一遍逻辑）**：
-
-```bash
-python3 tests/arm_real_bridge_check.py    # 假反馈 → 检查 /ARM_JOINTS_DATA 与 ee_goal
-# 真机上再看一遍：
-ros2 topic echo --once /ARM_JOINTS_DATA   # 8 关节 = 当前臂姿态（±0.5 附近是默认）
-ros2 topic echo --once /ARM_TELEOP_STATE  # = 当前末端的 FK（root 系）
-```
-
-**安全**：训练里"臂大幅摆动"本身就有 9~15% 的 20 s 摔倒率（训练侧 s3），
-真机先从**小幅度、慢速**的臂动作开始，手放在急停上；臂一动底盘会被扰动是正常的，
-但出现持续倾斜/触发 `[TAKEOVER!]` 就先停下。
-
-### 只调机械臂（不开策略 / 不启动 rl_deploy）
-
-臂这条链路（桥接 + IK + 键盘）**和策略完全解耦**，可以先单独调：
-
-```bash
-# ---- sim2sim ----
-bash src/M20_sdk_deploy/scripts/run_sim2sim.sh arm     # 仿真 + IK + 键盘，不起 rl_deploy
-python3 tests/sim2sim_smoke.py --mode arm_only         # 同一件事的自动化验收
-
-# ---- 真机 ----
-# Jetson：agx_arm_ctrl（不变）
-# M20 电脑：三个节点，**不要**起 rl_deploy
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py   # 桥接
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py     # IK
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py    # 键盘（另一个终端）
-```
-
-**谁在发 `/ARM_JOINTS_CMD`**：没有 `rl_deploy` 时，唯一发布者是 `arm_controller` ——
-干净，不存在两个发布者抢话题。`/ARM_JOINTS_DATA` 由 adapter 提供（真机）或 MuJoCo 提供（仿真）。
-
-> ⚠️ **腿谁管**（真机才有的坑）：
-> * **不进 SDK 模式** → M20 自己的控制器撑着腿，臂随便调（**推荐**）；
-> * **进了 SDK 模式又不跑 `rl_deploy`** → 腿是零增益（软的、会塌）：要么把机器人
->   架起来/放地上，要么就让 `rl_deploy` 起来停在 idle（**不要按 `c`**）——它会用
->   idle 的保持命令把腿撑住，但不会跑策略。
-
-判据（`--mode arm_only` 已覆盖）：轻点 numpad 后末端跟着走（实测 +0.20 m）、
-IK 稳态残差 **0.63 mm**、底盘不摔。注意：一直按住会让目标顶到工作空间边缘，
-那时 IK 残差是结构性的（`DEF-022`），不适合用来判精度。
-
-### M20+Piper real arm (sim2real transport)
-
-On real hardware the same high-level nodes are used; only the arm transport
-changes. The AgileX Piper is driven by the external `agx_arm_ros` workspace
-(Jetson AGX Orin + CAN) instead of MuJoCo:
-
-```bash
-# 1. CAN + agx driver (external workspace, fast_mode for direct move_js servo)
-source ~/agx_arm_ws/install/setup.bash
-ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py \
-  can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true
-
-# 2. transport adapter (same ROS_DOMAIN_ID)
-python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py
-```
-
-`arm_real_adapter.py` maps `arm_joint1..6 + gripper_joint1/2` to the agx
-`/control/joint_states` protocol (`joint1..6` raw rad + `gripper` width, with
-width = q6 - q7) and maps `/feedback/joint_states` back into `/ARM_JOINTS_DATA`
-so arm_controller and rl_deploy need no code change. The rest of the teleop
-stack (arm_controller + arm_teleop + VR) is identical to the sim flow.
-
-
-# Sim-to-Real
-This process is almost identical to simulation-simulation. You only need to add the step of connecting to Wi-Fi to transfer data, and then modify the compilation instructions.Real-robot control is divided into keyboard mode and gamepad control mode. You need to modify the RemoteCommandType parameter in the main function to select the desired mode.
-
-
-**Please first use the OTA upgrade function in the handle settings to upgrade the hardware to version 1.1.8. We require a sdk authentication code to activate the sdk mode. Please contact our technical support team to get this unique code for each robot.**
-
-
-```bash
-
-# computer and gamepad should both connect to WiFi
-# WiFi: CA9B********
-# Passward: 12345678 (If wrong, contact technical support)
-# Note: If you are connected via the second WiFi, use 10.21.41.1 instead of 10.21.31.103
-#       for ssh/scp below. It is the same robot, only the IP differs per WiFi network.
-
-# scp to transfer files to quadruped (open a terminal on your local computer) password is ' (a single quote)
-# Note: drdds is already installed on the robot under /opt/ros/foxy, so we only copy M20_sdk_deploy.
-ssh user@10.21.31.103 'mkdir -p ~/M20_sdk_deploy/src'
-scp -r ~/sdk_deploy/src/M20_sdk_deploy user@10.21.31.103:~/M20_sdk_deploy/src
-
-# ssh connect for remote development, 
-ssh user@10.21.31.103
-cd M20_sdk_deploy
-source /opt/ros/foxy/setup.bash #source ROS2 env
-# Build only m20_sdk_deploy. Do NOT rebuild drdds on the robot —
-# the version under /opt/ros/foxy is the one the robot's services use.
-colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm
-
-
-sudo su # Root
-source /opt/ros/foxy/setup.bash #source ROS2 env
-source /opt/robot/scripts/setup_ros2.sh
-# Use the gamepad to enable SDK mode. Need authorization code, please contact technical support team.
-
-# Run
-source install/setup.bash
-ros2 run m20_sdk_deploy rl_deploy
-
-# exit sdk mode：
-# Use the gamepad to enable SDK mode.
-```
-
-### ⌨️ Keyboard Control
-- z： default position
-- c： rl control default position
-- x： lie down
-- wasd：forward/leftward/backward/rightward
-- qe：clockwise/counter clockwise
-
-### 🎮 Gamepad Control
-*(Note: When using the gamepad control function, please ensure that the Gamepad APP version is V1.5.11 or higher.)*
-![2838b054246d4700247b36207243258f](https://github.com/user-attachments/assets/ed4e8340-c1fe-4202-916a-84e80e537b7f)
-
-- L1： default position
-- L2： rl control default position
-- R1： lie down
-- R2： joint damping
-- Left joystick：forward/leftward/backward/rightward
-- Right joystick：clockwise/counter clockwise
+本项目基于 Deep Robotics M20 SDK 和 XLeVR 等第三方组件。
+许可证和第三方说明以仓库 `LICENSE` 及各 `third_party/` 目录为准。

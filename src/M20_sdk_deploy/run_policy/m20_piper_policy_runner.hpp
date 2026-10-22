@@ -35,7 +35,7 @@
  *   **动作里没有机械臂** —— 臂由 `arm_controller` 的 IK 从 `ee_pose` 命令驱动。
  *
  * 原生关节序（探针 `probe_deploy_layout.py` 在 M20_Piper_own 上的实测输出，
- * 2026-09-20；见 docs/sim2sim_layout_contract_zh.md 第 3 节）：
+ * 2026-09-20；见 docs/CONTRACT_zh.md）：
  *   0-3 fl/fr/hl/hr_hipx, 4 arm_joint1, 5-8 fl/fr/hl/hr_hipy, 9 arm_joint2,
  *   10-13 fl/fr/hl/hr_knee, 14 arm_joint3, 15-18 fl/fr/hl/hr_wheel,
  *   19-21 arm_joint4/5/6, 22-23 gripper_joint1/2

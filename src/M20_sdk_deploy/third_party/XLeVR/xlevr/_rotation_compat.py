@@ -11,7 +11,7 @@
     except ImportError:                                  # 没有就退到本文件
         from xlevr._rotation_compat import Rotation as R
 
-约定与 scipy 对齐（并用脚本逐项数值对照过，见 `docs/review/DEFECT_LOG_zh.md` DEF-043）：
+约定与 scipy 对齐（并用脚本逐项数值对照过，见 `docs/DEFECTS_zh.md` DEF-056）：
 
 * 四元数一律 **xyzw**（scipy 的约定）；
 * `from_euler("xyz", [a,b,c])`（**小写 = 外旋/extrinsic**，绕固定轴依次作用）

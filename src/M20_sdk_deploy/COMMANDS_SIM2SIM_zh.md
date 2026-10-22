@@ -3,7 +3,7 @@
 **这份文档只管"在仿真里跑，在宿主机粘哪条命令"。** 真机请用
 [`COMMANDS_SIM2REAL_zh.md`](COMMANDS_SIM2REAL_zh.md)。
 
-> **与旧版的区别**：主命令全是**宿主机一行式**（前面带 `docker exec`），
+> **与旧版的区别**：主命令全是**宿主机一行式**（前面带 `docker exec -it`），
 > 不用先 `docker exec -it bash` 进容器再敲。原理/接口/缺陷见
 > [`docs/README_zh.md`](../../docs/README_zh.md)，本文不重复。
 
@@ -34,22 +34,10 @@ DISPLAY=:1 xhost +local:
 `Authorization required, but no authorization protocol specified` /
 `Failed to open display :1` 就是这条被清掉了，重跑一次即可。
 
-### 0.2 少打字：定义 `m20()` 函数（**可选**）
+### 0.2 改过 C++ 之后重编
 
 ```bash
-m20() { docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec "$@"' _ "$@"; }
-```
-
-定义之后就能写 `m20 ros2 topic hz /JOINTS_DATA` 这种短形式（等价于把 `m20` 换成
-`docker exec -it m20_piper_ros bash -lc '...'` 那一长串）。
-**本文所有命令都给的是完整形式，不定义这个函数也能直接粘**；
-用 `"$@"` 透传是为了让**带空格的参数**（例如
-`m20 env MODES="hold rl" bash tests/run_all.sh`）也能正确送到容器里。
-
-### 0.3 改过 C++ 之后重编
-
-```bash
-docker exec m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && colcon build --packages-up-to m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && colcon build --packages-up-to m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=x86 -DSIM2SIM=ON'
 ```
 
 ---
@@ -66,7 +54,7 @@ docker exec m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/hum
 DISPLAY=:1 xhost +local:
 
 # 宿主机一条命令（窗口出现在 :1 上；时长 150 s，到期自动收工）
-docker exec -d m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && M20_SIM_INIT_POSE=M20 M20_IDLE_ZERO_GAIN=1 M20_STANDUP_VENDOR=1 python3 tests/sim2sim_smoke.py --mode rl --viewer --duration 150 --out /root/m20_piper_ws/tmp/temp_probe/visual'
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && M20_SIM_INIT_POSE=M20 M20_IDLE_ZERO_GAIN=1 M20_STANDUP_VENDOR=1 exec python3 tests/sim2sim_smoke.py --mode rl --viewer --duration 150 --out /root/m20_piper_ws/tmp/temp_probe/visual'
 ```
 
 **你会看到的时序**（= 厂商流程）：
@@ -75,7 +63,8 @@ docker exec -d m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/
 2. `z` → 站立状态机**厂商两段式**：先蹲到 `pre_height 0.12 m`，再升到 `stand_height 0.48 m`；
 3. `c` → 进 RL，停在站高 ≈0.51 m、`fl_hipx τ ≈ +15 N·m`（机器人保持水平，pitch ≈0°）。
 
-三个环境变量就是要复现"完全和原版一致"的那三处（见 `docs/review/DEFECT_LOG_zh.md` DEF-060 §5.5/§5.6）：
+三个环境变量就是要复现"完全和原版一致"的那三处（见
+[`docs/DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-060）：
 
 | 变量 | 这里设成 | 含义 |
 |---|---|---|
@@ -372,7 +361,8 @@ A4 每步结束会打印 `目标 / 实际 / 位置误差 / 姿态误差 / max|dq
 > 2. **不要同时起 `arm_teleop_node` / `arm_stub_node` / `arm_real_adapter`**：会和
 >    `arm_controller` 在 `/ARM_TELEOP`（或 `/ARM_JOINTS_DATA`、`/ARM_TELEOP_STATE`）
 >    上形成**两个发布者**，两路数据交替到达 —— 表现是"目标读数不变、臂不听使唤"，
->    见 `DEFECT_LOG_zh.md` DEF-045（本次就是一个 11 小时前残留的 `arm_stub_node` 干的）。
+>    见 [`DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-045
+>    （本次就是一个 11 小时前残留的 `arm_stub_node` 干的）。
 >    起之前可以先 `python3 src/M20_sdk_deploy/scripts/check_vr_arm_chain.py` 看发布者数量。
 > 3. 想看"腿也在走"的组合：A3 里按住 `w`（每 0.2 s 重复一次，键盘是"按住"语义）。
 
@@ -406,7 +396,7 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 | `--mode no_arm` | 无臂部署口径 | 观测里的臂项 = 0、`ee_goal` = 默认 |
 | `--mode arm_only` | 只调臂（无策略） | 末端位移 >0.03 m、IK 残差中位数 <3 mm |
 | `--mode arm_mixed` | 臂走独立传输 | 按键后观测里的臂项变化 >0.05 rad |
-| `--mode rl` / `walk` / `arm_move` | 进 RL / 行走 / 动臂 | 见 `docs/review/DONE_zh.md`（按失败率判，含入口瞬态） |
+| `--mode rl` / `walk` / `arm_move` | 进 RL / 行走 / 动臂 | 见 [`docs/STATUS_zh.md`](../../docs/STATUS_zh.md)（按失败率判，含入口瞬态） |
 | `--mode push` | **1500 N** 侧推 | 必须触发 `[TAKEOVER!]` 并切 `joint_damping`（800 N 打不倒当前平地模型，见 §9.3） |
 
 ---
@@ -499,10 +489,10 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 
 ```bash
 # 有没有残留（空 = 干净）
-docker exec m20_piper_ros bash -lc 'ps -eo pid,args | grep -E "rl_deploy|mujoco_simulation|arm_controller|arm_teleop|run_sim2sim" | grep -v grep'
+docker exec -it m20_piper_ros bash -lc 'ps -eo pid,args | grep -E "rl_deploy|mujoco_simulation|arm_controller|arm_teleop|run_sim2sim" | grep -v grep'
 
 # 全清（按精确路径杀；^ 锚点很关键）
-docker exec m20_piper_ros bash -lc "pkill -9 -f '^/root/m20_piper_ws/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'; pkill -9 -f '^python3 src/M20_sdk_deploy/interface/robot/simulation/'"
+docker exec -it m20_piper_ros bash -lc "pkill -9 -f '^/root/m20_piper_ws/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy'; pkill -9 -f '^python3 src/M20_sdk_deploy/interface/robot/simulation/'"
 ```
 
 > ⚠️ 用 `pkill -f <关键字>` 时，如果关键字也出现在**你自己这条命令**里，会把执行这条
@@ -528,7 +518,7 @@ docker exec m20_piper_ros bash -lc "pkill -9 -f '^/root/m20_piper_ws/install/m20
 docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=1 && exec ros2 service call /reset_sim std_srvs/srv/Empty'
 ```
 
-**相关文档**：接口契约 [`docs/sim2sim_layout_contract_zh.md`](../../docs/sim2sim_layout_contract_zh.md)、
-缺陷与实测 [`docs/review/DEFECT_LOG_zh.md`](../../docs/review/DEFECT_LOG_zh.md) /
-[`docs/review/DONE_zh.md`](../../docs/review/DONE_zh.md)、开关登记
-[`docs/review/WORKFLOW_zh.md`](../../docs/review/WORKFLOW_zh.md) §6.1。
+**相关文档**：接口契约 [`docs/CONTRACT_zh.md`](../../docs/CONTRACT_zh.md)、
+当前状态 [`docs/STATUS_zh.md`](../../docs/STATUS_zh.md)、开发约定
+[`docs/DEVELOPMENT_zh.md`](../../docs/DEVELOPMENT_zh.md)、
+历史缺陷 [`docs/DEFECTS_zh.md`](../../docs/DEFECTS_zh.md)。
