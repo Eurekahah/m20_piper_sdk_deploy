@@ -11,7 +11,7 @@
 | 角色 | 运行内容 |
 |---|---|
 | 开发机 + 容器 `m20_piper_ros` | x86 sim2sim、aarch64 交叉编译、测试 |
-| M20 上位机（ROS 2 Foxy） | `rl_deploy`、`arm_controller`、`arm_teleop_node`、`arm_real_adapter`、`vr_teleop_node` |
+| M20 上位机（ROS 2 Foxy） | `keyboard_teleop_supervisor.py` 统一托管 `rl_deploy`、`arm_controller`、`arm_teleop_node`、`arm_real_adapter`；`vr_teleop_node` 独立 |
 | Jetson | `agx_arm_ctrl`，负责 Piper 机械臂 CAN 通信 |
 | VR 头显 | 浏览器访问上位机的 `https://<IP>:8443` |
 
@@ -137,7 +137,7 @@ ros2 topic echo --once /JOINTS_DATA
 | 终端 | 命令 |
 |---|---|
 | T1 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py` |
-| T2 | `ros2 run m20_sdk_deploy rl_deploy` |
+| T2 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile legs` |
 
 检查假臂数据：
 
@@ -154,8 +154,8 @@ ros2 topic echo --once /ARM_TELEOP_STATE
 当前默认：
 
 - idle 零增益，机器人处于软状态。
-- 按 `z` 使用厂商两段式站立。
-- 按 `c` 进入 RL，策略收敛到训练默认姿态。
+- 按 `z` 使用厂商两段式站立：两段各 1.5 s，腿增益保持厂商 `200/4`。
+- 按 `c` 进入 RL，策略从厂商站姿收敛到训练默认姿态。
 - 按 `r` 进入关节阻尼，按 `x` 趴下。
 
 厂商站立结束位姿与训练 RL 位姿不同，按 `c` 后会主动调整姿态。该切换是当前已知风险，
@@ -171,12 +171,23 @@ M20_TILT_TAKEOVER=0.5 M20_LEG_FOLD_TAKEOVER=0.5 \
 
 ## 6. 阶段 B：接机械臂
 
+先停止阶段 A 的统一控制终端，避免同时出现两个 `rl_deploy`。Jetson 驱动仍单独占
+T1，上位机的 adapter、IK、臂键盘和策略合并到 T2：
+
 | 终端 | 机器 | 命令 |
 |---|---|---|
-| T3 | Jetson | `ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true` |
-| T4 | 上位机 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T5 | 上位机 | `M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py` |
-| T6 | 上位机 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py` |
+| T1 | Jetson | `ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true` |
+| T2 | 上位机 | `M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real` |
+
+监督器依次启动 adapter、IK、臂键盘，延迟 1 s 后启动 `rl_deploy`。日志前缀分别为
+`[adapter]`、`[ik]`、`[arm]`、`[rl]`。直接在 T2 按键盘：
+
+- `z` 站立、`c` 进 RL、`r` 阻尼、`x` 趴下。
+- `W/S/A/D/Q/E` 控制底盘速度，`H/J/B/N/[/]` 控制机身姿态。
+- 小键盘控制机械臂末端，`G` 切换夹爪，`L` 同时复位机身/臂目标。
+
+任一节点异常退出时监督器会停止其余节点；正常收工仍先按 `r`、`x`，再按
+`Ctrl+C` 或 `ESC` 停止整组。
 
 跨机检查：
 
@@ -271,7 +282,7 @@ python3 src/M20_sdk_deploy/scripts/check_vr_arm_chain.py --seconds 8
 退出顺序：
 
 ```text
-r 关节阻尼 → x 趴下 → 停 VR → 停机械臂遥操作/IK/adapter → 停 rl_deploy → 退出 SDK 模式
+r 关节阻尼 → x 趴下 → 停 VR → 在统一控制终端按 Ctrl+C/ESC（一并停臂键盘/IK/adapter/rl_deploy）→ 退出 SDK 模式
 ```
 
 ## 10. 排障

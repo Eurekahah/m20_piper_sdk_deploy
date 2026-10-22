@@ -14,7 +14,11 @@
 
 ```
 [Jetson AGX Orin  10.21.31.201]            [M20 电脑  10.21.31.103]
-  agx_arm_ctrl（CAN → Piper 臂）             rl_deploy（策略）/ arm_controller（IK）
+  agx_arm_ctrl（CAN → Piper 臂）             统一控制监督器
+                                                   ├─ rl_deploy（策略）
+                                                   ├─ arm_controller（IK）
+                                                   ├─ arm_teleop_node（键盘）
+                                                   └─ arm_real_adapter（真臂桥接）
       ↑ /control/joint_states  (sensor_msgs)      ↑ /ARM_JOINTS_DATA (drdds)
       ↓ /feedback/joint_states (sensor_msgs)      ↑ /ARM_TELEOP_STATE (std_msgs)
             └───────── 有线网络 / 同一个 DDS domain ─────────┘
@@ -148,6 +152,39 @@ ros2 topic hz /JOINTS_DATA          # 应 ~200 Hz
 若只看到 `/rosout`、`/parameter_events` → `ROS_DOMAIN_ID` 不一致（`unset ROS_DOMAIN_ID` 再试）、
 RMW 不一致、或机器人服务没起。
 
+### 0.6 上位机统一控制终端
+
+真机上位机原来要分别开 adapter、IK、臂键盘和 `rl_deploy`。现在这四者由一个监督器
+按顺序启动，仍只占一个终端：
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+source install/setup.bash
+
+python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py \
+  --profile real
+```
+
+按键分工：
+
+* `W/S/A/D/Q/E`、`Z/C/R/X`、`H/J/B/N/[/]` → `rl_deploy`
+* 小键盘 → `arm_teleop_node.py`
+* `G/L` → 腿和臂同时处理
+
+日志带 `[adapter]`、`[ik]`、`[arm]`、`[rl]` 前缀。任一节点异常退出会一起收工；
+正常收工仍应先按 `r` 阻尼、按 `x` 趴下，再按 `Ctrl+C` 或 `ESC`。
+
+常见裁剪：
+
+| 场景 | 参数 |
+|---|---|
+| 只调臂，不跑策略 | `--profile real --no-deploy` |
+| 只感知臂，策略仍运行 | `--profile real --no-arm-controller --no-arm-teleop` |
+| 已经手动起了 IK | `--profile real --no-arm-controller` |
+| 已经手动起了 adapter | `--profile real --no-arm-adapter` |
+
 ---
 
 ## 场景 1：只部署 M20（**没装机械臂**）
@@ -157,7 +194,7 @@ RMW 不一致、或机器人服务没起。
 | 终端 | 命令 | 说明 |
 |---|---|---|
 | T1 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py` | 假臂：200 Hz 发 `/ARM_JOINTS_DATA`（默认姿态）+ 50 Hz 发 `/ARM_TELEOP_STATE` |
-| T2 | `ros2 run m20_sdk_deploy rl_deploy` | `z` 站立 → `c` 进 RL |
+| T2 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile legs` | `z` 站立 → `c` 进 RL |
 
 **检查点**
 
@@ -179,9 +216,7 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # (0.3492,0,0.4327,-0.7373,0,-0.6756
 | 终端 | 机器 | 命令 |
 |---|---|---|
 | T1 | Jetson | `ros2 launch agx_arm_ctrl start_single_agx_arm.launch.py can_port:=can0 arm_type:=piper effector_type:=agx_gripper fast_mode:=true` |
-| T2 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T3 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py`（IK；不给输入时把臂带到默认位姿并保持） |
-| T4 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py`（键盘；`Ctrl+C` 或 `ESC` 退出） |
+| T2 | M20 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real --no-deploy`（adapter + IK + 键盘） |
 
 **腿怎么办（真机特有）**：
 
@@ -210,8 +245,7 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # ≈ (0.349,0,0.433,0.737,0,0.676,0
 |---|---|---|
 | T1 | Jetson | agx 驱动（同场景 2 的 T1） |
 | T2 | Jetson | 你原来的 agx 键盘/示教（保持不变） |
-| T3 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T4 | M20 | `ros2 run m20_sdk_deploy rl_deploy`（`z` → `c`） |
+| T3 | M20 | `python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real --no-arm-controller --no-arm-teleop`（adapter + 策略） |
 
 **检查点**：手动画臂时 `/ARM_JOINTS_DATA` 与 `/ARM_TELEOP_STATE` 都跟着变
 （`M20_ADAPTER_PUBLISH_EE=0` 可关掉 FK 那条）。
@@ -226,13 +260,13 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # ≈ (0.349,0,0.433,0.737,0,0.676,0
 | 终端 | 机器 | 命令 |
 |---|---|---|
 | T1 | Jetson | agx 驱动（同场景 2 的 T1） |
-| T2 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_real_adapter.py` |
-| T3 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py` |
-| T4 | M20 | `python3 src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py` |
-| T5 | M20 | `ros2 run m20_sdk_deploy rl_deploy`（`z` → `c`） |
+| T2 | M20 | `M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real` |
 
 **注意**：进 RL 时 `rl_deploy` **不会**再抢 `/ARM_JOINTS_CMD`（检测到 `arm_controller`
-在发就跳过"默认位姿保持"命令，`DEF-026`），日志里会打印那一行。
+在发就跳过"默认位姿保持"命令，`DEF-026`），日志里会打印那一行。监督器会先启动
+adapter/IK/臂键盘，再延迟 1 s 启动策略，保持这个检测时序。
+
+需要 VR 时只为 `vr_teleop_node.py` 另开 T3；它不要和其余节点挤在监督器里。
 
 **安全**：臂大幅摆动时底盘会被扰动（训练里 s3 阶段本身有 9~15% 的 20 s 摔倒率），
 先从**小幅度、慢速**开始；出现持续倾斜或 `[TAKEOVER!]` 就停手。

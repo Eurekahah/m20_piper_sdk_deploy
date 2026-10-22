@@ -132,6 +132,8 @@ def check_build() -> None:
 def check_scripts() -> None:
     print("\n[3] 节点脚本")
     for name, path in (
+        ("keyboard_teleop_supervisor.py（统一控制）",
+         PKG / "scripts/keyboard_teleop_supervisor.py"),
         ("arm_stub_node.py（无臂时用）", PKG / "interface/robot/simulation/arm_stub_node.py"),
         ("arm_controller.py（有臂、要动）", PKG / "interface/robot/simulation/arm_controller.py"),
         ("arm_teleop_node.py（臂键盘）", PKG / "interface/robot/simulation/arm_teleop_node.py"),
@@ -205,14 +207,17 @@ def main() -> int:
     if pol.get("needs_arm") is True:
         print("  策略**需要**机械臂数据（观测 24 关节 + ee_goal）。")
         if topics.get("/ARM_JOINTS_DATA"):
-            print("  → 臂反馈已经在发（真臂 or 假臂节点），直接跑 rl_deploy 即可。")
+            print("  → 臂反馈已经在发（真臂 or 假臂节点），可直接启动统一控制终端。")
         else:
             print("  → 臂没装/没上电：**先起假臂节点**")
             print("     python3 src/M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py")
         print("  然后：")
-        print("     ros2 run m20_sdk_deploy rl_deploy     # 键盘 z 站立 → c 进 RL")
+        print("     python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py "
+              "--profile real     # z 站立 → c 进 RL")
     elif pol.get("needs_arm") is False:
-        print("  策略**不需要**机械臂数据 → 直接部署腿（不需要假臂节点）。")
+        print("  策略**不需要**机械臂数据 → 直接部署腿（不需要假臂节点）：")
+        print("     python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py "
+              "--profile legs")
     else:
         print("  策略布局无法识别，见上面 [1] 的说明。")
 

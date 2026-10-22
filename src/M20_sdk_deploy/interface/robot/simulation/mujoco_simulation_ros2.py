@@ -283,7 +283,13 @@ class MuJoCoSimulationNode(Node):
         # ROS Publishers
         self.imu_pub = self.create_publisher(ImuData, IMU_TOPIC, 200)
         self.joints_pub = self.create_publisher(JointsData, LEG_DATA_TOPIC, 200)
-        self.arm_joints_pub = self.create_publisher(JointsData, ARM_DATA_TOPIC, 200)
+        # mixed/legs 配置由 arm_stub 或真机 adapter 提供臂反馈。此时连 publisher
+        # endpoint 也不要创建，否则 ros2 topic info 会看到两个发布者，虽然后者
+        # 不发消息，仍会让现场排障误判为 DEF-045 的双发布者。
+        self.arm_joints_pub = None
+        if not NO_ARM_DATA:
+            self.arm_joints_pub = self.create_publisher(
+                JointsData, ARM_DATA_TOPIC, 200)
 
         # ROS Subscribers
         self.cmd_sub = self.create_subscription(

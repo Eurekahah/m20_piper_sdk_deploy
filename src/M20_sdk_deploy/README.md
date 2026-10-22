@@ -103,7 +103,9 @@ docker exec -it m20_piper_ros bash -lc '
 - `r`：关节阻尼。
 - `x`：趴下。
 
-完整多终端流程见 [COMMANDS_SIM2SIM_zh.md](COMMANDS_SIM2SIM_zh.md)。
+实际部署时，仿真单独一个终端；策略、IK 和臂键盘由
+`src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py` 合并到另一个终端。
+完整分场景流程见 [COMMANDS_SIM2SIM_zh.md](COMMANDS_SIM2SIM_zh.md)。
 
 ### 真机
 
@@ -112,9 +114,10 @@ docker exec -it m20_piper_ros bash -lc '
 ```bash
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
 python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py
-ros2 run m20_sdk_deploy rl_deploy
+python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real
 ```
 
+`--profile real` 会统一启动真臂 adapter、IK、臂键盘和策略；VR 节点仍单独运行。
 真机首跑、机械臂和 VR 的完整步骤见
 [DEPLOY_zh.md](../../docs/DEPLOY_zh.md)。
 
@@ -126,6 +129,9 @@ bash tests/run_all.sh
 
 # 策略接口
 python3 src/M20_sdk_deploy/scripts/check_policy_interface.py
+
+# 统一键盘监督器按键分流与退出
+python3 tests/keyboard_teleop_supervisor_check.py
 
 # MJCF 与训练参数对照
 python3 src/M20_sdk_deploy/scripts/check_mjcf_contract.py

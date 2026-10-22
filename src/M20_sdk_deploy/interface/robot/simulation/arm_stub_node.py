@@ -17,10 +17,12 @@
 * 以 200 Hz 发布 `/ARM_JOINTS_DATA`：8 个关节 = 训练默认姿态
   （`arm_joint1..6 = 0, 0.5, -0.5, 0, 0, 0`，夹爪 `0, 0`），速度/力矩为 0，
   `status_word = 1`（正常）、`control_word = kIndexMotorControl(4)`；
-* 以 50 Hz 发布 `/ARM_TELEOP_STATE`：该默认姿态下 `gripper_base` 在
+* **静态模式**以 50 Hz 发布 `/ARM_TELEOP_STATE`：该默认姿态下 `gripper_base` 在
   **root 系**的位姿 `(0.3492, 0, 0.4326)` + 四元数 `(-0.7373, 0, -0.6756, 0)`
   （由 `scripts/check_mjcf_contract.py` 实测；符号必须与训练/链式 FK 一致，
   见 DEF-039 —— 这是策略观测的原始分量，不能写成 +0.7373）；
+  **跟随模式**只发关节反馈，EE 目标必须由 `arm_controller` 发布，避免双发布者
+  （DEF-045）。
 * 订阅 `/ARM_JOINTS_CMD` 并丢弃（可选打印），这样即使有人误起
   `arm_controller`，也不会因为"没人接收"而困惑。
 
@@ -96,18 +98,28 @@ class ArmStubNode(Node):
         self.last_cmd_time = self.get_clock().now()
 
         self.data_pub = self.create_publisher(JointsData, "/ARM_JOINTS_DATA", 10)
-        self.state_pub = self.create_publisher(Float32MultiArray, "/ARM_TELEOP_STATE", 10)
+        # 跟随模式只模拟 CAN 驱动器的"关节反馈"。EE 目标必须由 arm_controller
+        # 单独发布；否则 /ARM_TELEOP_STATE 会有两个发布者，策略观测在默认位姿
+        # 和真实 IK 目标之间交替（DEF-045）。
+        self.state_pub = None
+        if not self.follow:
+            self.state_pub = self.create_publisher(
+                Float32MultiArray, "/ARM_TELEOP_STATE", 10)
         self.cmd_sub = self.create_subscription(
             JointsDataCmd, "/ARM_JOINTS_CMD", self._cmd_cb, 10)
 
         self.create_timer(1.0 / self.rate, self._publish_data)
-        self.create_timer(0.02, self._publish_state)          # 50 Hz，与 arm_controller 一致
+        if self.state_pub is not None:
+            self.create_timer(0.02, self._publish_state)      # 50 Hz，与 arm_controller 一致
 
         print("[arm_stub] 假臂节点启动（臂没装时用）")
         print("[arm_stub] /ARM_JOINTS_DATA  = "
               + " ".join("%+.3f" % v for v in self.pose) + " @ %.0f Hz" % rate)
-        print("[arm_stub] /ARM_TELEOP_STATE = "
-              + " ".join("%+.4f" % v for v in self.ee_goal) + " (root 系)")
+        if self.state_pub is not None:
+            print("[arm_stub] /ARM_TELEOP_STATE = "
+                  + " ".join("%+.4f" % v for v in self.ee_goal) + " (root 系)")
+        else:
+            print("[arm_stub] 跟随模式不发布 /ARM_TELEOP_STATE（由 arm_controller 发布）")
         if self.debug:
             print("[arm_stub] 会以 1 Hz 打印收到的 /ARM_JOINTS_CMD（丢弃）")
         if self.follow:
@@ -136,6 +148,8 @@ class ArmStubNode(Node):
         self.data_pub.publish(msg)
 
     def _publish_state(self) -> None:
+        if self.state_pub is None:
+            return
         msg = Float32MultiArray()
         msg.data = [float(v) for v in self.ee_goal]
         self.state_pub.publish(msg)

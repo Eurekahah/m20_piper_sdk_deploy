@@ -32,6 +32,10 @@ step "L1 离线策略验收"
 python3 "$SCRIPTS/check_policy_interface.py"
 report $? "check_policy_interface.py"
 
+step "L1 统一键盘控制终端"
+python3 tests/keyboard_teleop_supervisor_check.py
+report $? "keyboard_teleop_supervisor_check.py"
+
 step "L3' MJCF 与训练配置对照"
 python3 "$SCRIPTS/check_mjcf_contract.py"
 report $? "check_mjcf_contract.py"

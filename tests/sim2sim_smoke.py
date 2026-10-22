@@ -114,6 +114,7 @@ def killer(proc):
 OUR_MARKERS = ("M20_sdk_deploy/interface/robot/simulation/mujoco_simulation_ros2.py",
                "M20_sdk_deploy/interface/robot/simulation/arm_controller.py",
                "M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py",
+               "M20_sdk_deploy/interface/robot/simulation/arm_stub_node.py",
                "lib/m20_sdk_deploy/rl_deploy")
 
 
@@ -246,8 +247,48 @@ def analyse(csv_path: Path):
             arm_tau = max(arm_tau, abs(float(r[f"tau{name_i}"])))
     out["arm_dev"] = arm_dev
     out["arm_tau_max"] = arm_tau
-    out["fell_at"] = next((out["t"][i] for i in range(n)
-                           if out["tilt"][i] > TILT_LIMIT or out["height"][i] < HEIGHT_LIMIT), None)
+    # 厂商流程从折叠坐姿开始，训练姿态档在 rl_deploy 接管前也可能短暂下沉。
+    # 前 5 s 只视为启动/接管过渡；之后要求连续 0.5 s 处于直立包线，才真正开始判摔。
+    out["upright_at"] = None
+    out["fell_at"] = None
+    upright_seen = False
+    upright_start_i = None
+    check_start_i = next((i for i in range(n) if out["t"][i] >= 5.0), n)
+    for i in range(check_start_i, n):
+        good = (out["tilt"][i] <= TILT_LIMIT and
+                out["height"][i] >= HEIGHT_LIMIT)
+        if not good:
+            upright_start_i = None
+            continue
+        if upright_start_i is None:
+            upright_start_i = i
+        if out["t"][i] - out["t"][upright_start_i] >= 0.5:
+            upright_seen = True
+            out["upright_at"] = out["t"][upright_start_i]
+            upright_end_i = i
+            break
+    if upright_seen:
+        n = len(out["t"])
+        for i in range(upright_end_i + 1, n):
+            if out["tilt"][i] > TILT_LIMIT or out["height"][i] < HEIGHT_LIMIT:
+                out["fell_at"] = out["t"][i]
+                break
+    out["stand_vz_max"] = None
+    if out["upright_at"] is not None:
+        # 站立/交接在按键后数秒完成；上限截到 11.5 s，避免把之后策略发散
+        # 造成的翻滚混入站立诊断。
+        end_t = min(out["upright_at"] + 1.0, 11.5)
+        # 直接从 CSV 计算，避免 height 中的轮心补偿引入额外噪声。
+        vz = []
+        for i in range(max(1, check_start_i), n - 1):
+            if out["t"][i] > end_t:
+                break
+            dt = out["t"][i + 1] - out["t"][i - 1]
+            if dt > 1e-9:
+                z0 = float(rows[i - 1]["base_z"])
+                z1 = float(rows[i + 1]["base_z"])
+                vz.append(abs((z1 - z0) / dt))
+        out["stand_vz_max"] = max(vz) if vz else None
     return out
 
 
@@ -269,8 +310,19 @@ def main() -> int:
 
     if args.repeat > 1:
         import subprocess as _sp
-        cmd = [sys.executable, __file__] + [a for a in sys.argv[1:] if a != "--repeat"
-                                            and a != str(args.repeat)] + ["--repeat", "1"]
+        child_args = []
+        skip_value = False
+        for arg in sys.argv[1:]:
+            if skip_value:
+                skip_value = False
+                continue
+            if arg == "--repeat":
+                skip_value = True
+                continue
+            if arg.startswith("--repeat="):
+                continue
+            child_args.append(arg)
+        cmd = [sys.executable, __file__, *child_args, "--repeat", "1"]
         fails = 0
         for i in range(args.repeat):
             print(f"--- repeat {i + 1}/{args.repeat} ---")
@@ -353,8 +405,8 @@ def main() -> int:
         env.setdefault("M20_SIM_PUSH_AT", "12")
         env.setdefault("M20_SIM_PUSH_DURATION", "0.3")
 
-    sim = deploy = arm = teleop = None
-    sim_f = dep_f = arm_f = tel_f = None
+    sim = deploy = arm = teleop = stub = None
+    sim_f = dep_f = arm_f = tel_f = stub_f = None
     try:
         print(f"[smoke] mode={args.mode} duration={args.duration}s out={out_prefix}*")
         sim, sim_f = spawn([sys.executable, str(SIM)], env, sim_log)
@@ -397,19 +449,18 @@ def main() -> int:
             if args.mode == "arm_mixed":
                 # 假 CAN 驱动（跟随模式）+ IK 节点 + 键盘，臂的链路与真机同构
                 stub_log = out_prefix.with_suffix(".stub.log")
-                arm, arm_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
+                stub, stub_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
                 time.sleep(1.0)
                 ctrl_log = out_prefix.with_suffix(".arm.log")
-                ctrl, ctrl_f = spawn([sys.executable, str(ARM)], env, ctrl_log)
+                arm, arm_f = spawn([sys.executable, str(ARM)], env, ctrl_log)
                 time.sleep(1.0)
-                arm = ctrl            # 让清理逻辑收掉 arm_controller
                 teleop_log = out_prefix.with_suffix(".arm_teleop.log")
                 teleop, tel_f = spawn([sys.executable, str(ARM_TELEOP)], env,
                                       teleop_log, stdin=subprocess.PIPE)
                 time.sleep(1.0)
             if args.mode == "no_arm" and not args.no_stub:
                 stub_log = out_prefix.with_suffix(".stub.log")
-                arm, arm_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
+                stub, stub_f = spawn([sys.executable, str(ARM_STUB)], env, stub_log)
                 time.sleep(1.0)
             if args.mode in ("arm", "arm_move"):
                 # IK 节点：它会把 /ARM_JOINTS_CMD 与 /ARM_TELEOP_STATE 接起来，
@@ -439,8 +490,12 @@ def main() -> int:
             t_start = time.time()
             press(b"z")
             print("[smoke] sent 'z' (stand up)")
+            # 当前站立状态机保持修改前实现：厂商档两段各 1.5 s。测试等它
+            # 完成后发送 c，避免日志看起来像在站立中途进了 RL。
+            stand_done_s = 4.0
+            rl_action_s = 4.5
             if args.mode != "stand":
-                time.sleep(4.0)                  # stand_duration = 2 s，留余量
+                time.sleep(stand_done_s)
                 press(b"c")
                 print("[smoke] sent 'c' (RL control)")
 
@@ -450,14 +505,14 @@ def main() -> int:
                     # 进 RL **之后**再给速度命令（步进命令在训练分布内，但入场瞬间
                     # 就带着命令会明显放大入口瞬态，DEF-018）。键盘是"按住"语义，
                     # 需要每 0.2 s 重复一次。
-                    if time.time() - t_start > 4.5:
+                    if time.time() - t_start > rl_action_s:
                         press(b"w")
                 if args.mode in ("arm_move", "arm_mixed"):
                     # 进 RL 之后**短按** numpad 8（EE +x）：等 2 s 让策略接管稳定，
                     # 按住 1.5 s 把臂挪出去，然后松开 —— 之后的稳态 IK 残差才是
                     # "跟踪精度"（一直按住会撞到工作空间限位，残差是结构性的）。
                     el = time.time() - t_start
-                    if 4.5 < el < 4.9:
+                    if rl_action_s < el < rl_action_s + 0.4:
                         if t_arm is None:
                             t_arm = el
                             print("[smoke] holding numpad 8 (EE +x) for 0.4 s (after RL entry; 不要一直按住 —— 会撞到工作空间限位)")
@@ -471,8 +526,9 @@ def main() -> int:
         killer(deploy)
         killer(teleop)
         killer(arm)
+        killer(stub)
         killer(sim)
-        for f in (sim_f, dep_f, arm_f, tel_f):
+        for f in (sim_f, dep_f, arm_f, tel_f, stub_f):
             try:
                 if f:
                     f.close()
@@ -480,7 +536,8 @@ def main() -> int:
                 pass
         # 等进程真的退干净，避免下一个用例被上一个的残留影响
         for _ in range(50):
-            procs = [p for p in (sim, deploy, arm, teleop) if p is not None]
+            procs = [p for p in (sim, deploy, arm, teleop, stub)
+                     if p is not None]
             if all(p.poll() is not None for p in procs):
                 break
             time.sleep(0.1)
@@ -509,6 +566,9 @@ def main() -> int:
     print(f"  height  : min {info['height_min']:.3f} m, 后半段均值 {info['height_tail_mean']:.3f} m")
     print(f"  tilt    : max {math.degrees(info['tilt_max']):.1f}°, "
           f"后半段 max {math.degrees(info['tilt_max_tail']):.1f}°")
+    if info.get("stand_vz_max") is not None:
+        print(f"  站立抬升诊断（不参与验收）: "
+              f"max |base_z 速度| {info['stand_vz_max']:.3f} m/s")
     if args.mode == "walk":
         print(f"  vx(后半段): {info['vx_tail']:+.3f} m/s  （键盘命令 +0.7 m/s）")
     if args.mode in ("arm", "arm_move"):
@@ -542,7 +602,7 @@ def main() -> int:
                   f"末端 x 位移 {info['ee_dx']:+.4f} m")
             if med > 0.003:
                 fails.append(f"arm_only：IK 稳态残差（中位数）{med * 1000:.2f} mm >= 3 mm")
-    if args.mode not in ("hold", "wheel_step", "arm_only"):
+    if args.mode not in ("hold", "stand", "wheel_step", "arm_only"):
         need_rows = int(max(args.duration - 4.0, 5.0) * 100)
         if info["n"] < need_rows:
             fails.append(f"遥测行数太少（{info['n']} < {need_rows}）：仿真或 rl_deploy 提前挂了")
