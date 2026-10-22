@@ -77,6 +77,8 @@
   腿/状态机键只发给 `rl_deploy`，小键盘只发给 `arm_teleop_node.py`，`G/L` 双发。
 - 提供 `sim`、`real`、`arm`、`legs` 四种组合；任一子节点异常退出会停止整组，
   避免残留第二发布者。
+- 启动前等待关键反馈话题就绪并要求单发布者；只检查本次 profile 实际托管的节点，
+  因此 `--no-arm-controller` 等复用已启动组件的用法不会被误拒绝。
 - `run_sim2sim.sh` 的 `arm`/`mixed` 配置不再重复启动 IK；真实部署时 Jetson 驱动
   仍占一个终端，M20 上位机的 adapter/IK/臂键盘/策略收敛为一个控制终端。
 

@@ -48,6 +48,11 @@ LEG_KEYS = frozenset("wasdqerzc xhjnb[]".replace(" ", ""))
 ARM_KEYS = frozenset("0123456789.+-")
 BOTH_KEYS = frozenset("gl")
 STOP_BYTES = frozenset((b"\x03", b"\x1b"))
+NODE_PROCESS_MARKERS = {
+    "rl": "/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy",
+    "ik": "/interface/robot/simulation/arm_controller.py",
+    "arm": "/interface/robot/simulation/arm_teleop_node.py",
+}
 
 
 @dataclass(frozen=True)
@@ -154,12 +159,21 @@ def wait_for_topic_publishers(topic: str, timeout_s: float) -> int | None:
     return None
 
 
-def existing_node_processes() -> list[str]:
-    markers = (
-        "/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy",
-        "/interface/robot/simulation/arm_controller.py",
-        "/interface/robot/simulation/arm_teleop_node.py",
+def process_labels(cmdline: str) -> tuple[str, ...]:
+    return tuple(
+        label for label, marker in NODE_PROCESS_MARKERS.items()
+        if marker in cmdline
     )
+
+
+def existing_node_processes(labels: Iterable[str]) -> list[str]:
+    wanted = set(labels)
+    markers = tuple(
+        marker for label, marker in NODE_PROCESS_MARKERS.items()
+        if label in wanted
+    )
+    if not markers:
+        return []
     found = []
     for proc_path in Path("/proc").iterdir():
         if not proc_path.name.isdigit() or int(proc_path.name) == os.getpid():
@@ -400,7 +414,8 @@ class KeyboardSupervisor:
                 return 2
             print(f"[supervisor] {topic} 已就绪（1 个发布者）", flush=True)
 
-        existing = existing_node_processes()
+        existing = existing_node_processes(
+            spec.label for spec in self._specs)
         if existing:
             print("[supervisor] 检测到已运行的控制节点；请先清理：", file=sys.stderr)
             for line in existing:

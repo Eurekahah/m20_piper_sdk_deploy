@@ -727,6 +727,20 @@ VR 仍保持激活（2026-10-10 起的旧默认），只能反向推手柄把它
 `/ARM_TELEOP_STATE` 均只有 1 个发布者；按小键盘 8 后 EE x 从 0.349 m 到
 0.531 m，Ctrl+C 后无残留进程。
 
+**6. 2026-10-22 启动竞态：正式两终端流程缺少 smoke 的清理与就绪门禁**
+
+`sim2sim_smoke.py` 启动前会清理残留节点，并等待 MuJoCo 稳定后才拉起
+`rl_deploy`；正式流程 `run_sim2sim.sh + keyboard_teleop_supervisor.py` 最初没有
+同等的保护，监督器只固定等待 1 s。若上一轮残留了 MuJoCo 或策略进程，可能出现
+两路 `/JOINTS_CMD` 同时发布，外观表现为机器人自行弹跳、抽动或控制权来回切换。
+
+修正：
+
+* `run_sim2sim.sh` 在启动前检测残留 MuJoCo / `rl_deploy`，默认拒绝第二套实例；
+* supervisor 等待 `/JOINTS_DATA`、`/ARM_JOINTS_DATA`，并要求反馈话题单发布者；
+* supervisor 只检查当前 profile 真正准备启动的进程。`--no-arm-controller` 复用手动
+  IK 时不会误报；若不加该参数，检测到已有 IK 会拒绝启动。
+
 ---
 
 ### DEF-044 `2026-10-12` VR 臂跟随在默认站姿上解不出目标，却把"顶在限位上的解"当命令发出去 ⇒ 臂自己甩（20 rad/s / 139 N·m）

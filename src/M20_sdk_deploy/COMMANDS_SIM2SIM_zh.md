@@ -61,6 +61,16 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && exec python3 sr
 日志分别带 `[ik]`、`[arm]`、`[rl]` 前缀；任一子节点异常退出时，其余节点会一起停止。
 `Ctrl+C` 或 `ESC` 统一退出。
 
+正式启动前监督器会：
+
+- 等待 `/JOINTS_DATA`、`/ARM_JOINTS_DATA` 就绪；
+- 要求关键反馈话题只有一个发布者；
+- 检查本次 profile 真正要启动的 `rl_deploy`/IK/臂键盘是否已有同名进程。
+
+`run_sim2sim.sh` 也会拒绝在残留 MuJoCo 或 `rl_deploy` 存在时启动第二套实例。
+调试时可用 `--readiness-timeout` 调整等待时间；只在明确知道风险时才用
+`--no-readiness-check` 跳过检查。
+
 ---
 
 ## 1. 场景 A：全仿真（腿 + 臂都来自 MuJoCo）—— 最常用
@@ -474,8 +484,8 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 ### 8.3 两个通用注意
 
 * A2 是唯一键盘焦点，不需要在腿和臂之间切换终端；监督器按上表自动分流。
-* `--profile sim` 会先启动 `arm_controller`，再延迟 1 s 启动 `rl_deploy`；
-  臂链路未就绪时不要直接按小键盘。
+* `--profile sim` 先等待仿真话题单发布者就绪，再启动 `arm_controller` 和
+  `arm_teleop_node`，延迟 1 s 后启动 `rl_deploy`；不要绕过就绪检查。
 
 ---
 

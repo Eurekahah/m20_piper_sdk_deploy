@@ -176,6 +176,10 @@ python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py \
 日志带 `[adapter]`、`[ik]`、`[arm]`、`[rl]` 前缀。任一节点异常退出会一起收工；
 正常收工仍应先按 `r` 阻尼、按 `x` 趴下，再按 `Ctrl+C` 或 `ESC`。
 
+启动前监督器会等待 `/JOINTS_DATA` 有且只有一个发布者，并只检查本次 profile
+真正准备启动的节点。比如使用 `--no-arm-controller` 复用已经手动启动的 IK 时，
+不会因为已有 `arm_controller` 而误拒绝；但如果不加该参数，检测到已有 IK 就会停止。
+
 常见裁剪：
 
 | 场景 | 参数 |

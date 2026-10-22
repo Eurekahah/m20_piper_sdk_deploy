@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import signal
 import subprocess
 import sys
 import tempfile
@@ -60,6 +62,49 @@ def check_profiles() -> list[str]:
         actual = [spec.label for spec in supervisor.build_child_specs(args)]
         if actual != expected:
             failures.append(f"{argv}: expected {expected}, got {actual}")
+    return failures
+
+
+def check_process_filter() -> list[str]:
+    supervisor = load_supervisor()
+    cases = {
+        "/root/install/m20_sdk_deploy/lib/m20_sdk_deploy/rl_deploy": ("rl",),
+        "/root/src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py": ("ik",),
+        "/root/src/M20_sdk_deploy/interface/robot/simulation/arm_teleop_node.py": ("arm",),
+    }
+    failures = []
+    for cmdline, expected in cases.items():
+        actual = supervisor.process_labels(cmdline)
+        if actual != expected:
+            failures.append(f"{cmdline}: expected {expected}, got {actual}")
+    # 未请求 IK 时，已有 IK 不应阻止 supervisor 启动。
+    args = supervisor.parse_args([
+        "--profile", "real", "--no-arm-controller",
+        "--no-readiness-check",
+    ])
+    wanted = {spec.label for spec in supervisor.build_child_specs(args)}
+    if "ik" in wanted:
+        failures.append("--no-arm-controller 仍把 ik 放入启动和冲突检测集合")
+
+    marker = "/root/src/M20_sdk_deploy/interface/robot/simulation/arm_controller.py"
+    fake = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(10)", marker],
+        start_new_session=True,
+    )
+    try:
+        time.sleep(0.2)
+        rl_matches = supervisor.existing_node_processes(("rl",))
+        if any(str(fake.pid) in line for line in rl_matches):
+            failures.append("只检查 rl 时错误匹配了 arm_controller")
+        ik_matches = supervisor.existing_node_processes(("ik",))
+        if not any(str(fake.pid) in line for line in ik_matches):
+            failures.append("检查 ik 时没有匹配已存在的 arm_controller")
+    finally:
+        try:
+            os.killpg(fake.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        fake.wait()
     return failures
 
 
@@ -131,7 +176,8 @@ def check_process_routing() -> list[str]:
 
 
 def main() -> int:
-    failures = check_routes() + check_profiles() + check_process_routing()
+    failures = (check_routes() + check_profiles() + check_process_filter() +
+                check_process_routing())
     if failures:
         print("[keyboard-supervisor] FAIL")
         for failure in failures:
