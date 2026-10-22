@@ -132,5 +132,5 @@ cat <<'EOT'
   cd ~/M20_sdk_deploy && source /opt/ros/foxy/setup.bash && source install/setup.bash
   首次或改了 C++：colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm -DSIM2SIM=OFF
   只改了 Python（arm_controller / arm_teleop / vr_teleop）：不用重编，直接起节点
-完整流程见 docs/DEPLOY_REAL_VR_zh.md
+完整流程见 docs/DEPLOY_zh.md
 EOT

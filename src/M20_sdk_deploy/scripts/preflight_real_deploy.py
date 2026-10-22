@@ -72,7 +72,7 @@ def check_policy(policy_dir: Path) -> dict:
     step = cfg["history_single_step_dim"]
     steps = cfg["history_length"]
 
-    # 从维度反推观测构成（本仓库支持的结构见 docs/sim2sim_layout_contract_zh.md）
+    # 从维度反推观测构成（本仓库支持的结构见 docs/CONTRACT_zh.md）
     n_joints = None
     has_ee = None
     for n in (24, 16, 22):

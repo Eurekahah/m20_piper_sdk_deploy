@@ -4,7 +4,7 @@
 做四件事：
   1. 起 MuJoCo 仿真节点（无头，开遥测落盘）；
   2. 起 rl_deploy，用管道喂键盘命令走进状态机 idle → standup → RL（可选再给速度命令）；
-  3. 采集遥测 CSV，按 `docs/sim2sim_layout_contract_zh.md` 的判据算"高度/倾角"曲线；
+  3. 采集遥测 CSV，按 `docs/CONTRACT_zh.md` 的判据算"高度/倾角"曲线；
   4. 打印 PASS/FAIL 与关键数字，FAIL 时退出码 1。
 
 判据（与训练 terminate 一致）：

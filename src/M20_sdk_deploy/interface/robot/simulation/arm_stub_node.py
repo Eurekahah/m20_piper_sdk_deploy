@@ -4,7 +4,7 @@
 **什么时候用**：机械臂还没装 / 没上电 / 没接 CAN，但要用同一套策略跑 M20。
 
 **为什么需要它**：这条策略的观测是 24 关节的 `joint_pos` / `joint_vel`
-（12 腿 + 4 轮 + 6 臂 + 2 夹爪，见 `docs/sim2sim_layout_contract_zh.md`），
+（12 腿 + 4 轮 + 6 臂 + 2 夹爪，见 `docs/CONTRACT_zh.md`），
 再加上 7 维 `ee_goal`。臂没有反馈时：
 
 * `PiperArmInterface` 会把 8 个臂关节当成"默认姿态"（`DEF-023`），

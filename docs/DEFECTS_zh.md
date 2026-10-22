@@ -1,10 +1,15 @@
-# 缺陷 / 特性记录（DEFECT LOG）
+# 缺陷与特性历史（DEFECT LOG）
 
-**文档职责**：每条"现象 → 根因 → 修正 → 结果"，一个缺陷/特性一条，编号 `DEF-0xx`。
-新条目加在最上面。模板见 `templates/DEFECT_ENTRY_TEMPLATE_zh.md`。
+**文档职责**：保留每条问题的“现象 → 根因 → 修正 → 结果”，作为可追溯的工程证据。
+当前状态和待办只看 [`STATUS_zh.md`](STATUS_zh.md)，接口只看
+[`CONTRACT_zh.md`](CONTRACT_zh.md)，部署只看 [`DEPLOY_zh.md`](DEPLOY_zh.md)。
 
-**维护约定**：见 `templates/DOC_TEMPLATE_zh.md`。凡是改变了
-关节顺序 / 坐标系 / 增益 / 观测维度 / 话题的改动，**必须**在这里留一条。
+**维护约定**：新问题追加到本文件顶部，编号 `DEF-0xx`。凡是改变了关节顺序、坐标系、
+增益、观测维度或话题的改动，必须在这里留一条。
+
+> 2026-10-22 文档重组后，正文中的 `DONE_zh.md`、`TODO_zh.md`、`WORKFLOW_zh.md`、
+> `ACCEPTANCE_2026-10-09_zh.md`、`CODE_REVIEW_2026-10-09_zh.md`、
+> `DEPLOY_REAL_VR_zh.md` 等旧文件名视为历史出处，不再作为现行文档入口。
 
 ## 更新记录
 
@@ -36,13 +41,13 @@
 | 2026-10-13 | **修编号冲突**：10-10 那批（VR 限速 / 手感旋钮 / 双发布者 / 复位与 IK 健壮性 / 离线依赖）与 10-12 真机条目撞了 039、040 两个号 ⇒ 前者重编号为 **DEF-052~DEF-056**（标题里标了"原 DEF-0xx"），并同步更新 DONE / TODO / DEPLOY_REAL_VR / `arm_pose_demo.py` 里的引用；10-12/13 的条目（039/040/044/045/046）**保持原号不动**；**DEF-047 留给 10-13 的 `tests/arm_ik_unreachable_check.py`（IK 够不到目标时的行为回归），该条目尚未在本文登记** | `sync/2026-10-13-defnumber-fix` |
 | 2026-10-13 | 新增 **DEF-058**（头显页面依赖公网 CDN 拉 A-Frame ⇒ 内网里页面"卡住"、只剩中间一张卡片、点哪都没反应；**不是上位机性能问题**）：`index.html` 改本地 `aframe.min.js` + 缺失时页顶红色横幅；新增 `scripts/fetch_aframe.sh`（6 镜像 + 校验 + `--check`）；`sync_to_robot.sh` 与 VR 启动横幅都提示引擎是否就位；HTTPS 服务改 `ThreadingHTTPServer` | `sync/2026-10-13-vr-ip` |
 | 2026-10-13 | **DEF-058 闭环**（操作员实测：放好 `aframe.min.js` 后头显页面正常、可遥操）；新增 **`docs/OFFLINE_ASSETS_zh.md`（离线资源清单：要下载什么）**——把 A-Frame、上位机 `PyYAML`/`websockets` wheel、**不用下的** scipy/numpy/pynput/torch、放哪/怎么自检/缺了的症状/换机器后重做哪些集中一处，并在 `DEPLOY_REAL_VR_zh.md` §1.5/§1.6、`COMMANDS_SIM2REAL_zh.md` §0.3、`docs/README_zh.md` 索引里加了指针 | `sync/2026-10-13-vr-ip` |
-| 2026-10-13 | 新增 **DEF-059**（真机"左前侧摆关节过温 100 ℃ → 安全接管 → 趴下 → 10 s 后恢复"）：**仿真侧没有电机热模型**（`mujoco_simulation_ros2.py` 把 `motion_temp/driver_temp` 写死 40/45 ℃ ⇒ 温度那条接管路径在 sim2sim 不可达）；等价可观测的**关节力矩**实测为**长期静载**：站立状态机 `fl_hipx +12.0 N·m`、RL 站立零命令 `fl_hipx +15.1 N·m`（四个侧摆里最大、且是 `fr_hipx` 的 2.3 倍），是 M20 腿型"侧摆轴在机体侧 / 轮子接地点在 y≈0.23"的固有静负荷。新增离线探针 `tests/joint_torque_report.py` | `investigate/left-hipx-temp-sim2sim` |
-| 2026-10-13 | **DEF-059 反问修正**（用户指出"这个量级的力矩不会导致过热吧、而且没到限幅、为什么右边没事"）：补做**执行器延迟压力测试**（0 / 5 / 25 ms：`fl_hipx` std 0.139→0.115→0.111 N·m、高频带能量不变 ⇒ 仿真里"延迟 ⇒ 抖动 ⇒ 发热"不成立），并在条目里写明"**静载只是必要条件，选不出具体关节**"（同腿 `knee 21.4 / hipy 16.3` 同量级、`76.4 N·m` 是训练 `effort_limit` 不是热额定、仓库无电机规格）+ **四刀**真机取数清单；新增 **P1-8** | `investigate/left-hipx-temp-sim2sim` |
-| 2026-10-13 | **DEF-059 真机取数工具**：新增 `scripts/record_joint_data.py`（M20 上 200 Hz 录 `/JOINTS_DATA` 16 关节 `pos/vel/tau/motion_temp/driver_temp` + `/IMU_DATA`，每 5 s 打印最热 3 关节，退出给汇总并标出 `>100 ℃` 区段）与 `scripts/joint_log_report.py`（离线四刀：与仿真参考值对照 / 两个温度分开看 + 过温时序 / 谁最热 vs 谁力矩最大 + 左右镜像 / `--spectrum`）；命令写进 `COMMANDS_SIM2REAL_zh.md` **§7**（含 `scp` 取回与 `ros2 bag` 兜底）。两者已在仿真 `/JOINTS_DATA` 上自测通过 | `investigate/left-hipx-temp-sim2sim` |
-| 2026-10-13 | **真机数据到手（操作员录的 `stand_0811_1707.csv`，65 s / 179 Hz）**：① 保持段**纯静载**（pos std 0.0000 rad、vel std 0.011 rad/s）⇒ 之前"可能抖动"的猜测被否掉；② 真机保持力矩是仿真的 **2.0~3.7 倍**（fl_hipx 28.2 vs 12.0 等），且 `τ = kp × 关节落后量`（200×0.137=27.4）对 8 个关节**逐个对上** ⇒ 真机腿在同一姿态下物理上就要 2 倍以上力矩；③ 65 s 里 **3 次过温**（fr_knee >100 ℃：19.3/48.9/59.2 s）+ 5 次塌下/抬起（每次都对应"保护 → 卸力 → 冷却 → 再站"）；④ 电机 100 ℃ 而 `driver_temp` 只 52~53 ℃ ⇒ 热在绕组。**新增 DEF-060**（站立/idle 状态机确实被改过：e5e1917 把厂商的高度规划 + idle 零增益换成"训练姿态 + 主动保持"）与 **P1-9**（厂商模式 A/B） | `investigate/left-hipx-temp-sim2sim` |
-| 2026-10-13 | **A/B 开关落地**（按操作员要求"只加开关、默认行为不变、不碰 rl_deploy 相关":**只改了 `standup_state.hpp` / `idle_state.hpp` 两个文件**）：`M20_STANDUP_VENDOR=1` 切回厂商两段式站立（0.12 m 蹲姿 → 0.48 m 高度规划，轮子 kp=0），`M20_IDLE_ZERO_GAIN=1` 切回厂商 idle 零增益。容器内编译通过并在 sim2sim `--mode stand` 实测：**厂商档站高 0.559 m、侧摆力矩几乎不变（11.78 vs 11.99 N·m，−1.8%）、膝盖轻 26%（7.07 vs 9.52）** ⇒ 站立改动解释不了真机那 2~3.7 倍；开关登记表与 A/B 命令已写进 `WORKFLOW_zh.md` §6.1 与 `COMMANDS_SIM2REAL_zh.md` §8 | `investigate/left-hipx-temp-sim2sim` |
-| 2026-10-13 | **档 A / 档 B 真机 A/B 完成**（操作员各录一份：档 A 65 s、档 B 339 s）。"反推指令"（`cmd_raw = fb_raw + τ_raw/200`）验证：**两档的反推指令与公式指令逐关节 4 位小数吻合** ⇒ ① kp=200 与仓库 `dir/offset` 表都对；② 开关确实生效（档 B 真在厂商姿态 hipy ∓0.2838 / knee ±0.5676）。结果：**侧摆静力矩 29.0 → 10.7 N·m（−63%，与仿真预测 11.8 基本吻合）**、膝盖 22→16（−27%）、**hipy 反升到 9.2（仿真只预测 2.1）**；过热时间从"几十秒 3 次"变成 **~4.4 min 一次**（fr_knee 37.4→100.0 ℃），**依旧过热**，跳的是膝盖。⇒ 姿态能大幅降载但不够；且**仿真"姿态→负载"的关系是错的**（真机两姿态差 18 N·m，仿真只差 0.2） | `investigate/left-hipx-temp-sim2sim` |
-| 2026-10-14 | **原厂控制器基线到手（判决性）**：操作员用**原厂控制算法**站立并录了 62 s（`vendorstand.csv`）。同一口径对比 12 个腿关节的静止力矩：**原厂 Σ\|τ\| = 62 N·m（Στ² = 554）、我们档 B = 143 N·m（1850）、我们档 A = 229 N·m（5244）**；原厂档温度**平**（27.6~48.5 ℃，全部关节 **+0.5~0.6 ℃/min**，无过温），电机/驱动器/机械完全健康。而**在我们两份数据里（关节角据同一标定表换算后）与原厂几乎一样的姿态下**，hipy/后侧摆上原厂几乎是 0 N·m、我们却顶着 9~19 N·m ⇒ **根因在部署侧：`kp = 200` 的硬 PD 把腿顶在"远离真机自然平衡"的训练姿态上**（真机自然平衡 ≈ hipy ∓0.24 / knee ±0.55，训练姿态是 ∓0.6 / ±1.0，差 0.3 rad ⇒ 200×0.3 = 60 N·m 量级的顶力）。原厂档的力矩与**仿真模型基本吻合（±20%）**，说明模型/机器人没大错、**仿真缺的是关节摩擦/齿隙**（所以"仿真说 12 N·m、我们真机 29 N·m"）| `investigate/left-hipx-temp-sim2sim` |
+| 2026-10-13 | 新增 **DEF-059**（真机"左前侧摆关节过温 100 ℃ → 安全接管 → 趴下 → 10 s 后恢复"）：**仿真侧没有电机热模型**（`mujoco_simulation_ros2.py` 把 `motion_temp/driver_temp` 写死 40/45 ℃ ⇒ 温度那条接管路径在 sim2sim 不可达）；等价可观测的**关节力矩**实测为**长期静载**：站立状态机 `fl_hipx +12.0 N·m`、RL 站立零命令 `fl_hipx +15.1 N·m`（四个侧摆里最大、且是 `fr_hipx` 的 2.3 倍），是 M20 腿型"侧摆轴在机体侧 / 轮子接地点在 y≈0.23"的固有静负荷。新增离线探针 `tests/joint_torque_report.py` | `investigate/left-hip-temp-sim2sim` |
+| 2026-10-13 | **DEF-059 反问修正**（用户指出"这个量级的力矩不会导致过热吧、而且没到限幅、为什么右边没事"）：补做**执行器延迟压力测试**（0 / 5 / 25 ms：`fl_hipx` std 0.139→0.115→0.111 N·m、高频带能量不变 ⇒ 仿真里"延迟 ⇒ 抖动 ⇒ 发热"不成立），并在条目里写明"**静载只是必要条件，选不出具体关节**"（同腿 `knee 21.4 / hipy 16.3` 同量级、`76.4 N·m` 是训练 `effort_limit` 不是热额定、仓库无电机规格）+ **四刀**真机取数清单；新增 **P1-8** | `investigate/left-hip-temp-sim2sim` |
+| 2026-10-13 | **DEF-059 真机取数工具**：新增 `scripts/record_joint_data.py`（M20 上 200 Hz 录 `/JOINTS_DATA` 16 关节 `pos/vel/tau/motion_temp/driver_temp` + `/IMU_DATA`，每 5 s 打印最热 3 关节，退出给汇总并标出 `>100 ℃` 区段）与 `scripts/joint_log_report.py`（离线四刀：与仿真参考值对照 / 两个温度分开看 + 过温时序 / 谁最热 vs 谁力矩最大 + 左右镜像 / `--spectrum`）；命令写进 `COMMANDS_SIM2REAL_zh.md` **§7**（含 `scp` 取回与 `ros2 bag` 兜底）。两者已在仿真 `/JOINTS_DATA` 上自测通过 | `investigate/left-hip-temp-sim2sim` |
+| 2026-10-13 | **真机数据到手（操作员录的 `stand_0811_1707.csv`，65 s / 179 Hz）**：① 保持段**纯静载**（pos std 0.0000 rad、vel std 0.011 rad/s）⇒ 之前"可能抖动"的猜测被否掉；② 真机保持力矩是仿真的 **2.0~3.7 倍**（fl_hipx 28.2 vs 12.0 等），且 `τ = kp × 关节落后量`（200×0.137=27.4）对 8 个关节**逐个对上** ⇒ 真机腿在同一姿态下物理上就要 2 倍以上力矩；③ 65 s 里 **3 次过温**（fr_knee >100 ℃：19.3/48.9/59.2 s）+ 5 次塌下/抬起（每次都对应"保护 → 卸力 → 冷却 → 再站"）；④ 电机 100 ℃ 而 `driver_temp` 只 52~53 ℃ ⇒ 热在绕组。**新增 DEF-060**（站立/idle 状态机确实被改过：e5e1917 把厂商的高度规划 + idle 零增益换成"训练姿态 + 主动保持"）与 **P1-9**（厂商模式 A/B） | `investigate/left-hip-temp-sim2sim` |
+| 2026-10-13 | **A/B 开关落地**（按操作员要求"只加开关、默认行为不变、不碰 rl_deploy 相关":**只改了 `standup_state.hpp` / `idle_state.hpp` 两个文件**）：`M20_STANDUP_VENDOR=1` 切回厂商两段式站立（0.12 m 蹲姿 → 0.48 m 高度规划，轮子 kp=0），`M20_IDLE_ZERO_GAIN=1` 切回厂商 idle 零增益。容器内编译通过并在 sim2sim `--mode stand` 实测：**厂商档站高 0.559 m、侧摆力矩几乎不变（11.78 vs 11.99 N·m，−1.8%）、膝盖轻 26%（7.07 vs 9.52）** ⇒ 站立改动解释不了真机那 2~3.7 倍；开关登记表与 A/B 命令已写进 `WORKFLOW_zh.md` §6.1 与 `COMMANDS_SIM2REAL_zh.md` §8 | `investigate/left-hip-temp-sim2sim` |
+| 2026-10-13 | **档 A / 档 B 真机 A/B 完成**（操作员各录一份：档 A 65 s、档 B 339 s）。"反推指令"（`cmd_raw = fb_raw + τ_raw/200`）验证：**两档的反推指令与公式指令逐关节 4 位小数吻合** ⇒ ① kp=200 与仓库 `dir/offset` 表都对；② 开关确实生效（档 B 真在厂商姿态 hipy ∓0.2838 / knee ±0.5676）。结果：**侧摆静力矩 29.0 → 10.7 N·m（−63%，与仿真预测 11.8 基本吻合）**、膝盖 22→16（−27%）、**hipy 反升到 9.2（仿真只预测 2.1）**；过热时间从"几十秒 3 次"变成 **~4.4 min 一次**（fr_knee 37.4→100.0 ℃），**依旧过热**，跳的是膝盖。⇒ 姿态能大幅降载但不够；且**仿真"姿态→负载"的关系是错的**（真机两姿态差 18 N·m，仿真只差 0.2） | `investigate/left-hip-temp-sim2sim` |
+| 2026-10-14 | **原厂控制器基线到手（判决性）**：操作员用**原厂控制算法**站立并录了 62 s（`vendorstand.csv`）。同一口径对比 12 个腿关节的静止力矩：**原厂 Σ\|τ\| = 62 N·m（Στ² = 554）、我们档 B = 143 N·m（1850）、我们档 A = 229 N·m（5244）**；原厂档温度**平**（27.6~48.5 ℃，全部关节 **+0.5~0.6 ℃/min**，无过温），电机/驱动器/机械完全健康。而**在我们两份数据里（关节角据同一标定表换算后）与原厂几乎一样的姿态下**，hipy/后侧摆上原厂几乎是 0 N·m、我们却顶着 9~19 N·m ⇒ **根因在部署侧：`kp = 200` 的硬 PD 把腿顶在"远离真机自然平衡"的训练姿态上**（真机自然平衡 ≈ hipy ∓0.24 / knee ±0.55，训练姿态是 ∓0.6 / ±1.0，差 0.3 rad ⇒ 200×0.3 = 60 N·m 量级的顶力）。原厂档的力矩与**仿真模型基本吻合（±20%）**，说明模型/机器人没大错、**仿真缺的是关节摩擦/齿隙**（所以"仿真说 12 N·m、我们真机 29 N·m"）| `investigate/left-hip-temp-sim2sim` |
 
 ---
 
@@ -280,7 +285,7 @@
 | 类型 | `缺陷`（真机现象；仿真侧缺热模型 = 可观测性缺口） |
 | 状态 | `未修（见 TODO_zh.md P1-7）` |
 | 影响面 | `二者`（`fl_hipx` 的静载在 sim2sim 与真机同源；真机才有温度） |
-| 关联 | `investigate/left-hipx-temp-sim2sim`；`mujoco_simulation_ros2.py:836-837/874-875`（写死温度）、`include/utils/safe_controller.hpp:190/202/381`（`>100 ℃` ⇒ `safe_control_mode=2`）、`state_machine/quadruped_wheel/{standup,rl_control,joint_damping}_state.hpp`、`state_machine/parameters/m20_control_parameters.cpp`（腿 `swing_leg_kp_ = 200`、`hip_len_ = 0.104`）、新增 `tests/joint_torque_report.py`（仿真遥测）、`scripts/record_joint_data.py`（**真机录** `/JOINTS_DATA`）、`scripts/joint_log_report.py`（离线四刀）、`COMMANDS_SIM2REAL_zh.md` §7（命令）；相关 **DEF-036**（vy/wz 方向不对称，同属"策略/结构左右不对称"家族） |
+| 关联 | `investigate/left-hip-temp-sim2sim`；`mujoco_simulation_ros2.py:836-837/874-875`（写死温度）、`include/utils/safe_controller.hpp:190/202/381`（`>100 ℃` ⇒ `safe_control_mode=2`）、`state_machine/quadruped_wheel/{standup,rl_control,joint_damping}_state.hpp`、`state_machine/parameters/m20_control_parameters.cpp`（腿 `swing_leg_kp_ = 200`、`hip_len_ = 0.104`）、新增 `tests/joint_torque_report.py`（仿真遥测）、`scripts/record_joint_data.py`（**真机录** `/JOINTS_DATA`）、`scripts/joint_log_report.py`（离线四刀）、`COMMANDS_SIM2REAL_zh.md` §7（命令）；相关 **DEF-036**（vy/wz 方向不对称，同属"策略/结构左右不对称"家族） |
 
 **1. 现象（操作员 2026-10-13 报告的真机现象 + 本轮仿真复现）**
 

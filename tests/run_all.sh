@@ -5,7 +5,7 @@
 #   SKIP_BUILD=1 bash tests/run_all.sh
 #   MODES="hold rl" bash tests/run_all.sh
 #
-# 判据（详细口径见 docs/review/WORKFLOW_zh.md）：
+# 判据（详细口径见 docs/DEVELOPMENT_zh.md）：
 #   * L1  check_policy_interface.py   —— 布局/形状/名字/原生序/数值对照
 #   * L3' check_mjcf_contract.py      —— MJCF 与训练配置逐项对照（不允许 FAIL）
 #   * L3  每档：按契约文档的高度/倾角判据；

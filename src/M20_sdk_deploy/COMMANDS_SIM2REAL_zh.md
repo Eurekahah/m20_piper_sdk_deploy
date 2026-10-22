@@ -4,10 +4,11 @@
 [`COMMANDS_SIM2SIM_zh.md`](COMMANDS_SIM2SIM_zh.md)。
 
 > 每个场景都是"**一个标题 + 一张终端表 + 检查点**"，照抄即可。
-> 原理/接口/排障细节见 [`docs/sim2real_checklist_zh.md`](../../docs/sim2real_checklist_zh.md)。
+> 部署流程、检查单和排障见 [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)，
+> 接口参数见 [`docs/CONTRACT_zh.md`](../../docs/CONTRACT_zh.md)。
 >
 > **用 VR 操作真机**（腿 + 臂）请走这条完整流程：
-> [`docs/DEPLOY_REAL_VR_zh.md`](../../docs/DEPLOY_REAL_VR_zh.md)。
+> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)。
 
 ## 0. 硬件拓扑与通用约定
 
@@ -89,7 +90,7 @@ grep -c SIM2SIM build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make   # 应
 ### 0.3 M20 上的 Python 依赖（**离线**，只装一次）
 
 > 📥 本节与 §0.1 的备注（还有头显要的 `aframe.min.js`）汇总在
-> [`docs/OFFLINE_ASSETS_zh.md`](../../docs/OFFLINE_ASSETS_zh.md)：
+> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md) 的离线资源一节：
 > 「要下什么 / 放哪 / 怎么下 / 怎么自检 / 缺了什么症状 / 换机器后重做哪些」，一页看完。
 
 VR 节点要 `yaml` 与 `websockets`（`xlevr/config.py`、`xlevr/inputs/vr_ws_server.py` 各用一个）。
@@ -124,7 +125,7 @@ python3 -c "import numpy, yaml, websockets; print('deps ok')"     # 两条路都
 > ```
 >
 > 细节（含"没有 pip 时怎么装"的更多说明）见
-> [`docs/DEPLOY_REAL_VR_zh.md`](../../docs/DEPLOY_REAL_VR_zh.md) §1.5。
+> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)。
 
 ### 0.4 只更新某个 Python 脚本（不用重编）
 
@@ -329,8 +330,9 @@ bash src/M20_sdk_deploy/scripts/record_joint_data.sh vendorstand 600
 > `M20_STANDUP_HIPX_DEG`）都在 §8，跟本录制脚本互不干扰。
 
 用途：核对真机上"某个关节（如左前侧摆 `fl_hipx`）站久了温度冲到 100 ℃ ⇒ 安全接管趴下 ⇒
-10 s 后恢复"这类现象（背景与判读口径见 `docs/review/DEFECT_LOG_zh.md` **DEF-059**、
-待办 `docs/review/TODO_zh.md` **P1-7 / P1-8**）。
+10 s 后恢复"这类现象（当前状态见
+[`docs/STATUS_zh.md`](../../docs/STATUS_zh.md)，判读证据见
+[`docs/DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) **DEF-059**）。
 
 **录什么**：`/JOINTS_DATA` 的 16 个关节 `position / velocity / torque / motion_temp / driver_temp`
 （两个温度**都要**：代码判的是 `motion_temp`，`driver_temp` 是驱动器板温，混淆会判错病因），
@@ -397,7 +399,7 @@ scp user@10.21.31.103:'~/joint_logs/*.csv' tmp/real_logs/
 scp user@10.21.31.103:'~/joint_logs/*.meta.json' tmp/real_logs/
 
 # 分析（容器里跑；也可以用开发机上带 numpy 的 python）
-docker exec m20_piper_ros bash -lc 'cd /root/m20_piper_ws &&
+docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws &&
   python3 src/M20_sdk_deploy/scripts/joint_log_report.py tmp/real_logs/rl_xxxx.csv --ref rl --spectrum'
 ```
 
@@ -423,11 +425,11 @@ scp -r user@10.21.31.103:'~/joint_logs/bag_rl' tmp/real_logs/
 
 ## 场景 8：站立/idle 用"**厂商原版档**"做 A/B（DEF-060 / TODO P1-9）
 
-**背景**：本仓库把厂商的状态机改过（`e5e1917`，2026-09-04）——
-站立从"两段高度规划（0.12 m 蹲姿 → 0.48 m）"改成"一步到训练默认姿态并**永久保持**"，
-idle 从"**零增益不使力**"改成"`kp 80/2` 主动保持"。真机实测（DEF-059 §5）在站立状态机里
-保持力矩是仿真模型的 **2.0~3.7 倍**、65 s 内 3 次过温 ⇒ 这两个改动是**首要嫌疑**之一，
-因此加了两个开关做 A/B（默认关闭 = 本仓库行为不变，且**不碰 `rl_control_state` / `run_policy` / 安全层**）。
+**背景**：本仓库曾把厂商状态机改成“训练姿态 + 主动保持”，真机实测因此出现明显温升。
+2026-10-14 起默认已切回厂商流程：idle 零增益、站立两段式高度规划；
+RL 仍使用训练默认姿态。站立刚度和训练初始姿态尚未最终对齐，当前状态详见
+[`STATUS_zh.md`](../../docs/STATUS_zh.md)，历史证据见
+[`DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-059/DEF-060。
 
 ### 8.1 三档怎么跑（跑之前先做场景 0.1 同步 + 0.2 编译）
 
@@ -438,22 +440,20 @@ idle 从"**零增益不使力**"改成"`kp 80/2` 主动保持"。真机实测（
 > bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build
 > ```
 >
-> 起来后**先确认开关生效**：`rl_deploy` 启动日志里应出现
-> `[STANDUP] M20_STANDUP_VENDOR=1 ⇒ 厂商原版两段式站立…`（档 B）
-> 或 `[IDLE] M20_IDLE_ZERO_GAIN=1 ⇒ 厂商原版 idle…`（档 C）。**没有这行就是没编进去。**
+> 起来后先确认日志与所选档一致：厂商站立应出现
+> `[STANDUP] 厂商原版档（M20_STANDUP_VENDOR 默认 1）`，
+> 训练姿态档应出现 `[STANDUP] 训练默认姿态档（M20_STANDUP_VENDOR=0）`，
+> idle 零增益应出现 `[IDLE] 厂商原版 idle`。**日志和预期不一致就是没有编进去。**
 
 ```bash
 cd ~/M20_sdk_deploy
 source /opt/ros/foxy/setup.bash && source /opt/robot/scripts/setup_ros2.sh
 
-# 档 A：本仓库行为（默认，什么都不用设）—— 对照组
-ros2 run m20_sdk_deploy rl_deploy            # ⚠️ 2026-10-14 起**默认已改为厂商原版档**（见下）
-
-# 档 B：厂商原版站立（蹲 0.12 m → 升到 0.48 m，轮子 kp=0）
-M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
-
-# 档 A'：训练默认姿态档（hipx 0 / hipy ∓0.6 / knee ±1.0 → 永久保持）= 进 RL 前的入口姿态
+# 档 A：训练默认姿态站立（用于复现历史热工况）
 M20_STANDUP_VENDOR=0 ros2 run m20_sdk_deploy rl_deploy
+
+# 档 B：厂商原版两段式站立（当前默认，可不再显式设置）
+M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
 
 # 档 C：厂商原版 idle（零增益、不使力）
 M20_IDLE_ZERO_GAIN=1 ros2 run m20_sdk_deploy rl_deploy
@@ -471,11 +471,11 @@ M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
 #   等它打印 [STANDUP] … 之后，按 z 站立；保持 10 分钟（或直到过温趴下 3~4 次）
 ```
 
-**要注意的**（都写进了启动日志）：
+**要注意的**：
 
-* 档 B 的**结束站位不是训练默认姿态**（仿真实测站高 0.559 m vs 训练姿态 0.514 m）⇒
-  **别带着 `M20_STANDUP_VENDOR=1` 按 `c` 进 RL**（入口瞬态会变差，DEF-018）。
-  它的用途是"同一个人、同一个位置、同一份录制脚本，只换站立策略"，比完就撤；
+* 档 B 的结束站位不是训练默认姿态（仿真实测约 0.559 m vs 训练姿态约 0.514 m）。
+  只做热基线时不要按 `c`；若要验证真实的“厂商站立 → RL”流程，按 `c` 后机器人会主动调整
+  到训练姿态。该切换有入口瞬态风险，必须吊装或清场并准备急停。
 * 档 C 进 SDK 模式后**腿就没人撑了**（厂商原版就是零增益，它假定站着的是别人）⇒
   机器人会塌。想复现厂商整条链路，应该在**不进 SDK 模式**的情况下用机器人自带控制器站
   （这也就是 P1-9 步骤 1 的"厂商模式 A/B"，不需要我们的代码）；
@@ -484,7 +484,7 @@ M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
 
 ### 8.2 仿真侧的对照结果（2026-10-13，`--mode stand`，t≥25 s 稳态）
 
-| | 档 A（训练姿态，默认） | 档 B（厂商两段式） |
+| | 档 A（训练姿态） | 档 B（厂商两段式，当前默认） |
 |---|---|---|
 | 站高（判据口径 root_z−mean(轮 z)+0.09） | 0.514 m | **0.559 m** |
 | `fl_hipx` / `fr_hipx` | +11.99 / −11.89 N·m | **+11.78 / −11.68 N·m** |
@@ -498,7 +498,8 @@ M20_STANDUP_VENDOR=1 ros2 run m20_sdk_deploy rl_deploy
 
 ### 8.3 站姿扫描（A/B 的后续：找"哪一站最省电机"）
 
-**真机 A/B 的结论**（两档各录一份，操作员 2026-10-13，详见 `DEFECT_LOG_zh.md` DEF-059 §7）：
+**真机 A/B 的结论**（两档各录一份，操作员 2026-10-13，详见
+[`DEFECTS_zh.md`](../../docs/DEFECTS_zh.md) DEF-059）：
 
 | | 档 A（训练姿态，站高 0.514 m） | 档 B（厂商姿态，站高 0.559 m） |
 |---|---|---|

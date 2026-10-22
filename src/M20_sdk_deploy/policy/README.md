@@ -26,7 +26,7 @@ run=2026-10-02_00-44-42_cloud_slowvx20k）、`m20_piper_flat_20260930`
 （run=2026-09-30_19-36-00_cloud_cap12_20k，平地）、`m20_piper_history_20260920`
 （run=2026-09-20_00-50-31，更早的平地）。
 
-**多地形 vs 平地怎么选**（训练侧 `docs/deploy_code_delta_2026-10-09_zh.md` §5.4）：
+**多地形 vs 平地怎么选**：
 平地用 `m20_piper_flat_20260930`（当前默认），多地形用 `m20_piper_rough_20261002`；
 两者接口逐字段相同。
 
@@ -49,7 +49,7 @@ run=2026-10-02_00-44-42_cloud_slowvx20k）、`m20_piper_flat_20260930`
    代码里的默认目录是按 `__FILE__` 解析的，两者口径不同，所以这里用绝对路径）；
    确认无误后再改
    `state_machine/quadruped_wheel/rl_control_state.hpp` 里的默认目录；
-6. 跑 `bash tests/run_all.sh`，把数字写进 `docs/review/DONE_zh.md`。
+6. 跑 `bash tests/run_all.sh`，把验收结论写进 `docs/STATUS_zh.md`。
 
 ## 硬性约束
 
@@ -59,4 +59,4 @@ run=2026-10-02_00-44-42_cloud_slowvx20k）、`m20_piper_flat_20260930`
 * `policy.onnx` 与 `policy_layout.json` **必须成对**存在，且维度/名字一致
   （启动时 runner 会断言，L1 也会断言）。
 * 旧目录保留（便于 A/B 与回滚），仓库里最多留 2~3 个；更老的删掉但在
-  `docs/review/DONE_zh.md` 里留一行"引用过哪个 run"。
+  `docs/STATUS_zh.md` 里留一行"引用过哪个 run"。
