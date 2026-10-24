@@ -7,8 +7,9 @@
 > 部署流程、检查单和排障见 [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)，
 > 接口参数见 [`docs/CONTRACT_zh.md`](../../docs/CONTRACT_zh.md)。
 >
-> **用 VR 操作真机**（腿 + 臂）请走这条完整流程：
-> [`docs/DEPLOY_zh.md`](../../docs/DEPLOY_zh.md)。
+> **用 VR 操作真机**（腿 + 臂）：Jetson 的 agx 驱动占一个终端；M20 上一个
+> 统一控制终端运行策略和臂控制链，另一个终端单独运行 VR 节点。直接照抄下面
+> **场景 4** 和 **场景 4.1** 的命令。
 
 ## 0. 硬件拓扑与通用约定
 
@@ -52,6 +53,7 @@ bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
 ```bash
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --dry-run      # 先看"会传什么"，不真传
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build        # 同步完顺手在 M20 上 colcon build
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party  # 首次部署/第三方依赖更新
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-meshes  # 要在 M20 上跑 sim2sim/check_mjcf_contract 时才加
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --full         # 不排除任何东西（= 旧的 scp -r）
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --delete       # 让远端与本地完全一致（**会删远端多余文件**，慎用）
@@ -62,7 +64,7 @@ DEST='~/M20_sdk_deploy/src/M20_sdk_deploy' bash src/M20_sdk_deploy/scripts/sync_
 | 项 | 说明 |
 |---|---|
 | 为什么不用 `scp -r` | 整包 **215 MB / 4539 个文件**，其中**仿真 mesh 47 MB / 2202 个 STL**、`third_party/onnxruntime/x86` 62 MB、`gamepad/example` 3.9 MB —— 真机**运行与编译都不需要**。scp 每次都重传（慢在"文件个数"的 ssh 开销） |
-| 默认排除后 | **104 MB / 2038 个文件**；**第二次起 rsync 只传改动过的那几个 .py/.hpp（通常几 KB）** |
+| 默认同步内容 | **跳过整个 `third_party/`、仿真 mesh 和缓存**；当前工作区约为 **7.1 MB / 74 个业务与策略文件**。第二次起 rsync 只传改动过的那几个 `.py/.hpp`（通常几 KB） |
 | 前提 | 开发机与 M20 都有 `rsync`；**任一端没有就自动退化成 `tar + ssh`**（带同样的排除，并在远端数文件数自检） |
 | 目标位置 | `M20:~/M20_sdk_deploy/src/M20_sdk_deploy`（与旧 scp 流程一致，M20 上 `~/M20_sdk_deploy` 是**仓库根**） |
 
@@ -71,11 +73,13 @@ DEST='~/M20_sdk_deploy/src/M20_sdk_deploy' bash src/M20_sdk_deploy/scripts/sync_
 
 > **头显页面要的离线引擎别忘了**（DEF-058）：`third_party/XLeVR/web-ui/aframe.min.js`
 > 1247 KB，仓库里**默认不自带**（要联网下，或从别的机器拷）——缺了它头显里只会显示中间一张
-> `VR Teleoperation` 卡片、点哪都没反应。同步脚本会打印它是"已就位"还是缺失：
+> `VR Teleoperation` 卡片、点哪都没反应。默认同步会保留远端已有的 `third_party/`；
+> 首次部署或刚下载 A-Frame 后，必须用 `--with-third-party` 同步：
 >
 > ```bash
 > bash src/M20_sdk_deploy/scripts/fetch_aframe.sh          # 在有外网的机器上跑一次
 > bash src/M20_sdk_deploy/scripts/fetch_aframe.sh --check  # 自检（存在/大小/不是错误页）
+> bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party
 > ```
 
 ### 0.2 在 M20 上编译真机版（**必须显式 `-DSIM2SIM=OFF`**）
@@ -270,10 +274,71 @@ ros2 topic echo --once /ARM_TELEOP_STATE    # ≈ (0.349,0,0.433,0.737,0,0.676,0
 在发就跳过"默认位姿保持"命令，`DEF-026`），日志里会打印那一行。监督器会先启动
 adapter/IK/臂键盘，再延迟 1 s 启动策略，保持这个检测时序。
 
-需要 VR 时只为 `vr_teleop_node.py` 另开 T3；它不要和其余节点挤在监督器里。
+需要 VR 时按场景 4.1 再开一个 T3；VR 节点不要放进统一控制监督器。
 
 **安全**：臂大幅摆动时底盘会被扰动（训练里 s3 阶段本身有 9~15% 的 20 s 摔倒率），
 先从**小幅度、慢速**开始；出现持续倾斜或 `[TAKEOVER!]` 就停手。
+
+---
+
+### 4.1 增加 VR（两个 M20 终端）
+
+保持 Jetson 的 T1 不变。M20 上仍是一个统一控制终端负责 RL、IK、臂键盘和
+真臂桥接，另一个独立终端只运行 VR 节点：
+
+| 终端 | 机器 | 作用 |
+|---|---|---|
+| T1 | Jetson | `agx_arm_ctrl`：CAN ↔ Piper 机械臂 |
+| T2 | M20 | 统一控制终端：`rl_deploy + arm_controller + arm_teleop_node + arm_real_adapter` |
+| T3 | M20 | VR 节点：向 `/VR_TELEOP` 发布手柄、头显输入 |
+
+**T2：统一控制终端（策略 + 臂链）**
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+source install/setup.bash
+
+M20_GRIPPER_SLEW=0.2 M20_ARM_MAX_JOINT_VEL=3.0 \
+  python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py \
+  --profile real
+```
+
+按 `z` 站立，再按 `c` 进入 RL。进入 RL 后按 `r` 可随时切到关节阻尼。
+
+**T3：VR 节点（独立终端）**
+
+```bash
+cd ~/M20_sdk_deploy
+source /opt/ros/foxy/setup.bash
+source /opt/robot/scripts/setup_ros2.sh
+source install/setup.bash
+
+# 只有按 §0.3 使用 ~/pylibs 兜底安装 yaml/websockets 时才需要这一行
+export PYTHONPATH=~/pylibs:$PYTHONPATH
+
+exec python3 src/M20_sdk_deploy/interface/robot/simulation/vr_teleop_node.py
+```
+
+T3 启动后会打印 `https://<M20 IP>:8443`。如果自动选中的网卡 IP 不对，可以显式指定：
+
+```bash
+export M20_VR_IP=10.21.31.103
+exec python3 src/M20_sdk_deploy/interface/robot/simulation/vr_teleop_node.py
+```
+
+在头显浏览器打开打印出的 HTTPS 地址，按右手柄 **B** 启动并校准。VR 激活后，
+速度和机身姿态由 VR 接管；`z`、`c`、`r` 这些模式键仍由 T2 发送。
+
+> B 只激活 VR 输入，不能替代 `c` 进入 RL。要让 M20 按 VR 速度/机身命令运动，
+> T2 必须已经打印 `[MODE] RL Control` / `standup_state ------------> rl_control`。
+> 若出现 `[TAKEOVER!]` 后退回 `joint_damping` / `idle_state`，VR 仍能标定，但腿不会
+> 再响应；重新站立并按 `c` 后才能继续。
+
+停止顺序：头显退出 VR 或停止 T3 → 在 T2 按 `r` 阻尼 → 按 `x` 趴下 → T2 按
+`Ctrl+C`/`ESC` → 退出 SDK 模式。VR 链路不动时先运行
+`scripts/check_vr_arm_chain.py`，不要反复重启多个 VR 节点。
 
 ---
 

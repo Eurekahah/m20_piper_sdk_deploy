@@ -112,6 +112,9 @@ docker exec -it m20_piper_ros bash -lc '
 先完成编译、同步、SDK 模式和预检：
 
 ```bash
+# 首次部署或 third_party/ 有更新时先加 --with-third-party
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party
+# 日常同步（默认跳过 third_party/）
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
 python3 src/M20_sdk_deploy/scripts/preflight_real_deploy.py
 python3 src/M20_sdk_deploy/scripts/keyboard_teleop_supervisor.py --profile real

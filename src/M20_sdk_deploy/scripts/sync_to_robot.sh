@@ -9,16 +9,21 @@
 #
 # 本脚本默认：
 #   1) 用 rsync（只传改动过的文件 —— 第二次起通常只有几个 .py/.hpp，几 KB）；
-#   2) 排除上面那些真机运行/编译都不需要的目录；
-#   3) 没有 rsync 就退化成 `tar + ssh`（仍然带同样的排除）。
+#   2) **跳过整个 third_party/**（日常同步不再扫描 2000+ 个第三方文件）；
+#   3) 排除仿真 mesh 和缓存文件；
+#   4) 没有 rsync 就退化成 `tar + ssh`（仍然带同样的排除）。
+#
+# ⚠️ 首次部署、third_party 有更新，或真机缺 ARM onnxruntime/Eigen/手柄库时，
+#    必须加 `--with-third-party`；否则真机无法编译或启动。
 #
 # 用法（在仓库根目录）：
-#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh                # 增量同步（日常就用这个）
-#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --dry-run      # 只列出"会传什么"
-#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-meshes  # 连仿真 mesh 一起传
-#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --full         # 不排除任何东西（等价旧 scp）
-#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --delete       # 远端与本地完全一致（会删远端多余文件！）
-#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build        # 同步完顺手在真机上 colcon build
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh                    # 日常增量，跳过 third_party
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party # 首次部署/依赖更新
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --dry-run          # 只列出"会传什么"
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-meshes      # 连仿真 mesh 一起传
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --full             # 不排除任何东西（等价旧 scp）
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --delete           # 远端与本地完全一致（会删远端多余文件！）
+#   bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build            # 同步完顺手在真机上 colcon build
 #
 # 环境变量：
 #   ROBOT=user@10.21.31.103                    真机地址（第二 WiFi 用 10.21.41.1）
@@ -29,15 +34,17 @@ ROBOT=${ROBOT:-user@10.21.31.103}
 DEST=${DEST:-'~/M20_sdk_deploy/src/M20_sdk_deploy'}
 SRC_REL=src/M20_sdk_deploy
 
-WITH_MESHES=0; FULL=0; DRY=0; DELETE=0; BUILD=0
+WITH_MESHES=0; WITH_THIRD_PARTY=0; FULL=0; DRY=0; DELETE=0; BUILD=0
 for a in "$@"; do
   case "$a" in
-    --with-meshes) WITH_MESHES=1 ;;
-    --full)        FULL=1 ;;
-    --dry-run)     DRY=1 ;;
-    --delete)      DELETE=1 ;;
-    --build)       BUILD=1 ;;
-    -h|--help)     sed -n '2,26p' "$0"; exit 0 ;;
+    --with-meshes)      WITH_MESHES=1 ;;
+    --with-third-party) WITH_THIRD_PARTY=1 ;;
+    --skip-third-party|--no-third-party) WITH_THIRD_PARTY=0 ;;
+    --full)             FULL=1 ;;
+    --dry-run)          DRY=1 ;;
+    --delete)           DELETE=1 ;;
+    --build)            BUILD=1 ;;
+    -h|--help)          sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "未知参数: $a（-h 看用法）" >&2; exit 2 ;;
   esac
 done
@@ -49,9 +56,13 @@ cd "$REPO_ROOT"
 # 排除清单：这些目录真机运行与编译都不需要，只有"在真机上跑仿真/参数对照"才要。
 EXC=(
   --exclude='/__pycache__/' --exclude='*.pyc'
-  --exclude='/third_party/onnxruntime/x86/'
-  --exclude='/third_party/gamepad/example/'
 )
+if [ "$WITH_THIRD_PARTY" = 0 ]; then
+  EXC+=( --exclude='/third_party/' )
+else
+  EXC+=( --exclude='/third_party/onnxruntime/x86/'
+         --exclude='/third_party/gamepad/example/' )
+fi
 if [ "$WITH_MESHES" = 0 ]; then
   EXC+=( --exclude='/M20_description/' --exclude='/M20_Piper_description/' )
 fi
@@ -61,6 +72,10 @@ echo "[sync] 源      : $REPO_ROOT/$SRC_REL"
 echo "[sync] 目标    : $ROBOT:$DEST"
 if [ ${#EXC[@]} -eq 0 ]; then
   echo "[sync] 排除    : 无（--full，等价旧 scp）"
+elif [ "$WITH_THIRD_PARTY" = 0 ]; then
+  echo "[sync] 排除    : third_party/、__pycache__"
+  [ "$WITH_MESHES" = 0 ] && echo "[sync]            M20_description/、M20_Piper_description/（仿真专用 mesh）"
+  echo "[sync] 注意    : 本次不传第三方库；首次部署或依赖更新请加 --with-third-party"
 else
   echo "[sync] 排除    : onnxruntime/x86、gamepad/example、__pycache__"
   [ "$WITH_MESHES" = 0 ] && echo "[sync]            M20_description/、M20_Piper_description/（仿真专用 mesh）"
@@ -69,7 +84,9 @@ fi
 
 # VR 头显页面依赖的离线 A-Frame（DEF-058）：漏了这个文件，头显里页面会"卡住、点不动"
 AFRAME_FILE="$SRC_REL/third_party/XLeVR/web-ui/aframe.min.js"
-if [ -f "$AFRAME_FILE" ]; then
+if [ "$WITH_THIRD_PARTY" = 0 ] && [ "$FULL" = 0 ]; then
+  echo "[sync] A-Frame : 本次跳过 third_party；远端文件保持不变"
+elif [ -f "$AFRAME_FILE" ]; then
   echo "[sync] A-Frame : 已就位（$(du -h "$AFRAME_FILE" | cut -f1)），头显页面可离线加载"
 else
   echo "[sync] ⚠️ A-Frame: 缺 $AFRAME_FILE"
@@ -104,7 +121,7 @@ else
   for e in "${EXC[@]}"; do
     # ⚠️ rsync 的 `/xxx/` 是"相对传输根"的锚定写法，**不能照搬给 tar**：
     # tar 的成员名带了 `M20_sdk_deploy/` 前缀，且带尾斜杠的模式在部分版本上匹配不到子树
-    # （实测照搬会 4514 个文件全传）。这里前后斜杠都去掉，实测有效（2038 个文件）。
+    # （实测照搬会 4514 个文件全传）。这里前后斜杠都去掉。
     case "$e" in
       --exclude=*) p="${e#--exclude=}"; p="${p#/}"; p="${p%/}"; TEXC+=( "$p" ) ;;
     esac
@@ -118,10 +135,13 @@ else
   echo "[sync] 完成（远端解到 ~/M20_sdk_deploy/src/）"
   # 自检：排除没生效的话远端会多出几千个文件（tar 的 exclude 语义和 rsync 不一样，容易踩）
   N=$(ssh "$ROBOT" 'find ~/M20_sdk_deploy/src/M20_sdk_deploy -type f 2>/dev/null | wc -l')
-  echo "[sync] 远端文件数 = $N（排除生效时约 2000；~4500 说明排除没生效）"
+  echo "[sync] 远端文件数 = $N（若接近 4500，说明排除没生效）"
 fi
 
 if [ "$BUILD" = 1 ] && [ "$DRY" = 0 ]; then
+  if [ "$WITH_THIRD_PARTY" = 0 ] && [ "$FULL" = 0 ]; then
+    echo "[sync] 注意    : --build 使用真机上已有的 third_party；缺失会编译失败"
+  fi
   echo "[sync] 在真机上编译（arm 版，必须显式 -DSIM2SIM=OFF）..."
   ssh -t "$ROBOT" 'cd ~/M20_sdk_deploy && source /opt/ros/foxy/setup.bash && colcon build --packages-select m20_sdk_deploy --cmake-args -DBUILD_PLATFORM=arm -DSIM2SIM=OFF'
 fi

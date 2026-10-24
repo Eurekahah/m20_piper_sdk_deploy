@@ -741,6 +741,14 @@ VR 仍保持激活（2026-10-10 起的旧默认），只能反向推手柄把它
 * supervisor 只检查当前 profile 真正准备启动的进程。`--no-arm-controller` 复用手动
   IK 时不会误报；若不加该参数，检测到已有 IK 会拒绝启动。
 
+**2026-10-22 真机补充：Foxy 冷启动时 `ros2 topic info` 超过旧探测超时**
+
+真机 `/JOINTS_DATA` 已稳定在约 200 Hz 时，supervisor 仍报等待 10 s 超时；
+单独执行 `time ros2 topic info /JOINTS_DATA` 实测 `2.558 s`，而 supervisor 单次
+`topic info` 的硬超时只有 `2.0 s`。`--readiness-timeout 60` 只会重复发起同样会
+超时的 CLI 探测，因此无效。现将单次探测预算提高到 10 s，并继续受总 readiness
+超时约束；sim2sim 实测能够返回唯一发布者。
+
 ---
 
 ### DEF-044 `2026-10-12` VR 臂跟随在默认站姿上解不出目标，却把"顶在限位上的解"当命令发出去 ⇒ 臂自己甩（20 rad/s / 139 N·m）

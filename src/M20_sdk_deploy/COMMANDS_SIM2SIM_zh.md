@@ -263,6 +263,11 @@ docker exec -it m20_piper_ros bash -lc 'cd /root/m20_piper_ws && source /opt/ros
 VR 一旦激活（B 按下），
 键盘就不再写速度/机身字段（由 VR 独占），但 `z`/`c`/`r` 这些模式键仍由 A2 的键盘负责。
 
+> B 只激活 VR 输入，不能替代 `c` 进入 RL。要让 M20 按 VR 速度/机身命令运动，
+> A2 必须已经打印 `[MODE] RL Control` / `standup_state ------------> rl_control`。
+> 若出现 `[TAKEOVER!]` 后退回 `joint_damping` / `idle_state`，VR 仍能标定，但腿不会
+> 再响应；重新站立并按 `c` 后才能继续。
+
 **左右手的分工（最容易踩的坑）**：
 
 | 手柄 | 管什么 | 说明 |

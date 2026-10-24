@@ -17,7 +17,8 @@
 #
 # 下完之后的两种用法：
 #   * 开发机（sim2sim 直接读仓库里的文件）：无需再操作；
-#   * 真机/上位机：`bash src/M20_sdk_deploy/scripts/sync_to_robot.sh` 会一起同步过去
+#   * 真机/上位机：默认同步已跳过 third_party/，需要显式运行
+#     `bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party`
 #     （只同步这一个文件也行：scp <仓库>/src/M20_sdk_deploy/third_party/XLeVR/web-ui/aframe.min.js \
 #        user@10.21.31.103:~/M20_sdk_deploy/src/M20_sdk_deploy/third_party/XLeVR/web-ui/）
 set -euo pipefail
@@ -99,6 +100,6 @@ fi
 echo
 echo "[fetch] 已就位: $TARGET"
 echo "[fetch] 下一步："
-echo "        真机：bash src/M20_sdk_deploy/scripts/sync_to_robot.sh   # 会把这个文件一起同步"
+echo "        真机：bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party"
 echo "        单文件：scp \"$TARGET\" user@10.21.31.103:~/M20_sdk_deploy/src/M20_sdk_deploy/third_party/XLeVR/web-ui/"
 echo "        然后头显里刷新 https://<上位机IP>:8443 即可（顶部红色的报错条消失就对了）"

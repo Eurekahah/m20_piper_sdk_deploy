@@ -11,6 +11,8 @@ import sys
 import tempfile
 import textwrap
 import time
+from types import SimpleNamespace
+from unittest import mock
 from pathlib import Path
 
 
@@ -44,6 +46,32 @@ def check_routes() -> list[str]:
         actual = supervisor.route_key(key)
         if actual != expected:
             failures.append(f"{key!r}: expected {expected}, got {actual}")
+    return failures
+
+
+def check_topic_readiness_timeout() -> list[str]:
+    supervisor = load_supervisor()
+    calls = []
+
+    def fake_run(*args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(stdout="Type: drdds/msg/JointsData\n"
+                                      "Publisher count: 1\n"
+                                      "Subscription count: 0\n")
+
+    with mock.patch.object(supervisor.subprocess, "run", side_effect=fake_run):
+        count = supervisor.topic_publisher_count("/JOINTS_DATA")
+
+    failures = []
+    if count != 1:
+        failures.append(f"topic publisher 解析失败：expected 1, got {count}")
+    if not calls:
+        failures.append("topic_publisher_count 没有调用 ros2 topic info")
+    else:
+        timeout_s = calls[0][1].get("timeout")
+        if timeout_s is None or timeout_s < 5.0:
+            failures.append(
+                f"topic info 单次超时过短：{timeout_s!r}s（M20 Foxy 实测约 2.6s）")
     return failures
 
 
@@ -176,7 +204,8 @@ def check_process_routing() -> list[str]:
 
 
 def main() -> int:
-    failures = (check_routes() + check_profiles() + check_process_filter() +
+    failures = (check_routes() + check_topic_readiness_timeout() +
+                check_profiles() + check_process_filter() +
                 check_process_routing())
     if failures:
         print("[keyboard-supervisor] FAIL")

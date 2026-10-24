@@ -79,12 +79,17 @@ grep -c SIM2SIM build/m20_sdk_deploy/CMakeFiles/rl_deploy.dir/flags.make
 # 真机版应为 0
 
 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
+# 默认跳过整个 third_party/；真机首次部署或第三方依赖有更新时：
+bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --with-third-party
 # 第二 WiFi：ROBOT=user@10.21.41.1 bash src/M20_sdk_deploy/scripts/sync_to_robot.sh
 # 先预演：bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --dry-run
 # 同步后直接编译：bash src/M20_sdk_deploy/scripts/sync_to_robot.sh --build
 ```
 
-不要整包使用 `scp -r`。同步脚本会排除仿真 mesh、x86 onnxruntime 和示例文件。
+不要整包使用 `scp -r`。默认同步会跳过仿真 mesh 和整个 `third_party/`，不再扫描
+约 2000 个第三方文件；此时假定真机已有 ARM onnxruntime、Eigen、手柄库和 XLeVR。
+首次部署或这些依赖有更新时必须显式加 `--with-third-party`。该模式仍会排除
+x86 onnxruntime 和 gamepad 示例。
 
 上位机编译：
 

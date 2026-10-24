@@ -53,6 +53,10 @@ NODE_PROCESS_MARKERS = {
     "ik": "/interface/robot/simulation/arm_controller.py",
     "arm": "/interface/robot/simulation/arm_teleop_node.py",
 }
+# On the M20's ROS 2 Foxy environment, a cold `ros2 topic info` can take
+# >2.5 s just to complete DDS graph discovery. Keep the probe bounded, but do
+# not kill a healthy discovery before it can return the publisher count.
+TOPIC_INFO_TIMEOUT_S = 10.0
 
 
 @dataclass(frozen=True)
@@ -126,14 +130,14 @@ def build_child_specs(args: argparse.Namespace) -> list[ChildSpec]:
     return specs
 
 
-def topic_publisher_count(topic: str) -> int | None:
+def topic_publisher_count(topic: str, timeout_s: float = TOPIC_INFO_TIMEOUT_S) -> int | None:
     try:
         result = subprocess.run(
             ["ros2", "topic", "info", topic],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            timeout=2.0,
+            timeout=timeout_s,
             check=False,
         )
     except (OSError, subprocess.TimeoutExpired):
@@ -152,7 +156,9 @@ def wait_for_topic_publishers(topic: str, timeout_s: float) -> int | None:
     """Wait until a ROS topic has a publisher and return its count."""
     deadline = time.monotonic() + timeout_s
     while time.monotonic() < deadline:
-        count = topic_publisher_count(topic)
+        remaining_s = max(0.1, deadline - time.monotonic())
+        count = topic_publisher_count(
+            topic, timeout_s=min(TOPIC_INFO_TIMEOUT_S, remaining_s))
         if count:
             return count
         time.sleep(0.25)
